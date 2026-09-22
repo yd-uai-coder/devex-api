@@ -1,0 +1,95 @@
+[project]
+name = "backend"
+version = "0.1.0"
+description = "FastAPI + LangChain + LangGraph backend"
+requires-python = ">=3.13"
+dependencies = [
+    "alembic>=1.19.1",
+    "asyncpg>=0.31.0",
+    "fastapi[standard]>=0.141.1",
+    "google-genai>=2.17.0",
+    "httpx>=0.28.1",
+    "langchain>=1.3.15",
+    "langchain-google-genai>=4.3.3",
+    "langchain-tavily>=0.2.18",
+    "langgraph>=1.2.11",
+    "pwdlib[argon2]>=0.3.1",
+    "pydantic[email]>=2.13.4",
+    "pydantic-settings>=2.15.0",
+    "pyjwt>=2.13.0",
+    "redis>=5.0",
+    "sqlalchemy[asyncio]>=2.0",
+    "tavily-python>=0.7.27",
+    "uvicorn[standard]>=0.52.1",
+]
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "aiosqlite>=0.22.1",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "pytest-mock>=3.15.1",
+    "ruff>=0.16.2",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["app", "tests", "scripts"]
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+    "ASYNC", # flake8-async
+]
+ignore = ["B008"]  # FastAPI Depends() in default args
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-m 'not integration'"
+markers = [
+    "integration: requires live PostgreSQL and Redis (see docker compose)",
+]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/main.py"]
+
+[tool.pyright]
+# エディタ(VSCode / Pylance)と CLI(uvx pyright)の解析ルートをこの backend/ に固定する。
+# このリポジトリをどのフォルダで開いて作業しても app パッケージが first-party として解決される。
+include = ["app", "tests"]
+exclude = ["**/__pycache__", ".venv", "alembic/versions"]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.13"
+typeCheckingMode = "standard"
+
+# 既知の型債務。新規コードは standard で厳格に保ちつつ、下記は当面診断を抑制する。
+#   - app/ai/graph/nodes.py            : LangGraph の GraphState を部分辞書で構築する箇所
+#   - tests/unit/test_ai_graph_nodes.py: 同上(ノードをテストから直接呼ぶため部分辞書を渡す)
+#   - app/repositories/conversation.py : owner スコープの get_by_id override(設計上の割り切り)
+#   - tests/unit/test_auth_service.py  : テスト用 FakeRedis の型付け未整備
+ignore = [
+    "app/ai/graph/nodes.py",
+    "tests/unit/test_ai_graph_nodes.py",
+    "app/repositories/conversation.py",
+    "tests/unit/test_auth_service.py",
+]
