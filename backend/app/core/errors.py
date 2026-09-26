@@ -2,9 +2,16 @@ from typing import ClassVar
 
 
 class AppError(Exception):
-    """アプリケーション全体で共通のドメイン例外基底クラス。HTTPステータスコードを紐づけて一括ハンドリングする。"""
+    """アプリケーション全体で共通のドメイン例外基底クラス。HTTPステータスコードを紐づけて一括ハンドリングする。
 
+    code: 機械可読なエラーコード文字列(例: "LLM_QUOTA_EXCEEDED")。未設定(None)のままでもよい。
+    docs/internal_design.md 3.4節が定義するエラーコードをレスポンスに含めるための拡張。
+    既存の`{"detail": "..."}`という応答契約(devex-uiのclient.tsが前提とする形)は変えず、
+    `code`が設定されている場合のみ追加で含める(`{"detail": "...", "code": "..."}`)。
+    """
+    
     status_code: ClassVar[int] = 500
+    code: ClassVar[str | None] = None
 
     def __init__(self, message: str) -> None:
         # message: クライアントに返すエラーメッセージ文字列

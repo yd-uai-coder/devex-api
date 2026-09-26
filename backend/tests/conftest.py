@@ -4,7 +4,9 @@ import os
 # 前に実行する必要がある。Pythonのimportは一度実行されるとキャッシュされるため、
 # 先に本物の設定でモジュールがimportされてしまうと、後から上書きしても手遅れになる。
 # この順序を誤ると、テストが誤って開発/本番用のDBに接続してしまう事故につながる。
-os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/test")
+os.environ.setdefault(
+    "DATABASE_URL", "postgresql+asyncpg://devex-user:devex-db-pg-0123@localhost:5432/test"
+)
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/1")
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-at-least-32-bytes-long")
 os.environ.setdefault("GOOGLE_API_KEY", "test-google-api-key")

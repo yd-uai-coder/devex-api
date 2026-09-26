@@ -1,5 +1,7 @@
 from collections.abc import AsyncGenerator
 
+from sqlalchemy import JSON
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -28,6 +30,7 @@ AsyncSessionLocal = async_sessionmaker(
     autoflush=False,
 )
 
+PortableJSON = JSON().with_variant(JSONB(), "postgresql")
 
 async def get_db() -> AsyncGenerator[AsyncSession]:
     """リクエスト単位の非同期DBセッションを生成するFastAPI依存関数。"""

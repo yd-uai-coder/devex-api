@@ -37,6 +37,11 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Content-DispositionはブラウザのCORSセーフリスト対象外のレスポンスヘッダーのため、
+    # ここで明示しない限りクロスオリジンのfetch()からJSで読めない(devex-uiの
+    # documentsApi.tsはこれが読めない場合、ドキュメントのUUIDをファイル名にフォールバック
+    # してしまう。実際に発生した不具合、詳細はtextbook/decision-digest.md参照)。
+    expose_headers=["Content-Disposition"],
 )
 app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.MAX_REQUEST_BODY_BYTES)
 

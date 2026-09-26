@@ -10,13 +10,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.security import TokenType, decode_token
 from app.infrastructure.redis import get_redis
+from app.models.project import Project
 from app.models.user import User
+from app.repositories.project import ProjectRepository
+from app.services.errors import ProjectNotFoundError
 from app.services.user import UserService
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
-SessionDep = Annotated[AsyncSession, Depends(get_db)]
-RedisDep = Annotated[Redis, Depends(get_redis)]
+type SessionDep = Annotated[AsyncSession, Depends(get_db)]
+type RedisDep = Annotated[Redis, Depends(get_redis)]
 
 
 def get_client_ip(request: Request) -> str:
@@ -25,7 +28,9 @@ def get_client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-ClientIpDep = Annotated[str, Depends(get_client_ip)]
+type ClientIpDep = Annotated[str, Depends(get_client_ip)]
+
+REFRESH_TOKEN_COOKIE_NAME = "refresh_token"
 
 _credentials_exception = HTTPException(
     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -62,4 +67,31 @@ async def get_current_user(
     return user
 
 
-CurrentUserDep = Annotated[User, Depends(get_current_user)]
+type CurrentUserDep = Annotated[User, Depends(get_current_user)]
+
+def get_refresh_token_from_cookie(request: Request) -> str:
+    """Cookieからリフレッシュトークンを取り出す。JSONボディでは受け取らない
+    (httpOnly Cookieのみを正規の受け渡し経路とする)。無ければ生のHTTPExceptionで401にする
+    (get_current_userの認証境界と同じ設計思想: 失敗理由を漏らさず一律401)。"""
+    token = request.cookies.get(REFRESH_TOKEN_COOKIE_NAME)
+    if token is None:
+        raise _credentials_exception
+    return token
+
+
+type RefreshTokenCookieDep = Annotated[str, Depends(get_refresh_token_from_cookie)]
+
+
+async def get_current_project(
+    project_id: uuid.UUID, session: SessionDep, current_user: CurrentUserDep
+) -> Project:
+    """パスパラメータ`project_id`と認証済みユーザーから、所有者チェック済みのProjectを取得する
+    (`/projects/{project_id}/...`系ルート共通の依存関数)。他ユーザーのプロジェクト・存在しないIDは
+    一律404にする(存在有無を漏らさないため、権限エラーではなくNotFoundとして扱う)。"""
+    project = await ProjectRepository(session).get_by_id(project_id, user_id=current_user.id)
+    if project is None:
+        raise ProjectNotFoundError(f"Project {project_id} not found")
+    return project
+
+
+type CurrentProjectDep = Annotated[Project, Depends(get_current_project)]

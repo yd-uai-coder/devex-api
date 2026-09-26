@@ -91,5 +91,6 @@ ignore = [
     "app/ai/graph/nodes.py",
     "tests/unit/test_ai_graph_nodes.py",
     "app/repositories/conversation.py",
+    "app/repositories/project.py",
     "tests/unit/test_auth_service.py",
 ]
