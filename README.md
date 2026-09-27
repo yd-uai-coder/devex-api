@@ -2,7 +2,7 @@
 
 [Devex](../README.md)(AIとの対話でヒアリングを行い、要件定義書・外部設計書・内部設計書・実装計画書の4種Markdownドキュメントを自動生成するシステム)のバックエンドです。FastAPI + LangChain + PostgreSQL + Redisで構築しています。
 
-## Devexとしての主な機能
+## Devexとしての主な機能--
 
 - **認証**(`app/api/routes/auth.py`) — JWT(アクセストークン+リフレッシュトークン)によるユーザー登録・ログイン・トークン更新
 - **プロジェクト管理**(`app/api/routes/projects.py`、`projects`テーブル) — プロジェクトの作成(ヒアリング用の初期情報入力+任意の資料添付、`intake_files`テーブル)・一覧・詳細取得

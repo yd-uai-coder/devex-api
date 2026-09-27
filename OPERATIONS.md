@@ -41,7 +41,7 @@ Traefikはdocker-composeの`nginx`+`certbot`をまとめて置き換える(TLS�
    ```yaml
    services:
      traefik:
-       image: traefik:v3.3
+       image: traefik:v3.6
        restart: unless-stopped
        command:
          - "--providers.docker=true"
@@ -69,6 +69,10 @@ Traefikはdocker-composeの`nginx`+`certbot`をまとめて置き換える(TLS�
    ```
 
    `--providers.docker.exposedbydefault=false`により、`traefik.enable=true`labelを明示的に持つコンテナのみがルーティング対象になる(意図しないコンテナが誤って公開されるのを防ぐ)。`networks.edge.name: edge`で、compose のプロジェクト名に関わらずネットワーク名が確実に`edge`になるようにしている(各プロジェクト側の`external: true`参照と一致させるため)。
+
+   > **既知の注意点(実際のConoHa VPSデプロイで発生・解決済み)**
+   > - **イメージタグは`v3.6`以上を使うこと**: Docker Engine 29以降はDocker APIの最小サポートバージョンが引き上げられており、`traefik:v3.3`以前のイメージは古いDockerクライアント(APIバージョン1.24固定)を使うため`client version 1.24 is too old`エラーで無限リトライしコンテナを一切検出できなくなる。`v3.6`以降はAPIバージョンの自動ネゴシエーションに対応済み。
+   > - **`DOCKER_API_VERSION`環境変数では回避できない**: Traefikの内部Dockerクライアントはこの環境変数を参照しないため、上記の問題はイメージタグを上げる以外に解決方法が無い。
 
    ```bash
    cd /opt/traefik
@@ -118,6 +122,7 @@ TLS証明書の取得・更新はTraefik側が自動で行うため(4節参照)�
          - edge          # 既存のネットワークに加えて追加
        labels:
          - "traefik.enable=true"
+         - "traefik.docker.network=edge"
          - "traefik.http.routers.<router名>.rule=Host(`<ドメイン>`)"
          - "traefik.http.routers.<router名>.entrypoints=websecure"
          - "traefik.http.routers.<router名>.tls.certresolver=letsencrypt"
@@ -127,6 +132,8 @@ TLS証明書の取得・更新はTraefik側が自動で行うため(4節参照)�
      edge:
        external: true
    ```
+
+   **`traefik.docker.network=edge`は省略しないこと**: 対象サービスが(`internal`等)`edge`以外のネットワークにも参加している場合、この指定が無いとTraefikがどのネットワーク経由で到達すべきか判断できず、誤ったネットワーク側のIPで接続を試みて`504 Gateway Timeout`になる(実際のConoHa VPSデプロイで発生・解決済み)。対象サービスが`edge`ネットワークのみにしか参加していない場合は省略しても動作するが、事故防止のため常に明示することを推奨する。
 
 3. 対象ドメインのDNS Aレコード(・AAAAレコード)がこのVPSのIPを指していることを確認する。
 4. 再起動する: `docker compose -f docker-compose.prod.yml up -d`(ポート公開を外したことで既存の`ports:`設定が変わるため、コンテナの再作成を伴う)。
