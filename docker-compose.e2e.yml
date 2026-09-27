@@ -1,0 +1,17 @@
+# オーバーレイファイル(docker-compose.prod.ymlと同じ「開発用ベース+用途別上書き」の構成)。
+#
+#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml up
+#
+# backendコンテナにE2E_FAKE_LLM=trueだけを上書きし、それ以外(DB接続・ポート等)は
+# docker-compose.ymlのまま使う。devex-ui(別リポジトリ)のPlaywright E2Eテスト
+# (textbook/samples/frontend/playwright.config.ts)がこのコマンドをwebServerとして
+# 起動する想定。GOOGLE_API_KEY未設定のままでも、実際のGemini APIを一切呼ばずに
+# 決定論的に動作する(app/ai/llm/fake.py参照)。
+#
+# このオーバーレイ自体を本番(docker-compose.prod.yml)と組み合わせて使うことは想定しない
+# (E2E_FAKE_LLM=trueの本番誤投入はapp/core/config.pyのSettings側でも起動時に拒否される
+# 二重の安全策になっている)。
+services:
+  backend:
+    environment:
+      E2E_FAKE_LLM: "true"

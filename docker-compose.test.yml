@@ -1,0 +1,19 @@
+# オーバーレイファイル(docker-compose.e2e.ymlと同じ「開発用ベース+用途別上書き」の構成)。
+#
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --no-deps backend \
+#     uv run pytest -m integration tests/integration
+#
+# 統合テスト(tests/integration/、pytest -m integration)専用に、backendコンテナの
+# DATABASE_URLだけを開発用DB($POSTGRES_DB)とは別のテストDB($POSTGRES_TEST_DB)へ
+# 差し替える。tests/integration/conftest.pyの`client`フィクスチャはテストのたびに
+# Base.metadata.create_all/drop_allでテーブルを作り直す設計のため、開発用DBと同じ
+# データベースを向けたまま実行すると開発中のデータ・スキーマが消えてしまう
+# (実際に発生した事故の再発防止。devex-api/CLAUDE.md「テストの分離」節参照)。
+#
+# テストDB自体は postgres-init/01-create-test-db.sh で自動作成される
+# (Postgresボリューム初回初期化時のみ有効。既存ボリュームには手動で
+# `CREATE DATABASE` する必要がある)。
+services:
+  backend:
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_TEST_DB:-app_test}

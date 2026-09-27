@@ -46,10 +46,11 @@ async def test_raises_generation_failed_after_exhausting_attempts() -> None:
         calls["n"] += 1
         raise RuntimeError("always fails")
 
-    with pytest.raises(GenerationFailedError):
+    with pytest.raises(GenerationFailedError) as exc_info:
         await invoke_with_retry(_call)
 
     assert calls["n"] == llm_retry.MAX_GENERATION_ATTEMPTS
+    assert "時間をおいて再度お試しください" in str(exc_info.value)
 
 
 async def test_fails_fast_on_quota_error_without_retrying(monkeypatch: pytest.MonkeyPatch) -> None:

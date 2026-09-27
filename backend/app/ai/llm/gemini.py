@@ -2,16 +2,27 @@ from functools import lru_cache
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 
+from app.ai.llm.fake import get_e2e_fake_llm
 from app.core.config import settings
 
 
 @lru_cache
 def get_gemini_llm(*, temperature: float = 0.7) -> ChatGoogleGenerativeAI:
-    """設定値から構築したChatGoogleGenerativeAIクライアントを、温度パラメータ単位でキャッシュして返す。"""
+    """設定値から構築したChatGoogleGenerativeAIクライアントを、温度パラメータ単位でキャッシュして返す。
+    
+    `settings.E2E_FAKE_LLM`が有効な場合は実際のGemini APIを呼ばず、決定論的な
+    `E2eFakeLLM`(app/ai/llm/fake.py)を返す(Phase 4-3: ブラウザE2Eテストを無料・
+    決定論的に実行するため。本番では起動時にこのフラグ自体が拒否される、
+    app/core/config.pyのSettings._reject_unsafe_production_settings参照)。
+    """
+
+    if settings.E2E_FAKE_LLM:
+        return get_e2e_fake_llm()
     return ChatGoogleGenerativeAI(
         model=settings.GEMINI_MODEL,
         api_key=settings.GOOGLE_API_KEY,
         temperature=temperature,
+        timeout=settings.LLM_TIMEOUT_SECONDS,
     )
 
 

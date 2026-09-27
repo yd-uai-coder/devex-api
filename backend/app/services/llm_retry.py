@@ -31,13 +31,13 @@ async def invoke_with_retry(call: Callable[[], Awaitable[T]]) -> T:
             if _is_quota_error(exc):
                 # クォータ超過はリトライしても解消しないため即座に諦める
                 raise LLMQuotaExceededError(
-                    "AI provider quota exceeded, please try again later"
+                    "本日の利用上限に達しました。時間をおいて再度お試しください。"
                 ) from exc
             last_error = exc
             if attempt < MAX_GENERATION_ATTEMPTS:
                 await asyncio.sleep(RETRY_DELAY_SECONDS)
     raise GenerationFailedError(
-        "Failed to generate a response after multiple attempts"
+        "AIからの応答生成に失敗しました。時間をおいて再度お試しください。"
     ) from last_error
 
 

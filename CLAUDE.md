@@ -51,6 +51,14 @@ routes (app/api/routes) → services (app/services) → repositories (app/reposi
 
 - `backend/tests/conftest.py`は、`app.core.database`などをimportする**前**に`os.environ.setdefault(...)`でテスト用の`DATABASE_URL`等を設定している。**なぜこの順序が重要か**：Pythonのimportは一度実行されると以後はキャッシュされるため、先に本物の設定を使うモジュールがimportされてしまうと、後から環境変数を上書きしても手遅れになる。この順序を誤ると、テストが誤って開発/本番用のDBに接続してしまう事故につながる。
 - ユニットテストはインメモリSQLite（`db_session`フィクスチャ）、統合テスト（`tests/integration/`）は実際のPostgreSQL/Redis（`docker compose up postgres redis`で起動）を使う。統合テストは`@pytest.mark.integration`でマークされ、デフォルトでは実行されない（`pyproject.toml`の`addopts = "-m 'not integration'"`）。
+- **統合テスト専用のPostgres DB(`$POSTGRES_TEST_DB`)を開発用DB(`$POSTGRES_DB`)とは別に用意している**（`docker-compose.test.yml`、`postgres-init/01-create-test-db.sh`）。`tests/integration/conftest.py`の`client`フィクスチャはテストのたびに`Base.metadata.create_all`/`drop_all`でテーブルを作り直すため、開発用DBと同じDBに向けて実行すると開発中のデータ・スキーマを消してしまう（実際にこの事故が発生し、`alembic upgrade head`だけでは復旧できなかった ── `Base.metadata.drop_all`はAlembicの管理外の削除のため、`alembic_version`テーブルは「最新適用済み」のまま実テーブルだけ消えるという食い違いが起きる。復旧には`alembic_version`テーブル自体を削除してから`alembic upgrade head`をやり直す必要がある）。統合テストは必ず以下のように専用DBへ向けて実行すること：
+
+  ```bash
+  docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --no-deps backend \
+    uv run pytest -m integration tests/integration
+  ```
+
+  `docker-compose.test.yml`は`docker-compose.e2e.yml`と同じ「開発用ベース+用途別上書き」のオーバーレイ構成。テストDB自体は`postgres-init/`のスクリプトで自動作成されるが、これはPostgresボリューム初回初期化時のみ有効なため、既存ボリュームに対しては手動で`CREATE DATABASE "$POSTGRES_TEST_DB";`を実行しておくこと。
 
 ## 開発用ツール
 

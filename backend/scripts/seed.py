@@ -20,7 +20,7 @@ from app.services.user import UserService
 SEED_USER = {
     "full_name": "sample-user",
     "email": "example-user@example.com",
-    "password": "sample-user-0123",
+    "password": "Sample-user-0123",
 }
 
 
