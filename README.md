@@ -81,7 +81,7 @@ uv sync   # pyproject.toml / uv.lock から依存関係を再現
 | `REFRESH_TOKEN_EXPIRE_DAYS` | Refresh Token有効期限（日）。RedisにJTI単位で保存されます |
 | `GOOGLE_API_KEY` | Gemini用APIキー |
 | `TAVILY_API_KEY` | Tavily検索用APIキー |
-| `GEMINI_MODEL` | 既定 `gemini-2.5-flash` |
+| `GEMINI_MODEL` | 既定 `gemini-3.5-flash-lite`(`gemini-2.5-flash-lite`は新規利用不可のため移行済み、[`OPERATIONS.md`](./OPERATIONS.md)参照) |
 | `CHAT_RATE_LIMIT_PER_HOUR` | チャットメッセージ送信のレート制限（1時間あたり、既定 `20`）。超過時は429を返します |
 | `CHAT_RATE_LIMIT_PER_DAY` | チャットメッセージ送信のレート制限（1日あたり、既定 `100`） |
 | `LOGIN_RATE_LIMIT_PER_IP_PER_HOUR` | ログインのレート制限（IPあたり・1時間、既定 `30`）。総当たり対策 |
@@ -151,6 +151,8 @@ uv run ruff format .     # Format
 
 ## 本番環境
 
+実際にConoHa VPS等へデプロイする際の手順（TLS証明書の取得・CORS設定・バックアップ・ロールバック・Vercel側のdevex-uiデプロイ含む）は [`OPERATIONS.md`](./OPERATIONS.md) を参照してください。以下はローカルでの本番相当環境の起動のみを示します。
+
 ```bash
 cp .env.example .env     # 本番用の値（強固なパスワード・シークレット）を設定
 docker compose -f docker-compose.prod.yml up -d --build
@@ -164,10 +166,11 @@ docker compose -f docker-compose.prod.yml exec backend uv run alembic upgrade he
 - PostgreSQL/RedisはDocker内部ネットワークのみに限定し、ポートを公開しない
 - PostgreSQLデータは名前付きVolumeで永続化
 - `ENVIRONMENT=production`が設定されるため、Swagger UI・ReDoc・OpenAPIスキーマは自動的に非公開になります
-- Nginxは`nginx/nginx.prod.conf`（80→443へのリダイレクト + TLS終端 + certbotの`/.well-known/acme-challenge/`対応）を使用します。有効化するには`nginx/certs/`に`fullchain.pem`・`privkey.pem`を配置してください（証明書自体の発行・更新（certbotの実行）は本テンプレートには含まれていないため、別途用意する必要があります）
+- backend/Dockerfileの`HEALTHCHECK`を使い、`backend`→`nginx`の起動順を`condition: service_healthy`で制御します
+- Nginxは`nginx/nginx.prod.conf`（80→443へのリダイレクト + TLS終端 + certbotの`/.well-known/acme-challenge/`対応）を使用します。有効化するには`nginx/certs/`に`fullchain.pem`・`privkey.pem`を配置してください。証明書自体の発行・更新は`certbot`サービス（`profiles: ["certbot"]`、通常の`up`では起動しません）で行います。手順は[`OPERATIONS.md`](./OPERATIONS.md)「TLS証明書の取得・更新」参照
 
 ## 未実装・今後対応が必要な事項
 
 - 認証API（登録・ログイン・リフレッシュ・ログアウト）の基盤は実装済みですが、パスワードリセットやメール確認などの拡張は未実装です
 - LangGraphのワークフローは検索要否判定が簡易的なダミー実装です。実運用では`draft_response`内の判定ロジックを強化してください
-- 本番用HTTPS証明書の発行・自動更新（certbotの実行）は自動化されておらず、別途スクリプトやCronの用意が必要です
+- 本番用HTTPS証明書の更新は`certbot`サービス＋cron/systemd timerによる手動運用（[`OPERATIONS.md`](./OPERATIONS.md)参照）であり、完全自動化（renewal hookでのnginx reload連携等）はしていません

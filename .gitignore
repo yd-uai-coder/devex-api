@@ -35,3 +35,6 @@ uv-cache/
 
 # Docker
 docker-compose.override.yml
+
+# TLS証明書(ローカル検証用の自己署名証明書・本番certbot発行分とも、コミットしない)
+nginx/certs/

@@ -42,12 +42,18 @@ class Settings(BaseSettings):
     # AI
     GOOGLE_API_KEY: str | None = None
     TAVILY_API_KEY: str | None = None
-    GEMINI_MODEL: str = "gemini-2.5-flash"
+    # Phase 5-2の実API検証で判明: gemini-2.5-flash-liteは新規利用不可(404 NOT_FOUND、
+    # APIエラーメッセージが後継としてgemini-3.5-flash-liteを案内)。
+    GEMINI_MODEL: str = "gemini-3.5-flash-lite"
 
     # LLM呼び出しの最大待機秒数(langchain-google-genaiのChatGoogleGenerativeAI
     # が受け取るtimeout秒。
     # 既定はNone=無制限で、応答がハングした場合クライアントへ何も返せないまま無限に待ち続ける恐れがある。
-    LLM_TIMEOUT_SECONDS: float = 60.0
+    # 30.0は暫定値ではなく実測値: Phase 5-2で実GOOGLE_API_KEY・実GEMINI_MODELに対して
+    # 800字/3000字/6000字相当の出力を要求する3パターンを実行したところ、
+    # 最大(約4750字出力)でも11.25秒だった(2.96秒/7.28秒/11.25秒)。実測最大値の
+    # 約2.7倍のマージンを見て30秒とする(旧暫定値60秒は実測に基づかない値だった)。
+    LLM_TIMEOUT_SECONDS: float = 30.0
 
     # trueの場合、get_gemini_llm()は実際のGemini APIを呼ばず、
     # app/ai/llm/fake.pyの決定論的なE2eFakeLLMを返す

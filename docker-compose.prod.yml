@@ -46,6 +46,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=2).status == 200 else 1)"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
     networks:
       - internal
 
@@ -61,7 +67,20 @@ services:
       - ./nginx/certs:/etc/nginx/certs:ro
       - certbot_webroot:/var/www/certbot:ro
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    networks:
+      - internal
+
+  # 証明書の初回取得・更新専用のワンショットサービス。
+  # `docker compose -f docker-compose.prod.yml up`では起動しない(profilesで明示的に除外)。
+  # 実行方法は devex-api/OPERATIONS.md「TLS証明書の取得・更新」節を参照。
+  certbot:
+    image: certbot/certbot:latest
+    profiles: ["certbot"]
+    volumes:
+      - certbot_webroot:/var/www/certbot
+      - certbot_conf:/etc/letsencrypt
     networks:
       - internal
 
@@ -69,6 +88,7 @@ volumes:
   postgres_data:
   redis_data:
   certbot_webroot:
+  certbot_conf:
 
 networks:
   internal:
