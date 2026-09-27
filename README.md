@@ -11,9 +11,6 @@
 
 設計判断の背景（なぜエラーを1箇所に集約しているか、なぜリポジトリ層は`flush`のみか等）は [`CLAUDE.md`](./CLAUDE.md) にまとめています。デプロイ・運用手順は [`OPERATIONS.md`](./OPERATIONS.md) を参照してください。
 
-### 本リポジトリの位置づけ(テンプレートとしての出自)
-
-本リポジトリは元々「FastAPI + LangChain + LangGraph」の汎用AIチャットバックエンドテンプレートとして作られており、JWT認証基盤・LangGraphによる`User → Gemini → Tavily → 検索結果評価 → Gemini → 最終回答`のワークフロー(`app/ai/graph/`)・`AppError`による統一エラーハンドリング・Redisベースのレート制限といった、Devex固有ではない汎用的な基盤も引き続き含んでいます。新しいAIチャットバックエンドを作る際のテンプレートとして、この基盤部分だけを流用することもできます。
 
 ## 技術スタック
 
@@ -21,7 +18,7 @@
 | --- | --- |
 | 言語 / ランタイム | Python 3.13 |
 | Web Framework | FastAPI, Uvicorn |
-| AI | LangChain, LangGraph, Gemini (`langchain-google-genai`), Tavily (`langchain-tavily`) |
+| AI | LangChain, LangGraph, Gemini (`langchain-google-genai`)|
 | DB | PostgreSQL, SQLAlchemy 2.x (async), Alembic |
 | Cache / State | Redis |
 | 認証 | PyJWT, pwdlib (Argon2) |
