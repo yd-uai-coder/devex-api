@@ -59,6 +59,7 @@ services:
     # 外部から到達する。このサービス自体はホストへポートを公開しない。
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=edge"
       - "traefik.http.routers.devex-api.rule=Host(`devex-api.uandi-tech.com`)"
       - "traefik.http.routers.devex-api.entrypoints=websecure"
       - "traefik.http.routers.devex-api.tls.certresolver=letsencrypt"
