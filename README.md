@@ -50,10 +50,9 @@ project-root/
 │   ├── tests/{unit,integration,fixtures}/
 │   ├── pyproject.toml / uv.lock
 │   └── Dockerfile
-├── nginx/nginx.conf                # 開発用（平文HTTP）
-├── nginx/nginx.prod.conf           # 本番用（HTTPSリダイレクト + TLS終端 + certbot対応）
+├── nginx/nginx.conf                # 開発用（平文HTTP、docker-compose.ymlのみで使用）
 ├── docker-compose.yml              # 開発環境
-├── docker-compose.prod.yml         # 本番環境
+├── docker-compose.prod.yml         # 本番環境(TLS終端はVPS共有のTraefikが担当。OPERATIONS.md参照)
 ├── .env.example                    # docker-compose用
 └── backend/.env.example            # ホスト上で直接起動する場合用
 ```
@@ -172,12 +171,12 @@ docker compose -f docker-compose.prod.yml exec backend uv run alembic upgrade he
 `docker-compose.prod.yml` では以下を行っています。
 
 - `--reload`を使用しない本番用Uvicorn起動
-- backendコンテナのポートをホストに公開せず、Nginxのみを外部公開の入口とする
+- backendコンテナは自身ではポートをホストに公開せず、VPS共有の**Traefik**（devex-apiのリポジトリ外、複数プロジェクトで共有するリバースプロキシ）経由でのみ外部到達可能にします（`edge`という外部Dockerネットワーク+Traefik用labelで実現。詳細は[`OPERATIONS.md`](./OPERATIONS.md)「全体構成」参照）
 - PostgreSQL/RedisはDocker内部ネットワークのみに限定し、ポートを公開しない
 - PostgreSQLデータは名前付きVolumeで永続化
 - `ENVIRONMENT=production`が設定されるため、Swagger UI・ReDoc・OpenAPIスキーマは自動的に非公開になります
-- backend/Dockerfileの`HEALTHCHECK`を使い、`backend`→`nginx`の起動順を`condition: service_healthy`で制御します
-- Nginxは`nginx/nginx.prod.conf`（80→443へのリダイレクト + TLS終端 + certbotの`/.well-known/acme-challenge/`対応）を使用します。有効化するには`nginx/certs/`に`fullchain.pem`・`privkey.pem`を配置してください。証明書自体の発行・更新は`certbot`サービス（`profiles: ["certbot"]`、通常の`up`では起動しません）で行います。手順は[`OPERATIONS.md`](./OPERATIONS.md)「TLS証明書の取得・更新」参照
+- backend/Dockerfileの`HEALTHCHECK`を使い、コンテナ単体でも`docker compose ps`から健全性を確認できます
+- TLS終端・HTTP→HTTPSリダイレクト・証明書の自動取得/更新はすべてTraefik側が担うため、devex-api自身はnginx/certbotを持ちません。手順は[`OPERATIONS.md`](./OPERATIONS.md)「4. 新規プロジェクトをTraefik配下に追加する手順」参照
 
 ## CI/CD
 
@@ -187,7 +186,6 @@ docker compose -f docker-compose.prod.yml exec backend uv run alembic upgrade he
 
 - 認証API（登録・ログイン・リフレッシュ・ログアウト）の基盤は実装済みですが、パスワードリセットやメール確認などの拡張は未実装です
 - LangGraphのワークフローは検索要否判定が簡易的なダミー実装です。実運用では`draft_response`内の判定ロジックを強化してください
-- 本番用HTTPS証明書の更新は`certbot`サービス＋cron/systemd timerによる手動運用（[`OPERATIONS.md`](./OPERATIONS.md)参照）であり、完全自動化（renewal hookでのnginx reload連携等）はしていません
 - `prompt_templates`テーブルはモデル・マイグレーションのみ存在し、repository/service/route/UIいずれも未実装のまま放置されています(プロンプトテンプレート選択機能を実装するか、テーブル自体を削除するかは未定)
 - テンプレート由来の汎用チャット機能(`conversations`/`messages`テーブル、`app/services/chat.py`、`POST /chat`)が、Devex本来のヒアリングチャット(`chat_histories`、`ChatService`)と並存したまま残っています
 - ドキュメント生成(`DocGeneratorService`)は`app/ai/graph/`のLangGraph `StateGraph`を使わず、手続き的な`llm.ainvoke()`の逐次呼び出しで実装されています。LangGraphワークフロー自体はDevexの実機能からは現状未使用です

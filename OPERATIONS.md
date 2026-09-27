@@ -6,24 +6,78 @@
 
 ## 全体構成
 
+VPS上には複数プロジェクトが同居する前提のため、ポート80/443は**共有のTraefik**(devex-apiのリポジトリに属さない、VPS共通のリバースプロキシ)のみが公開する。各プロジェクトの`backend`等はTraefikと同じDockerネットワーク(`edge`)経由でのみ到達し、自身ではポートを公開しない。
+
 ```
 [ ブラウザ ] → [ Vercel: devex-ui (Next.js) ]
                        │  NEXT_PUBLIC_API_URL 経由でAPIを叩く
                        ▼
               [ ConoHa VPS ]
-              ┌─────────────────────────────┐
-              │ nginx (80/443、TLS終端)        │
-              │  └─ backend (FastAPI, 8000)    │
-              │       ├─ postgres              │
-              │       └─ redis                 │
-              └─────────────────────────────┘
+              ┌───────────────────────────────────────────┐
+              │ Traefik (80/443、TLS終端+自動証明書、VPS共有)     │
+              │  ├─ devex-api: backend (FastAPI, 8000)         │
+              │  │    ├─ postgres                             │
+              │  │    └─ redis                                │
+              │  └─ (同居する他プロジェクト...)                     │
+              └───────────────────────────────────────────┘
 ```
+
+Traefikはdocker-composeの`nginx`+`certbot`をまとめて置き換える(TLS終端・HTTP→HTTPSリダイレクト・証明書の自動取得/更新をすべてTraefik側が担う)。devex-api自身は`docker-compose.prod.yml`にnginx/certbotサービスを持たない。
 
 ## 1. ConoHa VPS 初期セットアップ
 
 1. VPS に Docker Engine + Docker Compose plugin を導入する(ConoHaのOSテンプレートにDockerが同梱されていない場合、[Docker公式インストール手順](https://docs.docker.com/engine/install/)に従う)。
 2. ファイアウォール(ConoHaコントロールパネルの「セキュリティグループ」またはVPS内`ufw`)で `80`(証明書のHTTP-01チャレンジ・HTTPSへのリダイレクト用)と `443` のみを外部公開する。`5432`(postgres)・`6379`(redis)・`8000`(backend)は`docker-compose.prod.yml`側でも外部公開していないため、VPSのファイアウォールでも開けない。
-3. VPS上でリポジトリを配置する: `git clone <devex-apiのリモートURL> && cd devex-api`。
+3. **共有Traefikを導入する**(VPSに1つだけ。既に導入済みなら省略):
+
+   ```bash
+   sudo mkdir -p /opt/traefik/letsencrypt
+   sudo touch /opt/traefik/letsencrypt/acme.json
+   sudo chmod 600 /opt/traefik/letsencrypt/acme.json
+   ```
+
+   `/opt/traefik/docker-compose.yml`を以下の内容で作成する(`you@example.com`は実際の連絡先メールアドレスに置き換える。Let's Encryptからの証明書失効通知等に使われる):
+
+   ```yaml
+   services:
+     traefik:
+       image: traefik:v3.3
+       restart: unless-stopped
+       command:
+         - "--providers.docker=true"
+         - "--providers.docker.exposedbydefault=false"
+         - "--entrypoints.web.address=:80"
+         - "--entrypoints.websecure.address=:443"
+         - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+         - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+         - "--certificatesresolvers.letsencrypt.acme.httpchallenge=true"
+         - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+         - "--certificatesresolvers.letsencrypt.acme.email=you@example.com"
+         - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+       ports:
+         - "80:80"
+         - "443:443"
+       volumes:
+         - /var/run/docker.sock:/var/run/docker.sock:ro
+         - ./letsencrypt:/letsencrypt
+       networks:
+         - edge
+
+   networks:
+     edge:
+       name: edge
+   ```
+
+   `--providers.docker.exposedbydefault=false`により、`traefik.enable=true`labelを明示的に持つコンテナのみがルーティング対象になる(意図しないコンテナが誤って公開されるのを防ぐ)。`networks.edge.name: edge`で、compose のプロジェクト名に関わらずネットワーク名が確実に`edge`になるようにしている(各プロジェクト側の`external: true`参照と一致させるため)。
+
+   ```bash
+   cd /opt/traefik
+   docker compose up -d
+   docker compose ps   # traefikがUpになることを確認
+   ```
+
+   このTraefikはdevex-apiだけでなく、今後追加する他のプロジェクトとも共有する。新規プロジェクトの追加方法は4節「新規プロジェクトをTraefik配下に追加する手順」を参照(既に同居している別プロジェクトをこの構成へ移行する手順も同じ節にある)。
+4. VPS上でdevex-apiリポジトリを配置する: `git clone <devex-apiのリモートURL> && cd devex-api`。
 
 ## 2. 環境変数の管理方針
 
@@ -39,61 +93,59 @@
 ```bash
 cd devex-api
 # .env を用意済みであることを前提とする(上記2.参照)
+# edge ネットワーク(1節でTraefikが作成済み)が無いと backend の起動に失敗する点に注意
 docker compose -f docker-compose.prod.yml up -d --build
 docker compose -f docker-compose.prod.yml exec backend uv run alembic upgrade head
-docker compose -f docker-compose.prod.yml ps   # 4サービスすべて healthy になることを確認
-curl -k https://localhost/health              # 証明書取得前は自己署名/未設定でエラーになる点に注意(後述4を先に行う)
+docker compose -f docker-compose.prod.yml ps   # backend/postgres/redis が healthy になることを確認
+curl -sI https://your-domain.example.com/      # Traefikが自動取得した証明書でHTTPS応答することを確認
 ```
 
-初回は証明書がまだ無いため`nginx`の起動順序に注意する: `nginx.prod.conf`は`ssl_certificate`が`./nginx/certs/fullchain.pem`を参照するため、**このファイルが存在しないと`nginx`コンテナが起動に失敗する**。そのため実際の初回手順は次のいずれかを取る:
+TLS証明書の取得・更新はTraefik側が自動で行うため(4節参照)、devex-api側での証明書関連の作業は不要。
 
-- (推奨)先に一時的な自己署名証明書を`./nginx/certs/`に置いて`nginx`を起動できる状態にし、下記4節の手順で本物の証明書に差し替える。
-  ```bash
-  mkdir -p nginx/certs
-  openssl req -x509 -newkey rsa:2048 -nodes \
-    -keyout nginx/certs/privkey.pem -out nginx/certs/fullchain.pem \
-    -days 1 -subj "/CN=your-domain.example.com"
-  ```
-- または`nginx`だけ`up`から一時的に除外して`backend`/`postgres`/`redis`のみ先に起動し、証明書取得後に`nginx`を起動する。
+## 4. 新規プロジェクトをTraefik配下に追加する手順
 
-## 4. TLS証明書の取得・更新(Let's Encrypt / certbot)
+この節は**devex-apiに限らず、今後Traefik配下へ追加する全プロジェクトに共通して使える汎用手順**。devex-api自体もこの手順の最初の適用例であり、既に同居していた別プロジェクトをTraefik配下へ移行する際も同じ手順を使う。
 
-`docker-compose.prod.yml`の`certbot`サービスは`profiles: ["certbot"]`で通常の`up`時には起動しない、証明書取得・更新専用のワンショットサービス。
+### 手順(共通テンプレート)
 
-### 初回取得
+1. 対象プロジェクトの`docker-compose.prod.yml`(または相当のcompose定義)から、ポート公開(`ports: - "80:80"` / `"443:443"`等)を**削除する**。
+2. 該当サービスに、以下を追加する(`<router名>`はプロジェクトを識別する任意の名前、他プロジェクトと重複しないこと。`<ドメイン>`は対象プロジェクトのドメイン、`<ポート>`はコンテナ内でアプリが listen しているポート):
 
-```bash
-# 1. nginxがACMEチャレンジ(/.well-known/acme-challenge/)を捌ける状態で起動していること(上記3節)
-docker compose -f docker-compose.prod.yml --profile certbot run --rm certbot \
-  certonly --webroot -w /var/www/certbot \
-  -d your-domain.example.com \
-  --email you@example.com --agree-tos --no-eff-email
+   ```yaml
+   services:
+     app:  # 対象サービス名に読み替え
+       networks:
+         - edge          # 既存のネットワークに加えて追加
+       labels:
+         - "traefik.enable=true"
+         - "traefik.http.routers.<router名>.rule=Host(`<ドメイン>`)"
+         - "traefik.http.routers.<router名>.entrypoints=websecure"
+         - "traefik.http.routers.<router名>.tls.certresolver=letsencrypt"
+         - "traefik.http.services.<router名>.loadbalancer.server.port=<ポート>"
 
-# 2. certbotが発行した証明書は certbot_conf という名前付きボリューム内の
-#    /etc/letsencrypt/live/your-domain.example.com/ に格納される。
-#    nginx.prod.conf が参照する ./nginx/certs/ (フラットな2ファイル)へコピーする。
-docker run --rm \
-  -v devex-api_certbot_conf:/etc/letsencrypt:ro \
-  -v "$(pwd)/nginx/certs:/out" \
-  alpine sh -c "cp /etc/letsencrypt/live/your-domain.example.com/fullchain.pem /etc/letsencrypt/live/your-domain.example.com/privkey.pem /out/"
+   networks:
+     edge:
+       external: true
+   ```
 
-# 3. nginxに新しい証明書を読み込ませる
-docker compose -f docker-compose.prod.yml exec nginx nginx -s reload
-```
+3. 対象ドメインのDNS Aレコード(・AAAAレコード)がこのVPSのIPを指していることを確認する。
+4. 再起動する: `docker compose -f docker-compose.prod.yml up -d`(ポート公開を外したことで既存の`ports:`設定が変わるため、コンテナの再作成を伴う)。
+5. **動作確認(必須)**:
+   ```bash
+   docker compose -f docker-compose.prod.yml ps                 # 対象サービスがhealthy/upになっていることを確認
+   curl -sI https://<ドメイン>/                                    # 200等の正常な応答、TLS証明書が有効であることを確認
+   docker compose -f /opt/traefik/docker-compose.yml logs traefik --tail 50   # <ドメイン>宛のルーティング・証明書取得ログにエラーが無いことを確認
+   ```
 
-`devex-api_certbot_conf`の`devex-api_`プレフィックスはdocker composeのプロジェクト名(既定はディレクトリ名)。`docker volume ls`で実際の名前を確認できる。
+devex-apiの場合、`<router名>`は`devex-api`、`<ドメイン>`は実際のAPI用ドメイン、`<ポート>`は`8000`(`docker-compose.prod.yml`に反映済み)。
 
-### 更新(renewal)
+### 既に同居していた別プロジェクトの移行
 
-Let's Encryptの証明書は90日で失効するため、cron等で定期的に更新する。ConoHa VPS上の`crontab -e`に以下を追加する例(毎月1日 午前3時):
+このデプロイ作業中に判明した通り、本VPSには既に別プロジェクトが直接ポート80/443を公開して稼働していた。そのプロジェクトも上記の共通手順に沿ってTraefik配下へ移行する。手順4の再起動時に**該当プロジェクトの短時間の再起動(ダウンタイム)を伴う**点をあらかじめ利用者へ周知しておくこと。移行後は手順5の動作確認を必ず行い、旧ドメインでの応答・証明書が問題ないことを確認してから完了とする。
 
-```cron
-0 3 1 * * cd /path/to/devex-api && \
-  docker compose -f docker-compose.prod.yml --profile certbot run --rm certbot renew --webroot -w /var/www/certbot && \
-  docker run --rm -v devex-api_certbot_conf:/etc/letsencrypt:ro -v /path/to/devex-api/nginx/certs:/out alpine \
-    sh -c "cp /etc/letsencrypt/live/*/fullchain.pem /etc/letsencrypt/live/*/privkey.pem /out/" && \
-  docker compose -f docker-compose.prod.yml exec nginx nginx -s reload >> /var/log/devex-certbot-renew.log 2>&1
-```
+### 更新(renewal)について
+
+Traefikの`certresolver`(ACME)は証明書の自動更新を組み込みで行うため、certbotのようなcronによる手動更新設定は不要。`docker compose -f /opt/traefik/docker-compose.yml logs traefik`で更新ログを確認できる。
 
 ## 5. バックアップ(PostgreSQL)
 
@@ -118,9 +170,10 @@ find . -name 'backup_*.sql' -mtime +7 -delete
 エンタープライズ級の監視基盤は導入せず、以下で足りるとする:
 
 ```bash
-docker compose -f docker-compose.prod.yml ps        # 4サービスの STATUS/HEALTH 列を確認
-curl -s https://your-domain.example.com/health       # {"status":"ok","database":"ok","redis":"ok"} を期待
+docker compose -f docker-compose.prod.yml ps        # backend/postgres/redis の STATUS/HEALTH 列を確認
+curl -s https://your-domain.example.com/health       # {"status":"ok","database":"ok","redis":"ok"} を期待(Traefik経由)
 docker compose -f docker-compose.prod.yml logs -f backend   # アプリログの確認
+docker compose -f /opt/traefik/docker-compose.yml logs -f traefik   # リバースプロキシ側のログ確認
 ```
 
 `backend`は`backend/Dockerfile`にHEALTHCHECK命令を組み込み済みのため、コンテナ単体でも`docker compose ps`のSTATUS列に`(healthy)`/`(unhealthy)`が表示される(Phase 5-1で追加)。
@@ -147,7 +200,7 @@ docker compose -f docker-compose.prod.yml logs -f backend   # アプリログの
 
 ### `devex-api`: 自動デプロイの前提
 
-このワークフローは**2回目以降の更新反映を自動化するもの**であり、初回セットアップ(1〜4節)自体は自動化しない。導入前提として、VPS上で以下が完了していること:
+このワークフローは**2回目以降の更新反映を自動化するもの**であり、初回セットアップ(1〜3節)自体は自動化しない。導入前提として、VPS上で以下が完了していること:
 
 - リポジトリが`git clone`済みで、`.env`が配置済み(2節)
 - 初回手動デプロイ(3節)が完了し、`docker compose -f docker-compose.prod.yml`のスタックが動作していること

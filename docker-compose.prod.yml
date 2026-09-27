@@ -54,41 +54,23 @@ services:
       retries: 3
     networks:
       - internal
-
-  nginx:
-    image: nginx:1.27-alpine
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      # 本番用は nginx.prod.conf（HTTPSリダイレクト＋TLS終端）を使う
-      - ./nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/certs:/etc/nginx/certs:ro
-      - certbot_webroot:/var/www/certbot:ro
-    depends_on:
-      backend:
-        condition: service_healthy
-    networks:
-      - internal
-
-  # 証明書の初回取得・更新専用のワンショットサービス。
-  # `docker compose -f docker-compose.prod.yml up`では起動しない(profilesで明示的に除外)。
-  # 実行方法は devex-api/OPERATIONS.md「TLS証明書の取得・更新」節を参照。
-  certbot:
-    image: certbot/certbot:latest
-    profiles: ["certbot"]
-    volumes:
-      - certbot_webroot:/var/www/certbot
-      - certbot_conf:/etc/letsencrypt
-    networks:
-      - internal
+      - edge
+    # VPS共有のTraefik(devex-apiリポジトリ外、OPERATIONS.md「共有Traefikの導入」参照)経由でのみ
+    # 外部から到達する。このサービス自体はホストへポートを公開しない。
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.devex-api.rule=Host(`devex-api.uandi-tech.com`)"
+      - "traefik.http.routers.devex-api.entrypoints=websecure"
+      - "traefik.http.routers.devex-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.devex-api.loadbalancer.server.port=8000"
 
 volumes:
   postgres_data:
   redis_data:
-  certbot_webroot:
-  certbot_conf:
 
 networks:
   internal:
+  # Traefik側のcompose(VPS共有、devex-apiリポジトリ外)が作成する外部ネットワーク。
+  # `docker network create edge`済みであること、またはTraefik側composeで作成済みであることが前提。
+  edge:
+    external: true
