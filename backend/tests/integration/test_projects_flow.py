@@ -1,10 +1,10 @@
 import pytest
 from httpx import AsyncClient
+from tests.fixtures.fake_llm import FakeLLM
 
 from app.schemas.generation import HearingCompletionCheck
 from app.services import chat_service as chat_service_module
 from app.services import doc_generator_service as doc_generator_service_module
-from tests.fixtures.fake_llm import FakeLLM
 
 pytestmark = pytest.mark.integration
 
@@ -59,7 +59,10 @@ async def test_full_projects_flow_create_chat_generate_download(
     create_response = await client.post(
         "/api/v1/projects",
         headers=headers,
-        data={"system_overview": "在庫管理システム", "goals_raw": "在庫をリアルタイムに可視化したい"},
+        data={
+            "system_overview": "在庫管理システム",
+            "goals_raw": "在庫をリアルタイムに可視化したい",
+        },
         files=[],  # multipart/form-dataを強制する(filesパラメータ自体はFastAPI側のFile()に必須)
     )
     assert create_response.status_code == 201
@@ -99,7 +102,12 @@ async def test_full_projects_flow_create_chat_generate_download(
     assert documents_response.status_code == 200
     documents = documents_response.json()
     doc_types = {d["doc_type"] for d in documents}
-    assert doc_types == {"requirements", "external_design", "internal_design", "implementation_plan"}
+    assert doc_types == {
+        "requirements",
+        "external_design",
+        "internal_design",
+        "implementation_plan",
+    }
 
     project_response = await client.get(f"/api/v1/projects/{project_id}", headers=headers)
     assert project_response.json()["status"] == "completed"
@@ -137,7 +145,9 @@ async def test_revising_status_after_message_on_completed_project(
     assert project_response.json()["status"] == "completed"
 
     await client.post(
-        f"/api/v1/projects/{project_id}/chat", headers=headers, json={"message": "追加の要望があります"}
+        f"/api/v1/projects/{project_id}/chat",
+        headers=headers,
+        json={"message": "追加の要望があります"},
     )
     project_response = await client.get(f"/api/v1/projects/{project_id}", headers=headers)
     assert project_response.json()["status"] == "revising"

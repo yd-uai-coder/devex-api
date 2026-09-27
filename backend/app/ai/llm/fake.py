@@ -69,14 +69,16 @@ class _FakeStructuredE2e:
             # 末尾の1件は常にchat_service.check_completionが追記する
             # _COMPLETION_CHECK_PROMPT自身のHumanMessageであり、実際の対話ターンではないため
             # 対象外にする。残りのHumanMessageは「初期ヒアリング入力(intake)1件+実際の
-            # チャット発話N件」なので、_TURNS_UNTIL_SUFFICIENT=3は「intake+チャット2往復」を意味する。
+            # チャット発話N件」なので、_TURNS_UNTIL_SUFFICIENT=3は
+            # 「intake+チャット2往復」を意味する。
             conversation_messages = messages[:-1]
             user_turns = sum(1 for m in conversation_messages if isinstance(m, HumanMessage))
             sufficient = user_turns >= _TURNS_UNTIL_SUFFICIENT
             return HearingCompletionCheck(
                 is_sufficient=sufficient,
                 summary=(
-                    "[E2E Fake] ここまでのヒアリング内容を要約しました。この内容で設計書を生成します。"
+                    "[E2E Fake] ここまでのヒアリング内容を要約しました。"
+                    "この内容で設計書を生成します。"
                     if sufficient
                     else "[E2E Fake] まだ確認したい点があります。"
                 ),

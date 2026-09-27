@@ -95,7 +95,10 @@ class ChatService:
         単発呼び出し(ストリーミングではない)のため、一時的な失敗はinvoke_with_retryでリトライする
         (docs/implementation_plan.md 4.4節リスク1)。"""
         history = await self._chat_histories.list_for_project(project.id)
-        messages = [*_build_messages(history, project), HumanMessage(content=_COMPLETION_CHECK_PROMPT)]
+        messages = [
+            *_build_messages(history, project),
+            HumanMessage(content=_COMPLETION_CHECK_PROMPT),
+        ]
 
         llm = llm or get_gemini_llm()
         structured_llm = llm.with_structured_output(HearingCompletionCheck)

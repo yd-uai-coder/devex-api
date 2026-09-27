@@ -48,7 +48,9 @@ async def test_pdf_uses_llm_native_file_understanding() -> None:
 async def test_pdf_extracts_text_from_thought_signature_content() -> None:
     """Geminiがthought signature付きの応答(contentが辞書のリスト)を返しても、
     text以外のメタデータ(extras/signature)を含めずプレーンテキストとして抽出されることを確認する。"""
-    fake_llm = FakeLLM(content=[{"type": "text", "text": "抽出されたテキスト", "extras": {"signature": "sig"}}])
+    fake_llm = FakeLLM(
+        content=[{"type": "text", "text": "抽出されたテキスト", "extras": {"signature": "sig"}}]
+    )
 
     text, error = await processor.extract_text(file_type="pdf", data=b"%PDF-1.4 ...", llm=fake_llm)
 
@@ -61,7 +63,9 @@ async def test_pdf_llm_failure_is_reported_as_error() -> None:
         async def ainvoke(self, _messages: list, /) -> AIMessage:
             raise RuntimeError("quota exceeded")
 
-    text, error = await processor.extract_text(file_type="pdf", data=b"%PDF-1.4 ...", llm=_RaisingLLM())
+    text, error = await processor.extract_text(
+        file_type="pdf", data=b"%PDF-1.4 ...", llm=_RaisingLLM()
+    )
 
     assert text is None
     assert error == "quota exceeded"

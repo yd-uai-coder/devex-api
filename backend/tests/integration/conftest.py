@@ -20,8 +20,8 @@ async def client() -> AsyncGenerator[AsyncClient]:
     必ず`docker-compose.test.yml`で`DATABASE_URL`をテスト専用DBへ差し替えて実行すること
     （`devex-api/CLAUDE.md`「テストの分離」節参照）:
 
-        docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --no-deps backend \\
-          uv run pytest -m integration tests/integration
+        docker compose -f docker-compose.yml -f docker-compose.test.yml \\
+          run --rm --no-deps backend uv run pytest -m integration tests/integration
     """
     async with engine.begin() as conn:
         # テスト用DBに毎回まっさらな状態でテーブルを作り直す

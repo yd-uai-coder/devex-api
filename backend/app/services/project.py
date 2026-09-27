@@ -48,7 +48,9 @@ class ProjectService:
         project = await self._projects.create(user_id=user_id, title=title, intake=intake)
         filenames = [file.filename for file in files]
         await self._chat_histories.add(
-            project_id=project.id, sender="intake", message=_format_intake_summary(intake, filenames)
+            project_id=project.id,
+            sender="intake",
+            message=_format_intake_summary(intake, filenames),
         )
 
         for file in files:

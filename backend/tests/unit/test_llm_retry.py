@@ -55,7 +55,8 @@ async def test_raises_generation_failed_after_exhausting_attempts() -> None:
 
 async def test_fails_fast_on_quota_error_without_retrying(monkeypatch: pytest.MonkeyPatch) -> None:
     # _is_quota_errorの判定基準(google.genai.errors.APIErrorの構築)自体はapp/services/chat.pyの
-    # 既存実装と同一のため、ここではその判定結果(True)に対するinvoke_with_retryの振る舞いを検証する。
+    # 既存実装と同一のため、ここではその判定結果(True)に対するinvoke_with_retryの
+    # 振る舞いを検証する。
     monkeypatch.setattr(llm_retry, "_is_quota_error", lambda _exc: True)
     calls = {"n": 0}
 

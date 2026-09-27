@@ -110,7 +110,7 @@ find . -name 'backup_*.sql' -mtime +7 -delete
 
 ## 6. ロールバック手順
 
-- アプリケーションコード: 前のgitタグ/コミットに`git checkout`し、`docker compose -f docker-compose.prod.yml up -d --build`で再ビルド・再起動する。
+- アプリケーションコード: **9節の自動デプロイ導入後は、`main`ブランチを問題のコミットの直前まで`git revert`してpushするのが基本**(自動デプロイパイプラインがそのまま最新状態としてVPSへ反映する)。緊急時は前のgitタグ/コミットへVPS上で直接`git checkout`し、`docker compose -f docker-compose.prod.yml up -d --build`で再ビルド・再起動する手動手順も引き続き使える。
 - DBマイグレーション: `alembic downgrade <直前のrevision>`。ダウングレードで対応できない破壊的変更(カラム削除等)を含むマイグレーションは、ロールバック前に上記5節のバックアップから復元することを優先する。
 
 ## 7. 監視の最低限
@@ -131,3 +131,37 @@ docker compose -f docker-compose.prod.yml logs -f backend   # アプリログの
 2. プロジェクトの環境変数に `NEXT_PUBLIC_API_URL` を設定する(値: ConoHa VPS側のAPIの公開URL、例 `https://your-domain.example.com`)。
 3. デプロイ後、Vercelが割り当てたURL(または設定したカスタムドメイン)を、devex-api側の`.env`の`CORS_ORIGINS`に追加し、`docker compose -f docker-compose.prod.yml up -d`でbackendを再起動して反映する。
 4. 動作確認: Vercelのデプロイ済みURLからログイン→プロジェクト作成→チャットヒアリング→ドキュメント生成の一連が通ることを確認する。
+
+以降、`main`ブランチへのpushでVercelが自動的に再デプロイする(Gitリポジトリ接続時点で有効になる標準機能。追加設定不要)。
+
+## 9. GitHub Actionsによる自動デプロイ
+
+`devex-api`・`devex-ui`それぞれのリポジトリに、push/PR時のCI(lint・test)を実行するGitHub Actionsワークフローがある。デプロイの自動化は**片方のみ**自前で組んでいる:
+
+| リポジトリ | ワークフロー | CI(lint/test) | デプロイ |
+| :--- | :--- | :--- | :--- |
+| `devex-api` | `.github/workflows/deploy.yml` | あり(`ruff check` + `pytest -m "not integration"`) | **あり**: CI成功後、`main`へのpush時にConoHa VPSへSSHデプロイ |
+| `devex-ui` | `.github/workflows/ci.yml` | あり(`lint` + `test` + `build`) | なし(上記8節のVercelネイティブ連携に委ねる) |
+
+`devex-ui`はVercelのGitHub連携が既にデプロイを担うため、Actions側に重ねてデプロイジョブを追加していない(Vercel連携を無効化して`vercel` CLI + トークンでActions駆動デプロイに切り替えることも可能だが、個人開発規模でその複雑さに見合うメリットが無いため見送った)。
+
+### `devex-api`: 自動デプロイの前提
+
+このワークフローは**2回目以降の更新反映を自動化するもの**であり、初回セットアップ(1〜4節)自体は自動化しない。導入前提として、VPS上で以下が完了していること:
+
+- リポジトリが`git clone`済みで、`.env`が配置済み(2節)
+- 初回手動デプロイ(3節)が完了し、`docker compose -f docker-compose.prod.yml`のスタックが動作していること
+- SSHでVPSへ接続可能なキーペアが用意されていること(ワークフロー専用の鍵を新規作成することを推奨。既存の個人ログイン用鍵の使い回しは避ける)
+
+### 必要なGitHub Secrets(`devex-api`リポジトリ)
+
+GitHubリポジトリの Settings → Secrets and variables → Actions → New repository secret から、以下を登録する。
+
+| Secret名 | 値 |
+| :--- | :--- |
+| `VPS_HOST` | ConoHa VPSのIPアドレスまたはホスト名 |
+| `VPS_USER` | SSHログインユーザー名 |
+| `VPS_SSH_KEY` | 上記ユーザーで`git pull`・`docker compose`が実行できる秘密鍵(PEM形式)の中身。対応する公開鍵をVPSの`~/.ssh/authorized_keys`に登録しておく |
+| `VPS_DEVEX_API_PATH` | VPS上で`devex-api`リポジトリをcloneした絶対パス(例: `/home/deploy/devex-api`) |
+
+設定後は、`main`ブランチへのpush(マージ含む)のたびに、lint・testが通れば自動的にVPSへ`git pull`+コンテナ再ビルド+マイグレーション適用が行われる。手動デプロイ(3節)は初回セットアップ時、または自動デプロイが使えない状況(SSH鍵の再発行中等)の代替手段として引き続き使える。

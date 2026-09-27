@@ -33,7 +33,9 @@ async def test_create_persists_intake_as_chat_history(db_session: AsyncSession) 
     history = await ChatHistoryRepository(db_session).list_for_project(project.id)
     assert len(history) == 1
     assert history[0].sender == "intake"
-    assert history[0].message == "システム概要：備品予約を一元管理したい\n実現したい事：重複を防ぎたい"
+    assert (
+        history[0].message == "システム概要：備品予約を一元管理したい\n実現したい事：重複を防ぎたい"
+    )
 
 
 def test_format_intake_summary_omits_environment_and_null_notes() -> None:
@@ -93,7 +95,8 @@ async def test_create_ingests_txt_file_and_appends_chat_history(db_session: Asyn
 
     history = await ChatHistoryRepository(db_session).list_for_project(project.id)
     # ファイル名はintake要約行(表示対象)に、抽出テキストはsender='attachment'行
-    # (チャット画面には表示しないが、ヒアリング・ドキュメント生成のLLMコンテキストには使う)に分かれる
+    # (チャット画面には表示しないが、ヒアリング・ドキュメント生成のLLMコンテキストには使う)
+    # に分かれる
     assert [h.sender for h in history] == ["intake", "attachment"]
     assert "memo.txt" in history[0].message
     assert "既存Excel管理からの移行" in history[1].message

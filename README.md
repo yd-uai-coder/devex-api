@@ -1,8 +1,19 @@
-# FastAPI + LangChain + LangGraph Template
+# devex-api
 
-FastAPI・LangChain・LangGraph・PostgreSQL・Redisを組み合わせた、AIチャットバックエンドの開発テンプレートです。JWT認証基盤とLangGraphによる`User → Gemini → Tavily → 検索結果評価 → Gemini → 最終回答`のワークフローに加え、`AppError`による統一エラーハンドリングとRedisベースのレート制限を備えています。
+[Devex](../README.md)(AIとの対話でヒアリングを行い、要件定義書・外部設計書・内部設計書・実装計画書の4種Markdownドキュメントを自動生成するシステム)のバックエンドです。FastAPI + LangChain + PostgreSQL + Redisで構築しています。
 
-設計判断の背景（なぜエラーを1箇所に集約しているか、なぜリポジトリ層は`flush`のみか等）は [`CLAUDE.md`](./CLAUDE.md) にまとめています。
+## Devexとしての主な機能
+
+- **認証**(`app/api/routes/auth.py`) — JWT(アクセストークン+リフレッシュトークン)によるユーザー登録・ログイン・トークン更新
+- **プロジェクト管理**(`app/api/routes/projects.py`、`projects`テーブル) — プロジェクトの作成(ヒアリング用の初期情報入力+任意の資料添付、`intake_files`テーブル)・一覧・詳細取得
+- **チャットヒアリング**(`chat_histories`テーブル) — プロジェクトごとにAI(Gemini)と対話形式でヒアリングを行い、SSEで応答をストリーミングする(`ChatService`、`app/services/chat_service.py`)
+- **ドキュメント生成**(`generated_documents`テーブル) — ヒアリング内容から4種のドキュメントを順に生成する(`DocGeneratorService`、`app/services/doc_generator_service.py`)。文書ごとにバージョン管理(直近3件保持)し、Markdown形式でダウンロード可能
+
+設計判断の背景（なぜエラーを1箇所に集約しているか、なぜリポジトリ層は`flush`のみか等）は [`CLAUDE.md`](./CLAUDE.md) にまとめています。デプロイ・運用手順は [`OPERATIONS.md`](./OPERATIONS.md) を参照してください。
+
+### 本リポジトリの位置づけ(テンプレートとしての出自)
+
+本リポジトリは元々「FastAPI + LangChain + LangGraph」の汎用AIチャットバックエンドテンプレートとして作られており、JWT認証基盤・LangGraphによる`User → Gemini → Tavily → 検索結果評価 → Gemini → 最終回答`のワークフロー(`app/ai/graph/`)・`AppError`による統一エラーハンドリング・Redisベースのレート制限といった、Devex固有ではない汎用的な基盤も引き続き含んでいます。新しいAIチャットバックエンドを作る際のテンプレートとして、この基盤部分だけを流用することもできます。
 
 ## 技術スタック
 
@@ -25,6 +36,8 @@ FastAPI・LangChain・LangGraph・PostgreSQL・Redisを組み合わせた、AI�
 ```text
 project-root/
 ├── CLAUDE.md                       # アーキテクチャ全体像・設計判断の記録
+├── OPERATIONS.md                   # デプロイ・運用手順(ConoHa VPS + Vercel)
+├── .github/workflows/deploy.yml    # CI(lint/test) + CD(mainへのpush時にVPSへ自動デプロイ)
 ├── backend/
 │   ├── app/
 │   │   ├── main.py                # FastAPIエントリーポイント
@@ -169,8 +182,15 @@ docker compose -f docker-compose.prod.yml exec backend uv run alembic upgrade he
 - backend/Dockerfileの`HEALTHCHECK`を使い、`backend`→`nginx`の起動順を`condition: service_healthy`で制御します
 - Nginxは`nginx/nginx.prod.conf`（80→443へのリダイレクト + TLS終端 + certbotの`/.well-known/acme-challenge/`対応）を使用します。有効化するには`nginx/certs/`に`fullchain.pem`・`privkey.pem`を配置してください。証明書自体の発行・更新は`certbot`サービス（`profiles: ["certbot"]`、通常の`up`では起動しません）で行います。手順は[`OPERATIONS.md`](./OPERATIONS.md)「TLS証明書の取得・更新」参照
 
+## CI/CD
+
+`.github/workflows/deploy.yml`が、push/PR時のlint・unit test実行と、`main`ブランチへのpush時のConoHa VPSへの自動デプロイ(SSH経由で`git pull`+コンテナ再ビルド)を行います。必要なGitHub Secretsの設定手順は[`OPERATIONS.md`](./OPERATIONS.md)「GitHub Actionsによる自動デプロイ」参照。
+
 ## 未実装・今後対応が必要な事項
 
 - 認証API（登録・ログイン・リフレッシュ・ログアウト）の基盤は実装済みですが、パスワードリセットやメール確認などの拡張は未実装です
 - LangGraphのワークフローは検索要否判定が簡易的なダミー実装です。実運用では`draft_response`内の判定ロジックを強化してください
 - 本番用HTTPS証明書の更新は`certbot`サービス＋cron/systemd timerによる手動運用（[`OPERATIONS.md`](./OPERATIONS.md)参照）であり、完全自動化（renewal hookでのnginx reload連携等）はしていません
+- `prompt_templates`テーブルはモデル・マイグレーションのみ存在し、repository/service/route/UIいずれも未実装のまま放置されています(プロンプトテンプレート選択機能を実装するか、テーブル自体を削除するかは未定)
+- テンプレート由来の汎用チャット機能(`conversations`/`messages`テーブル、`app/services/chat.py`、`POST /chat`)が、Devex本来のヒアリングチャット(`chat_histories`、`ChatService`)と並存したまま残っています
+- ドキュメント生成(`DocGeneratorService`)は`app/ai/graph/`のLangGraph `StateGraph`を使わず、手続き的な`llm.ainvoke()`の逐次呼び出しで実装されています。LangGraphワークフロー自体はDevexの実機能からは現状未使用です

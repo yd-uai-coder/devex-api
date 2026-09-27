@@ -9,7 +9,7 @@ from app.core.config import settings
 @lru_cache
 def get_gemini_llm(*, temperature: float = 0.7) -> ChatGoogleGenerativeAI:
     """設定値から構築したChatGoogleGenerativeAIクライアントを、温度パラメータ単位でキャッシュして返す。
-    
+
     `settings.E2E_FAKE_LLM`が有効な場合は実際のGemini APIを呼ばず、決定論的な
     `E2eFakeLLM`(app/ai/llm/fake.py)を返す(Phase 4-3: ブラウザE2Eテストを無料・
     決定論的に実行するため。本番では起動時にこのフラグ自体が拒否される、

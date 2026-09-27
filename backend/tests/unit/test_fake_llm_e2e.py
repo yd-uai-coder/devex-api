@@ -43,7 +43,8 @@ async def test_each_doc_type_prompt_produces_its_own_distinct_reply() -> None:
     for doc_type, prompt in _DOC_TYPE_PROMPTS.items():
         messages = [SystemMessage(content=prompt), HumanMessage(content="dummy input")]
         result = await llm.ainvoke(messages)
-        assert isinstance(result.content, str)  # E2eFakeLLMは常にstrを返す(型注釈上の保証は無いため明示)
+        # E2eFakeLLMは常にstrを返す(型注釈上の保証は無いため明示)
+        assert isinstance(result.content, str)
         replies[doc_type] = result.content
 
     assert len(set(replies.values())) == 4  # 4種類とも異なる内容であること
@@ -64,7 +65,9 @@ async def test_self_diagnosis_prompt_produces_diagnosis_reply() -> None:
 
 async def test_hearing_reply_is_returned_for_ordinary_chat_turn() -> None:
     llm = E2eFakeLLM()
-    messages = [SystemMessage(content="あなたはシステム開発の要件定義を支援するAIアシスタントです。")]
+    messages = [
+        SystemMessage(content="あなたはシステム開発の要件定義を支援するAIアシスタントです。")
+    ]
 
     result = await llm.ainvoke(messages)
 
@@ -73,7 +76,9 @@ async def test_hearing_reply_is_returned_for_ordinary_chat_turn() -> None:
 
 async def test_astream_yields_a_single_chunk_with_the_same_reply() -> None:
     llm = E2eFakeLLM()
-    messages = [SystemMessage(content="あなたはシステム開発の要件定義を支援するAIアシスタントです。")]
+    messages = [
+        SystemMessage(content="あなたはシステム開発の要件定義を支援するAIアシスタントです。")
+    ]
 
     chunks = [chunk.content async for chunk in llm.astream(messages)]
 

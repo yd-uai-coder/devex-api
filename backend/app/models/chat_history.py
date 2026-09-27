@@ -27,7 +27,8 @@ class ChatHistory(Base):
         Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
     )
 
-    # 送信者タイプ ('user' / 'ai' / 'intake': 初期ヒアリング入力の記録 / 'others': ドキュメント自己診断結果の記録)
+    # 送信者タイプ ('user' / 'ai' / 'intake': 初期ヒアリング入力の記録 /
+    # 'others': ドキュメント自己診断結果の記録)
     sender: Mapped[str] = mapped_column(String(20), nullable=False)
 
     #メッセージ本文

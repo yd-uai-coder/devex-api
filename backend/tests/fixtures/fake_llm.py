@@ -12,6 +12,7 @@ from typing import Any
 from langchain_core.messages import AIMessage
 from pydantic import BaseModel
 
+
 class _FakeChunk:
     """`astream()`が返すストリーミングチャンクを模した最小オブジェクト(`.content`のみ持つ)。
 
@@ -36,7 +37,8 @@ class FakeLLM:
         # content: invoke()が返すAIMessageの本文(固定1件)
         # structured: with_structured_output().invoke()が返す構造化レスポンス(固定1件)
         # structured_sequence: 呼び出しごとに1つずつ消費する構造化レスポンス/例外の列
-        # stream_chunks: astream()が順にyieldする本文断片の列(未指定ならcontentを1チャンクとして返す。)
+        # stream_chunks: astream()が順にyieldする本文断片の列
+        # (未指定ならcontentを1チャンクとして返す。)
         self._content = content
         self._content_sequence = content_sequence
         self._structured = structured
@@ -63,7 +65,7 @@ class FakeLLM:
         chunks = self._stream_chunks if self._stream_chunks is not None else [self._content or ""]
         for piece in chunks:
             yield _FakeChunk(piece)
-            
+
     def with_structured_output(self, schema: type[BaseModel]) -> _FakeStructuredLLM:
         """構造化出力用のサブクライアントを返す。呼ばれた schema を記録する。"""
         self.structured_output_calls.append(schema)

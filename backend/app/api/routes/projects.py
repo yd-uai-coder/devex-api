@@ -1,10 +1,11 @@
+import contextlib
 import json
 import uuid
 from typing import Annotated
 from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, UploadFile, status
-from fastapi.responses import  Response, StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from app.api.deps import CurrentProjectDep, CurrentUserDep, SessionDep
 from app.core.errors import BadRequestError
@@ -47,9 +48,11 @@ async def create_project(
     goals_raw: Annotated[str, Form()],
     notes_raw: Annotated[str | None, Form()] = None,
     environment: Annotated[str | None, Form()] = None,
-    files: Annotated[list[UploadFile], File()] = [],
+    files: Annotated[list[UploadFile] | None, File()] = None,
 ) -> ProjectRead:
     """初期ヒアリング入力(+添付ファイル最大3件、txt/md/pdfのみ)を受け取り、新規プロジェクトを作成する。"""
+    if files is None:
+        files = []
     intake: dict = {
         "system_overview": system_overview,
         "goals_raw": goals_raw,
@@ -62,12 +65,10 @@ async def create_project(
     project = await ProjectService(session).create(
         user_id=current_user.id, intake=intake, files=file_inputs
     )
-    try:
-        await ChatService(session).generate_opening_reply(project)
-    except (LLMQuotaExceededError, GenerationFailedError):
+    with contextlib.suppress(LLMQuotaExceededError, GenerationFailedError):
         # AIの最初の発話生成に失敗しても、プロジェクト作成自体は成功させる
         # (ユーザーは通常通りチャット欄から発話を始められる)
-        pass
+        await ChatService(session).generate_opening_reply(project)
     return ProjectRead.model_validate(project)
 
 
@@ -97,7 +98,8 @@ async def get_project(session: SessionDep, current_project: CurrentProjectDep) -
 async def send_hearing_message(
     payload: HearingMessageRequest, session: SessionDep, current_project: CurrentProjectDep
 ) -> StreamingResponse:
-    """ヒアリングチャットへメッセージを送信し、AI応答をSSE(Server-Sent Events)でストリーミング返却する。"""
+    """ヒアリングチャットへメッセージを送信し、
+    AI応答をSSE(Server-Sent Events)でストリーミング返却する。"""
 
     async def event_stream():
         async for chunk in ChatService(session).stream_reply(

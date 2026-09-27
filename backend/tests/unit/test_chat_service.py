@@ -1,5 +1,4 @@
 import pytest
-
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 from tests.fixtures.fake_llm import FakeLLM
@@ -173,7 +172,9 @@ async def test_create_project_route_generates_opening_ai_reply(
     await db_session.flush()
     monkeypatch.setattr(
         "app.services.chat_service.get_gemini_llm",
-        lambda: FakeLLM(content="【確認したい事】\n・想定ユーザー\n\nまず、対象ユーザーを教えてください。"),
+        lambda: FakeLLM(
+            content="【確認したい事】\n・想定ユーザー\n\nまず、対象ユーザーを教えてください。"
+        ),
     )
 
     project_read = await create_project(

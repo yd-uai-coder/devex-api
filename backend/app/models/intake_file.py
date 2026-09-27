@@ -29,11 +29,14 @@ class IntakeFile(Base):
         Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
     )
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
-    file_type: Mapped[str] = mapped_column(String(20), nullable=False)                   # 拡張子(`txt`/`md`/`pdf`のいずれか)
+    # 拡張子(`txt`/`md`/`pdf`のいずれか)
+    file_type: Mapped[str] = mapped_column(String(20), nullable=False)
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     extracted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="processed") # 処理結果 (`processed`: テキスト化成功, `failed`: 失敗)
-    error_message: Mapped[str | None] = mapped_column(String(255), nullable=True)        # 失敗時の理由
+    # 処理結果 (`processed`: テキスト化成功, `failed`: 失敗)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="processed")
+    # 失敗時の理由
+    error_message: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

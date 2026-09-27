@@ -6,7 +6,8 @@ from app.repositories.base import CRUDRepository
 # 生成される4種のドキュメント種別。GeneratedDocument.doc_type の取りうる値と対応する。
 DOC_TYPES = ("requirements", "external_design", "internal_design", "implementation_plan")
 
-# 同一project_id+doc_typeにつき保管する最大バージョン数(docs/internal_design.md 3.2節「バージョニング方針」)。
+# 同一project_id+doc_typeにつき保管する最大バージョン数
+# (docs/internal_design.md 3.2節「バージョニング方針」)。
 MAX_VERSIONS_PER_DOC_TYPE = 3
 
 
@@ -31,7 +32,8 @@ class GeneratedDocumentRepository(CRUDRepository[GeneratedDocument]):
         self._session.add(document)
         await self._session.flush()
 
-        # existingは新バージョン追加"前"の一覧(新しい順)。追加後の総数が上限を超える古いものを削除する。
+        # existingは新バージョン追加"前"の一覧(新しい順)。
+        # 追加後の総数が上限を超える古いものを削除する。
         keep_count = MAX_VERSIONS_PER_DOC_TYPE - 1
         for stale in existing[keep_count:]:
             await self._session.delete(stale)

@@ -20,6 +20,7 @@ from app.models import (  # noqa: F401
     PromptTemplate,
     User,
 )
+
 # alembic.iniの設定値にアクセスするためのConfigオブジェクト
 config = context.config
 

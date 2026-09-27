@@ -9,7 +9,7 @@ class AppError(Exception):
     既存の`{"detail": "..."}`という応答契約(devex-uiのclient.tsが前提とする形)は変えず、
     `code`が設定されている場合のみ追加で含める(`{"detail": "...", "code": "..."}`)。
     """
-    
+
     status_code: ClassVar[int] = 500
     code: ClassVar[str | None] = None
 

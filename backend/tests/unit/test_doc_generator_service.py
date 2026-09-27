@@ -27,7 +27,9 @@ async def _create_project(session: AsyncSession) -> Project:
 
 def _fake_llm_for_generation() -> FakeLLM:
     # DOC_TYPES(4件)の生成 + 自己診断(1件) = 計5回のainvoke呼び出しを想定した順序のcontent。
-    contents: list[str | list[str | dict[Any, Any]]] = [f"# {doc_type}\n内容" for doc_type in DOC_TYPES]
+    contents: list[str | list[str | dict[Any, Any]]] = [
+        f"# {doc_type}\n内容" for doc_type in DOC_TYPES
+    ]
     contents.append("## 自己診断\n最重要: 特になし")
     return FakeLLM(content_sequence=contents)
 
@@ -80,7 +82,8 @@ async def test_generate_reverts_status_and_records_failure_on_llm_error(
     project = await _create_project(db_session)
     service = DocGeneratorService(db_session)
 
-    await service.generate(project.id, project.user_id, llm=_RaisingLLM())  # 例外を送出しないことを確認
+    # 例外を送出しないことを確認
+    await service.generate(project.id, project.user_id, llm=_RaisingLLM())
 
     await db_session.refresh(project)
     assert project.status == "interviewing"

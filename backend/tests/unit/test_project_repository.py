@@ -19,7 +19,9 @@ async def test_create_persists_intake(db_session: AsyncSession) -> None:
     repo = ProjectRepository(db_session)
 
     project = await repo.create(
-        user_id=user.id, title="備品予約システム", intake={"system_overview": "備品予約を一元管理したい"}
+        user_id=user.id,
+        title="備品予約システム",
+        intake={"system_overview": "備品予約を一元管理したい"},
     )
 
     assert project.status == "interviewing"

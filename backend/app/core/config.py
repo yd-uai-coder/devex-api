@@ -48,7 +48,8 @@ class Settings(BaseSettings):
 
     # LLM呼び出しの最大待機秒数(langchain-google-genaiのChatGoogleGenerativeAI
     # が受け取るtimeout秒。
-    # 既定はNone=無制限で、応答がハングした場合クライアントへ何も返せないまま無限に待ち続ける恐れがある。
+    # 既定はNone=無制限で、応答がハングした場合クライアントへ何も返せないまま
+    # 無限に待ち続ける恐れがある。
     # 30.0は暫定値ではなく実測値: Phase 5-2で実GOOGLE_API_KEY・実GEMINI_MODELに対して
     # 800字/3000字/6000字相当の出力を要求する3パターンを実行したところ、
     # 最大(約4750字出力)でも11.25秒だった(2.96秒/7.28秒/11.25秒)。実測最大値の
@@ -57,7 +58,8 @@ class Settings(BaseSettings):
 
     # trueの場合、get_gemini_llm()は実際のGemini APIを呼ばず、
     # app/ai/llm/fake.pyの決定論的なE2eFakeLLMを返す
-    # 既定はfalseで、次のバリデータによりENVIRONMENT=production下でtrueにすることは起動時に拒否される。
+    # 既定はfalseで、次のバリデータによりENVIRONMENT=production下でtrueにすることは
+    # 起動時に拒否される。
     E2E_FAKE_LLM: bool = False
 
     # Rate limit（チャットメッセージ送信のレート制限。単位時間あたりの上限回数）
@@ -77,7 +79,7 @@ class Settings(BaseSettings):
     def _reject_unsafe_production_settings(self) -> Self:
         """`ENVIRONMENT=production` で起動してはいけない設定を、起動時(設定の読み込み時)に弾く。
         設定ミスは「動くが危険」な状態になりやすいため、実行時でなく起動時に落とす。
-        
+
         E2E_FAKE_LLM=trueは本番で絶対に有効化してはならない(実際にはAIが応答していないのに
         応答しているように見せかけるため、事故時の実害が大きい)。DEBUG・JWT_SECRET_KEYと
         同じ仕組みでチェックする。"""

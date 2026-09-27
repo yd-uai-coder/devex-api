@@ -12,7 +12,7 @@ MAX_GENERATION_ATTEMPTS = 3
 RETRY_DELAY_SECONDS = 1.0
 
 
-async def invoke_with_retry(call: Callable[[], Awaitable[T]]) -> T:
+async def invoke_with_retry[T](call: Callable[[], Awaitable[T]]) -> T:
     """LLM呼び出しをラップし、クォータ超過は即座に諦め、それ以外の一時的エラーは規定回数までリトライする。
 
     chat_service.py(完了判定)・doc_generator_service.py(4文書生成+自己診断)の双方が同じ
