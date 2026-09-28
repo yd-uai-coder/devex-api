@@ -17,3 +17,4 @@ class GeneratedDocumentRead(BaseModel):
     content: str
     version: int
     created_at: datetime
+    is_current: bool

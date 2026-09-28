@@ -75,6 +75,10 @@ class Settings(BaseSettings):
     # リクエストボディの上限(バイト)。nginx の client_max_body_size と同じ値に揃える。
     MAX_REQUEST_BODY_BYTES: int = 2_000_000
 
+    # 設定されている場合のみSentryを初期化する(app/main.py)。未設定(None)
+    # なら完全にno-op: 個人開発規模のため無料枠のみで足りる)。
+    SENTRY_DSN: str | None = None
+
     @model_validator(mode="after")
     def _reject_unsafe_production_settings(self) -> Self:
         """`ENVIRONMENT=production` で起動してはいけない設定を、起動時(設定の読み込み時)に弾く。

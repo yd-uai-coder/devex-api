@@ -10,10 +10,15 @@ class ProjectRepository(CRUDRepository[Project]):
     model = Project
 
     async def create(
-        self, *, user_id: uuid.UUID, title: str, intake: dict | None = None
+        self,
+        *,
+        user_id: uuid.UUID,
+        title: str,
+        intake: dict | None = None,
+        template_id: uuid.UUID | None = None,
     ) -> Project:
         """新規プロジェクトをセッションに追加し、flushしてIDを確定させた状態で返す。"""
-        project = Project(user_id=user_id, title=title, intake=intake)
+        project = Project(user_id=user_id, title=title, intake=intake, template_id=template_id)
         self._session.add(project)
         await self._session.flush()
         return project

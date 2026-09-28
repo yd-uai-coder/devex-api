@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.prompt_template import PromptTemplate
 from app.models.user import User
 from app.repositories.project import ProjectRepository
 
@@ -52,3 +53,23 @@ async def test_list_for_user_orders_by_updated_at_desc(db_session: AsyncSession)
     result = await repo.list_for_user(user.id)
 
     assert [p.id for p in result] == [second.id, first.id]
+
+async def test_create_persists_template_id(db_session: AsyncSession) -> None:
+    user = await _create_user(db_session)
+    template = PromptTemplate(name="Webアプリケーション標準", target_type="Web", system_prompt="x")
+    db_session.add(template)
+    await db_session.flush()
+    repo = ProjectRepository(db_session)
+
+    project = await repo.create(user_id=user.id, title="p", template_id=template.id)
+
+    assert project.template_id == template.id
+
+
+async def test_create_defaults_template_id_to_none(db_session: AsyncSession) -> None:
+    user = await _create_user(db_session)
+    repo = ProjectRepository(db_session)
+
+    project = await repo.create(user_id=user.id, title="p")
+
+    assert project.template_id is None

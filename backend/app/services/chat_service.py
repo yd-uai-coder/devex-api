@@ -1,15 +1,21 @@
 import json
+import time
 from collections.abc import AsyncIterator
 
+import structlog
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.llm.gemini import extract_text_content, get_gemini_llm
 from app.models.chat_history import ChatHistory
 from app.models.project import Project
+from app.models.prompt_template import PromptTemplate
 from app.repositories.chat_history import ChatHistoryRepository
+from app.repositories.prompt_template import PromptTemplateRepository
 from app.schemas.generation import HearingCompletionCheck
-from app.services.llm_retry import invoke_with_retry
+from app.services.llm_retry import invoke_with_retry, prompt_char_count
+
+logger = structlog.get_logger(__name__)
 
 _HEARING_SYSTEM_PROMPT = (
     "あなたはシステム開発の要件定義を支援するAIアシスタントです。"
@@ -24,15 +30,27 @@ _HEARING_SYSTEM_PROMPT = (
 )
 
 _COMPLETION_CHECK_PROMPT = (
-    "これまでの対話を読み、要件ヒアリングとして次の5条件を満たしているか判定してください。\n"
+    "これまでの対話を読み、要件ヒアリングとして次の5条件を満たしているか厳格に判定してください。\n"
     "(1) 目的・課題が明確である\n"
     "(2) コア機能が最低1つ以上「誰が・何を・なぜ」のレベルで具体化されている\n"
     "(3) 想定ユーザー像が把握できている\n"
     "(4) MVPスコープ(今回作る/作らない)の認識合わせができている\n"
     "(5) 技術的な強い制約・希望の有無を確認できている(環境設定が未入力の場合のみ必須)\n"
-    "十分だと判断した場合は、ユーザーへ提示するための構造化された要約(summary)を書いてください。"
-    "不十分な場合は、summaryは簡潔な現状整理とし、missing_pointsに不足している観点を具体的に列挙してください。"
+    "判定ルール:\n"
+    "・各条件は、対話中の【ユーザーの発言】に明確な根拠がある場合にのみ「満たした」とみなす。"
+    "AIが提案・推測しただけの内容や、ユーザーが未回答の内容は根拠として認めない。\n"
+    "・AIの直近の発言がユーザーへの質問を含み、ユーザーがまだ回答していない場合は、"
+    "その質問に関わる条件は未達とする。\n"
+    "・「【確認したい事】」としてAIが挙げた項目のうち、ユーザーの回答が得られていないものが"
+    "1つでも残っている場合は未達とする。\n"
+    "・1つでも判断に迷う条件があれば、is_sufficientはfalseとする(早すぎる完了判定は、"
+    "ユーザーに不十分な内容で設計書を生成させてしまうため、遅すぎる判定より不利益が大きい)。\n"
+    "5条件をすべて満たした場合のみis_sufficient=trueとし、ユーザーへ提示するための構造化された要約"
+    "(summary)を書いてください。"
+    "不十分な場合は、summaryは簡潔な現状整理とし、missing_pointsに不足している観点を必ず具体的に列挙してください。"
 )
+
+_MIN_USER_TURNS_FOR_COMPLETION = 3
 
 _OPENING_TURN_PROMPT = (
     "これはこのプロジェクトのヒアリング対話における、あなたの最初の返信です。"
@@ -57,6 +75,8 @@ class ChatService:
         # session: DB操作用の非同期セッション
         self._session = session
         self._chat_histories = ChatHistoryRepository(session)
+        self._prompt_templates = PromptTemplateRepository(session)
+
 
     async def stream_reply(
         self, project: Project, *, user_message: str, llm=None
@@ -71,10 +91,12 @@ class ChatService:
             project.status = "revising"
         await self._chat_histories.add(project_id=project.id, sender="user", message=user_message)
         history = await self._chat_histories.list_for_project(project.id)
-        messages = _build_messages(history, project)
+        template = await self._load_template(project)
+        messages = _build_messages(history, project, template)
 
         # 「or」の理由：テスト時に本物のGemini APIを叩かせないための差し替え(DI)
         llm = llm or get_gemini_llm()
+        started = time.monotonic()
         chunks: list[str] = []
         async for chunk in llm.astream(messages):
             piece = extract_text_content(chunk.content)
@@ -82,6 +104,12 @@ class ChatService:
                 continue
             chunks.append(piece)
             yield piece
+
+        logger.debug(
+            "llm_call_succeeded",
+            prompt_chars=prompt_char_count(messages),
+            latency_ms=round((time.monotonic() - started) * 1000, 1),
+        )
 
         full_reply = "".join(chunks)
         await self._chat_histories.add(project_id=project.id, sender="ai", message=full_reply)
@@ -93,10 +121,11 @@ class ChatService:
         承認を得てから設計書生成(doc_generator_service)へ進める(即座には生成しない)。
 
         単発呼び出し(ストリーミングではない)のため、一時的な失敗はinvoke_with_retryでリトライする
-        (docs/implementation_plan.md 4.4節リスク1)。"""
+        """
         history = await self._chat_histories.list_for_project(project.id)
+        template = await self._load_template(project)
         messages = [
-            *_build_messages(history, project),
+            *_build_messages(history, project, template),
             HumanMessage(content=_COMPLETION_CHECK_PROMPT),
         ]
 
@@ -108,7 +137,16 @@ class ChatService:
             assert isinstance(result, HearingCompletionCheck)
             return result
 
-        return await invoke_with_retry(_call)
+        result = await invoke_with_retry(_call, messages=messages)
+        user_turns = sum(1 for entry in history if entry.sender == "user")
+        if result.is_sufficient and user_turns < _MIN_USER_TURNS_FOR_COMPLETION:
+            # LLMが早期にtrueと判定しても、実発話が少なすぎる間は完了させない
+            return HearingCompletionCheck(
+                is_sufficient=False,
+                summary=result.summary,
+                missing_points=[*result.missing_points, "対話がまだ十分に進んでいません"],
+            )
+        return result
 
     async def generate_opening_reply(self, project: Project, *, llm=None) -> str:
         """ヒアリング開始直後、ユーザー発話を待たずにAIの最初の発話を生成し永続化する
@@ -119,8 +157,11 @@ class ChatService:
         単発呼び出し(ストリーミングではない)のため、check_completionと同様
         invoke_with_retryでリトライする。"""
         history = await self._chat_histories.list_for_project(project.id)
-        messages = [*_build_messages(history, project), HumanMessage(content=_OPENING_TURN_PROMPT)]
-
+        template = await self._load_template(project)
+        messages = [
+            *_build_messages(history, project, template),
+            HumanMessage(content=_OPENING_TURN_PROMPT),
+        ]
         llm = llm or get_gemini_llm()
 
         async def _call() -> str:
@@ -132,8 +173,19 @@ class ChatService:
         await self._session.commit()
         return reply
 
+    async def _load_template(self, project: Project) -> PromptTemplate | None:
+        """project.template_idが設定されている場合、対応するPromptTemplateを取得する
+        (未設定、または存在しないIDの場合はNoneを返し、通常のヒアリングプロンプトのみを使う)。"""
+        if project.template_id is None:
+            return None
+        return await self._prompt_templates.get_by_id(project.template_id)
 
-def _build_messages(history: list[ChatHistory], project: Project) -> list[BaseMessage]:
+
+def _build_messages(
+        history: list[ChatHistory],
+        project: Project,
+        template: PromptTemplate | None = None,
+) -> list[BaseMessage]:
     """chat_historiesの行(sender+message)を、LangChainのメッセージ列に変換する。
 
     sender='user'/'intake'/'attachment'(初期ヒアリング入力・添付ファイル抽出結果)はHumanMessage、
@@ -145,7 +197,10 @@ def _build_messages(history: list[ChatHistory], project: Project) -> list[BaseMe
     として注入する。ヒアリング完了判定の5条件目「技術的な制約・希望の確認」の材料として、
     表示の有無に関わらずLLMには常に渡す。
     """
-    messages: list[BaseMessage] = [SystemMessage(content=_HEARING_SYSTEM_PROMPT)]
+    system_prompt = _HEARING_SYSTEM_PROMPT
+    if template is not None:
+        system_prompt += f"\n\n[選択されたテンプレート: {template.name}]\n{template.system_prompt}"
+    messages: list[BaseMessage] = [SystemMessage(content=system_prompt)]
     environment = (project.intake or {}).get("environment")
     if environment:
         messages.append(

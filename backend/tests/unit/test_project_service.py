@@ -1,10 +1,19 @@
+import uuid
+
 import pytest
+import structlog.testing
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.prompt_template import PromptTemplate
 from app.models.user import User
 from app.repositories.chat_history import ChatHistoryRepository
 from app.repositories.intake_file import IntakeFileRepository
-from app.services.errors import FileTooLargeError, TooManyFilesError, UnsupportedFileTypeError
+from app.services.errors import (
+    FileTooLargeError,
+    PromptTemplateNotFoundError,
+    TooManyFilesError,
+    UnsupportedFileTypeError,
+)
 from app.services.project import (
     MAX_FILE_SIZE_BYTES,
     ProjectService,
@@ -140,3 +149,42 @@ async def test_create_records_failed_status_without_raising(db_session: AsyncSes
     intake_files = await IntakeFileRepository(db_session).list_for_project(project.id)
     assert intake_files[0].status == "failed"
     assert intake_files[0].extracted_text is None
+
+async def test_create_persists_valid_template_id(db_session: AsyncSession) -> None:
+    user = await _create_user(db_session)
+    template = PromptTemplate(name="Webアプリケーション標準", target_type="Web", system_prompt="x")
+    db_session.add(template)
+    await db_session.flush()
+    service = ProjectService(db_session)
+
+    project = await service.create(
+        user_id=user.id, intake={"system_overview": "s"}, files=[], template_id=template.id
+    )
+    assert project.template_id == template.id
+
+
+async def test_create_rejects_unknown_template_id(db_session: AsyncSession) -> None:
+    user = await _create_user(db_session)
+    service = ProjectService(db_session)
+
+    with pytest.raises(PromptTemplateNotFoundError):
+        await service.create(
+            user_id=user.id, intake={"system_overview": "s"}, files=[], template_id=uuid.uuid4()
+        )
+
+async def test_create_logs_info_with_project_id_only(db_session: AsyncSession) -> None:
+    """主要ライフサイクルイベントとしてINFOログを記録する。system_overview等の本文は
+    含めない(project_idのみ、内部設計書3.4節)。"""
+    user = await _create_user(db_session)
+    service = ProjectService(db_session)
+
+    with structlog.testing.capture_logs() as logs:
+        project = await service.create(
+            user_id=user.id, intake={"system_overview": "秘密の新規事業案"}, files=[]
+        )
+
+    info_logs = [log for log in logs if log["log_level"] == "info"]
+    assert len(info_logs) == 1
+    assert info_logs[0]["event"] == "project_created"
+    assert info_logs[0]["project_id"] == str(project.id)
+    assert "秘密の新規事業案" not in str(info_logs[0])

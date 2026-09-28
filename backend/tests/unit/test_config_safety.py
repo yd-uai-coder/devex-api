@@ -37,3 +37,9 @@ def test_weak_jwt_secret_in_production_is_rejected() -> None:
 def test_unsafe_settings_are_allowed_outside_production() -> None:
     weak = {**_BASE, "JWT_SECRET_KEY": "short"}
     Settings(ENVIRONMENT="development", DEBUG=True, **weak)  # type: ignore[call-arg]
+
+def test_sentry_dsn_defaults_to_none() -> None:
+    """未設定時はSentryを初期化しない(app/main.py)、完全no-opの前提となるデフォルト値。"""
+    settings = Settings(**_BASE)  # type: ignore[call-arg]
+
+    assert settings.SENTRY_DSN is None

@@ -31,6 +31,10 @@ class Project(Base):
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="interviewing")
     # intake: 初期ヒアリング入力(system_overview/goals_raw/notes_raw/environment)をそのまま保持する
     intake: Mapped[dict | None] = mapped_column(PortableJSON, nullable=True)
+    # template_id：テンプレートの永続化
+    template_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("prompt_templates.id"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
