@@ -189,6 +189,7 @@ docker compose -f /opt/traefik/docker-compose.yml logs -f traefik   # リバー�
 
 1. [Vercel](https://vercel.com)でアカウント作成後、devex-uiのGitHubリポジトリをインポートする(Next.jsは自動検出されるため`vercel.json`等の追加設定は不要)。
 2. プロジェクトの環境変数に `NEXT_PUBLIC_API_URL` を設定する(値: ConoHa VPS側のAPIの公開URL、例 `https://your-domain.example.com`)。
+   - **末尾に`/`を付けない**こと。付けると、リクエストURLが`https://host//api/...`(`//`二重)になり、パスを`/api/v1/auth`に限定したリフレッシュトークンCookieが送られず、F5でログインが切れる(症状: DevToolsのNetworkで`refresh`のURLが`//api`、`cookie:`ヘッダ無し、`401`)。`NEXT_PUBLIC_*`はビルド時に埋め込まれるため、修正後は**再デプロイ**が必要。devex-ui側でも`src/lib/api/base-url.ts`が末尾スラッシュを除去するが、環境変数自体も正しく設定すること。
 3. デプロイ後、Vercelが割り当てたURL(または設定したカスタムドメイン)を、devex-api側の`.env`の`CORS_ORIGINS`に追加し、`docker compose -f docker-compose.prod.yml up -d`でbackendを再起動して反映する。
 4. 動作確認: Vercelのデプロイ済みURLからログイン→プロジェクト作成→チャットヒアリング→ドキュメント生成の一連が通ることを確認する。
 
