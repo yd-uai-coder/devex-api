@@ -1,6 +1,8 @@
 import uuid
 from typing import Any
 
+import pytest
+import structlog.testing
 from sqlalchemy.ext.asyncio import AsyncSession
 from tests.fixtures.fake_llm import FakeLLM
 
@@ -10,6 +12,7 @@ from app.models.user import User
 from app.repositories.chat_history import ChatHistoryRepository
 from app.repositories.generated_document import DOC_TYPES, GeneratedDocumentRepository
 from app.services.doc_generator_service import DocGeneratorService, _render_transcript
+from app.services.errors import DocumentNotFoundError
 
 
 async def _create_project(session: AsyncSession) -> Project:
@@ -41,7 +44,7 @@ async def test_generate_creates_all_four_documents(db_session: AsyncSession) -> 
 
     await service.generate(project.id, project.user_id, llm=fake_llm)
 
-    documents = await GeneratedDocumentRepository(db_session).list_latest_for_project(project.id)
+    documents = await GeneratedDocumentRepository(db_session).list_current_for_project(project.id)
     assert {d.doc_type for d in documents} == set(DOC_TYPES)
     assert all(d.version == 1 for d in documents)
 
@@ -70,6 +73,22 @@ async def test_generate_transitions_status_to_completed(db_session: AsyncSession
 
     await db_session.refresh(project)
     assert project.status == "completed"
+
+
+async def test_generate_logs_info_on_completion(db_session: AsyncSession) -> None:
+    """主要ライフサイクルイベントとしてINFOログを記録する(内部設計書3.4節)。"""
+    project = await _create_project(db_session)
+    fake_llm = _fake_llm_for_generation()
+    service = DocGeneratorService(db_session)
+
+    with structlog.testing.capture_logs() as logs:
+        await service.generate(project.id, project.user_id, llm=fake_llm)
+
+    info_logs = [log for log in logs if log["log_level"] == "info"]
+    assert len(info_logs) == 1
+    assert info_logs[0]["event"] == "documents_generated"
+    assert info_logs[0]["project_id"] == str(project.id)
+    assert info_logs[0]["doc_count"] == len(DOC_TYPES)
 
 
 async def test_generate_reverts_status_and_records_failure_on_llm_error(
@@ -144,7 +163,7 @@ async def test_generate_twice_adds_new_version_not_overwrite(db_session: AsyncSe
 
     await service.generate(project.id, project.user_id, llm=_fake_llm_for_generation())
 
-    documents = await GeneratedDocumentRepository(db_session).list_latest_for_project(project.id)
+    documents = await GeneratedDocumentRepository(db_session).list_current_for_project(project.id)
     assert all(d.version == 2 for d in documents)
 
 
@@ -164,7 +183,7 @@ async def test_generate_extracts_text_from_thought_signature_content(
 
     await service.generate(project.id, project.user_id, llm=fake_llm)
 
-    documents = await GeneratedDocumentRepository(db_session).list_latest_for_project(project.id)
+    documents = await GeneratedDocumentRepository(db_session).list_current_for_project(project.id)
     for document in documents:
         assert "{'type'" not in document.content
         assert "内容" in document.content
@@ -212,6 +231,63 @@ async def test_generate_chains_each_document_from_prior_confirmed_documents(
     assert "REQUIREMENTS_マーカー" in human_contents[3]
     assert "INTERNAL_DESIGN_マーカー" in human_contents[3]
     assert "EXTERNAL_DESIGN_マーカー" not in human_contents[3]
+
+
+async def test_list_versions_returns_newest_first(db_session: AsyncSession) -> None:
+    project = await _create_project(db_session)
+    service = DocGeneratorService(db_session)
+    repo = GeneratedDocumentRepository(db_session)
+    for content in ("v1", "v2", "v3"):
+        await repo.create_version(project_id=project.id, doc_type="requirements", content=content)
+
+    versions = await service.list_versions(project.id, "requirements")
+
+    assert [v.content for v in versions] == ["v3", "v2", "v1"]
+
+
+async def test_restore_version_switches_current_without_adding_version(
+    db_session: AsyncSession,
+) -> None:
+    project = await _create_project(db_session)
+    service = DocGeneratorService(db_session)
+    repo = GeneratedDocumentRepository(db_session)
+    await repo.create_version(project_id=project.id, doc_type="requirements", content="v1")
+    await repo.create_version(project_id=project.id, doc_type="requirements", content="v2")
+
+    restored = await service.restore_version(project.id, "requirements", version=1)
+
+    assert restored.version == 1  # 版番号は増えない(新しい行を作らない)
+    assert restored.content == "v1"
+    versions = await repo.list_versions(project_id=project.id, doc_type="requirements")
+    assert [(v.version, v.is_current) for v in versions] == [(2, False), (1, True)]
+    current = await repo.get_current(project_id=project.id, doc_type="requirements")
+    assert current is not None
+    assert current.content == "v1"  # 一覧・ダウンロードが参照する表示中の版が切り替わる
+
+
+async def test_restore_then_regenerate_makes_new_version_current(
+    db_session: AsyncSession,
+) -> None:
+    """復元後に再生成(create_version)すると、その新しい版が表示中になる。"""
+    project = await _create_project(db_session)
+    service = DocGeneratorService(db_session)
+    repo = GeneratedDocumentRepository(db_session)
+    await repo.create_version(project_id=project.id, doc_type="requirements", content="v1")
+    await repo.create_version(project_id=project.id, doc_type="requirements", content="v2")
+    await service.restore_version(project.id, "requirements", version=1)
+
+    await repo.create_version(project_id=project.id, doc_type="requirements", content="v3")
+
+    versions = await repo.list_versions(project_id=project.id, doc_type="requirements")
+    assert [(v.version, v.is_current) for v in versions] == [(3, True), (2, False), (1, False)]
+
+
+async def test_restore_version_raises_for_missing_version(db_session: AsyncSession) -> None:
+    project = await _create_project(db_session)
+    service = DocGeneratorService(db_session)
+
+    with pytest.raises(DocumentNotFoundError):
+        await service.restore_version(project.id, "requirements", version=99)
 
 
 def test_render_transcript_excludes_others_sender() -> None:

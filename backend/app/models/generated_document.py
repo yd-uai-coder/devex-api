@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, Uuid, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, Uuid, false, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -32,7 +32,12 @@ class GeneratedDocument(Base):
     # doc_type：種別 ('requirements', 'external_design', 'internal_design', 'implementation_plan')
     doc_type: Mapped[str] = mapped_column(String(50), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False) # 生成されたMarkdownテキスト
-    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1) # バージョン番号
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # is_current：復元用
+    is_current: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    # バージョン番号
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

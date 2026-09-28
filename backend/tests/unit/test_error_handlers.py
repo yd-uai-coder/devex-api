@@ -1,8 +1,11 @@
 from typing import ClassVar
 
+import pytest
+import structlog.testing
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from app.api import error_handlers
 from app.api.error_handlers import register_error_handlers
 from app.core.errors import BadRequestError, NotFoundError
 
@@ -61,3 +64,24 @@ async def test_unexpected_exception_returns_internal_server_error() -> None:
 
     assert response.status_code == 500
     assert response.json() == {"detail": "Internal server error", "code": "INTERNAL_SERVER_ERROR"}
+
+async def test_unexpected_exception_logs_error_and_calls_sentry_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ERRORレベルでログを記録し、sentry_sdk.capture_exceptionを呼ぶことを確認する。
+    SENTRY_DSN未設定(=sentry_sdk.init未実行)でもcapture_exception自体はno-opとして
+    安全に呼べるため、実際にSentryへ送信されるかまでは検証しない(呼び出し自体の確認に留める)。"""
+    captured: list[Exception] = []
+    monkeypatch.setattr(error_handlers.sentry_sdk, "capture_exception", captured.append)
+    app = _build_app()
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+
+    with structlog.testing.capture_logs() as logs:
+        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+            await client.get("/unexpected")
+
+    assert len(captured) == 1
+    assert isinstance(captured[0], RuntimeError)
+    error_logs = [log for log in logs if log["log_level"] == "error"]
+    assert len(error_logs) == 1
+    assert error_logs[0]["event"] == "unhandled_exception"

@@ -63,3 +63,8 @@ class LLMQuotaExceededError(TooManyRequestsError):
     chat_service.py/doc_generator_service.pyの双方から利用する。"""
 
     code: ClassVar[str | None] = "LLM_QUOTA_EXCEEDED"
+
+class PromptTemplateNotFoundError(NotFoundError):
+    """プロジェクト作成時に指定されたtemplate_idが存在しない場合に送出する。"""
+
+    code: ClassVar[str | None] = "RESOURCE_NOT_FOUND"

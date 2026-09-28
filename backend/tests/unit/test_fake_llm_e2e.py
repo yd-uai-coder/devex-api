@@ -27,8 +27,14 @@ async def test_insufficient_after_one_chat_turn() -> None:
     assert result.is_sufficient is False
 
 
-async def test_sufficient_after_two_chat_turns() -> None:
+async def test_insufficient_after_two_chat_turns() -> None:
     result = await _completion(E2eFakeLLM(), human_message_count=3)
+
+    assert result.is_sufficient is False
+
+
+async def test_sufficient_after_three_chat_turns() -> None:
+    result = await _completion(E2eFakeLLM(), human_message_count=4)
 
     assert result.is_sufficient is True
 

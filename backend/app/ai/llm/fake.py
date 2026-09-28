@@ -25,7 +25,7 @@ from app.schemas.generation import HearingCompletionCheck
 # 修正した経緯がある(詳細はPhase-4-3.mdの「実機検証で発見した2件の不具合」参照)。
 # (1) chat_service.check_completionは末尾に_COMPLETION_CHECK_PROMPT自身のHumanMessageを
 #     追記するため、これも数えてしまうと実際のチャット発話が0件でも条件を満たしてしまう。
-_TURNS_UNTIL_SUFFICIENT = 3
+_TURNS_UNTIL_SUFFICIENT = 4
 
 # doc_generator_service.pyの各doc_type専用プロンプト(_DOC_TYPE_PROMPTS)は、他doc_typeへの
 # 入力参照を「以下の【要件定義書】および【外部設計書】に基づき...」のような角括弧表記で行うため、

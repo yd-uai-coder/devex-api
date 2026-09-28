@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 
+import sentry_sdk
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
@@ -9,7 +10,13 @@ from app.api.middleware import BodySizeLimitMiddleware
 from app.api.routes import api_router
 from app.core.config import settings
 from app.core.database import engine
+from app.core.logging import configure_logging
 from app.infrastructure.redis import get_redis_client
+
+configure_logging()
+
+if settings.SENTRY_DSN:
+    sentry_sdk.init(dsn=settings.SENTRY_DSN, environment=settings.ENVIRONMENT)
 
 
 @asynccontextmanager

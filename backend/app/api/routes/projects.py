@@ -13,12 +13,12 @@ from app.repositories.chat_history import ChatHistoryRepository
 from app.repositories.generated_document import GeneratedDocumentRepository
 from app.repositories.intake_file import IntakeFileRepository
 from app.repositories.project import ProjectRepository
-from app.schemas.document import GeneratedDocumentRead
+from app.schemas.document import DocType, GeneratedDocumentRead
 from app.schemas.generation import HearingCompletionCheck
 from app.schemas.hearing import ChatHistoryRead, HearingMessageRequest
 from app.schemas.project import IntakeFileRead, ProjectDetail, ProjectRead
 from app.services.chat_service import ChatService
-from app.services.doc_generator_service import generate_documents
+from app.services.doc_generator_service import DocGeneratorService, generate_documents
 from app.services.errors import DocumentNotFoundError, GenerationFailedError, LLMQuotaExceededError
 from app.services.project import ProjectService, UploadedFileInput
 
@@ -48,6 +48,7 @@ async def create_project(
     goals_raw: Annotated[str, Form()],
     notes_raw: Annotated[str | None, Form()] = None,
     environment: Annotated[str | None, Form()] = None,
+    template_id: Annotated[uuid.UUID | None, Form()] = None,
     files: Annotated[list[UploadFile] | None, File()] = None,
 ) -> ProjectRead:
     """初期ヒアリング入力(+添付ファイル最大3件、txt/md/pdfのみ)を受け取り、新規プロジェクトを作成する。"""
@@ -91,6 +92,7 @@ async def get_project(session: SessionDep, current_project: CurrentProjectDep) -
         updated_at=current_project.updated_at,
         intake=current_project.intake,
         intake_files=[IntakeFileRead.model_validate(f) for f in intake_files],
+        template_id=current_project.template_id,
     )
 
 
@@ -150,7 +152,7 @@ async def list_generated_documents(
     session: SessionDep, current_project: CurrentProjectDep
 ) -> list[GeneratedDocumentRead]:
     """生成された設計書(各doc_typeの最新バージョンのみ)一覧を取得する。"""
-    documents = await GeneratedDocumentRepository(session).list_latest_for_project(
+    documents = await GeneratedDocumentRepository(session).list_current_for_project(
         current_project.id
     )
     return [GeneratedDocumentRead.model_validate(d) for d in documents]
@@ -173,3 +175,27 @@ async def download_generated_document(
         media_type="text/markdown",
         headers={"Content-Disposition": _content_disposition(filename)},
     )
+
+@router.get(
+    "/{project_id}/documents/{doc_type}/versions", response_model=list[GeneratedDocumentRead]
+)
+async def list_document_versions(
+    doc_type: DocType, session: SessionDep, current_project: CurrentProjectDep
+) -> list[GeneratedDocumentRead]:
+    """指定doc_typeの保管済み全バージョン(最大3件)を新しい順に取得する。"""
+    versions = await DocGeneratorService(session).list_versions(current_project.id, doc_type)
+    return [GeneratedDocumentRead.model_validate(v) for v in versions]
+
+
+@router.post(
+    "/{project_id}/documents/{doc_type}/versions/{version}/restore",
+    response_model=GeneratedDocumentRead,
+)
+async def restore_document_version(
+    doc_type: DocType, version: int, session: SessionDep, current_project: CurrentProjectDep
+) -> GeneratedDocumentRead:
+    """指定バージョンの内容を新バージョンとして復元する(既存版の上書きはしない)。"""
+    restored = await DocGeneratorService(session).restore_version(
+        current_project.id, doc_type, version
+    )
+    return GeneratedDocumentRead.model_validate(restored)

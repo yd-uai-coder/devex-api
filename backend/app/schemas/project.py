@@ -37,3 +37,4 @@ class ProjectDetail(ProjectRead):
 
     intake: dict | None
     intake_files: list[IntakeFileRead] = []
+    template_id: uuid.UUID | None = None

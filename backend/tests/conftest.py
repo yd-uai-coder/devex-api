@@ -13,9 +13,11 @@ os.environ.setdefault("GOOGLE_API_KEY", "test-google-api-key")
 os.environ.setdefault("TAVILY_API_KEY", "test-tavily-api-key")
 os.environ.setdefault("ENVIRONMENT", "test")
 
-from collections.abc import AsyncGenerator  # noqa: E402
+from collections.abc import AsyncGenerator, Generator  # noqa: E402
 
+import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
+import structlog  # noqa: E402
 from sqlalchemy.ext.asyncio import (  # noqa: E402
     AsyncSession,
     async_sessionmaker,
@@ -24,6 +26,16 @@ from sqlalchemy.ext.asyncio import (  # noqa: E402
 
 from app.core.database import Base  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def _reset_structlog_state() -> Generator[None]:
+    """`app.main`のimport(`test_cors.py`等)は`configure_logging()`を実行し、structlogの
+    グローバル設定を書き換える。この変更はプロセス全体に及び、他のテストファイルの
+    `structlog.testing.capture_logs`(DEBUGログのフィルタしきい値など)に影響しうるため、
+    各テストの前後で必ずライブラリ既定値へ戻す。"""
+    structlog.reset_defaults()
+    yield
+    structlog.reset_defaults()
 
 @pytest_asyncio.fixture
 async def db_session() -> AsyncGenerator[AsyncSession]:

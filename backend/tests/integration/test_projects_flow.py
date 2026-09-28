@@ -69,12 +69,18 @@ async def test_full_projects_flow_create_chat_generate_download(
     project_id = create_response.json()["id"]
     assert create_response.json()["status"] == "interviewing"
 
-    chat_response = await client.post(
-        f"/api/v1/projects/{project_id}/chat",
-        headers=headers,
-        json={"message": "利用者は倉庫の担当者を想定しています"},
-    )
-    assert chat_response.status_code == 200
+    # ヒアリング完了判定には最低発話数(ユーザー発話3件)が必要なため、3往復送る
+    for message in (
+        "利用者は倉庫の担当者を想定しています",
+        "MVPでは在庫の入出庫記録と一覧表示のみ作ります",
+        "技術的な制約は特にありません",
+    ):
+        chat_response = await client.post(
+            f"/api/v1/projects/{project_id}/chat",
+            headers=headers,
+            json={"message": message},
+        )
+        assert chat_response.status_code == 200
     assert "text/event-stream" in chat_response.headers["content-type"]
 
     history_response = await client.get(f"/api/v1/projects/{project_id}/chat", headers=headers)

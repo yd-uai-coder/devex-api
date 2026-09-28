@@ -18,7 +18,9 @@ dependencies = [
     "pydantic-settings>=2.15.0",
     "pyjwt>=2.13.0",
     "redis>=5.0",
+    "sentry-sdk>=2.67.1",
     "sqlalchemy[asyncio]>=2.0",
+    "structlog>=25.1.0",
     "tavily-python>=0.7.27",
     "uvicorn[standard]>=0.52.1",
 ]

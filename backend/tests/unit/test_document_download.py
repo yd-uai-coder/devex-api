@@ -59,3 +59,21 @@ def test_content_disposition_includes_ascii_fallback_and_utf8_filename() -> None
 
     assert header.startswith('attachment; filename="')
     assert "filename*=UTF-8''" in header
+
+
+async def test_download_returns_content_of_restored_current_version(
+    db_session: AsyncSession,
+) -> None:
+    """復元(表示中バージョンの切替)後、表示中のドキュメントidでダウンロードすると
+    その版の内容が返る(画面に表示している内容とダウンロード内容が一致する)。"""
+    project = await _create_project(db_session)
+    repo = GeneratedDocumentRepository(db_session)
+    v1 = await repo.create_version(project_id=project.id, doc_type="requirements", content="v1本文")
+    await repo.create_version(project_id=project.id, doc_type="requirements", content="v2本文")
+    await repo.set_current(project_id=project.id, doc_type="requirements", version=1)
+    current = await repo.get_current(project_id=project.id, doc_type="requirements")
+    assert current is not None and current.id == v1.id
+
+    response = await download_generated_document(current.id, db_session, project)
+
+    assert bytes(response.body).decode("utf-8") == "v1本文"
