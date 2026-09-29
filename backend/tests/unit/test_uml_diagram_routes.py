@@ -3,7 +3,13 @@ import uuid
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.routes.uml import create_diagram, get_diagram, update_diagram, validate_diagram
+from app.api.routes.uml import (
+    compute_diagram_layout,
+    create_diagram,
+    get_diagram,
+    update_diagram,
+    validate_diagram,
+)
 from app.core.errors import BadRequestError
 from app.models.project import Project
 from app.models.user import User
@@ -89,3 +95,22 @@ async def test_validate_diagram_returns_valid_result_for_empty_model(
     result = await validate_diagram(created.id, db_session, project)
 
     assert result.is_valid
+
+
+async def test_compute_diagram_layout_returns_layout_model(db_session: AsyncSession) -> None:
+    project = await _create_project(db_session)
+    created = await create_diagram(UmlDiagramCreate(notation="component"), db_session, project)
+    model = ComponentSemanticModel.model_validate(
+        {
+            "elements": [{"id": "c1", "name": "a"}, {"id": "c2", "name": "b"}],
+            "relations": [{"id": "r1", "source_id": "c1", "target_id": "c2"}],
+        }
+    )
+    await update_diagram(
+        created.id, UmlDiagramUpdate(version=1, semantic_model=model), db_session, project
+    )
+
+    result = await compute_diagram_layout(created.id, db_session, project)
+
+    assert result.layout_model is not None
+    assert set(result.layout_model.nodes) == {"c1", "c2"}

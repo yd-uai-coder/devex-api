@@ -91,3 +91,34 @@ class DataItemNameConflictError(ConflictError):
     """同一プロジェクト内に同名のデータ項目が既に存在する場合に送出する(data_items.name一意制約)。"""
 
     code: ClassVar[str | None] = "DATA_ITEM_NAME_CONFLICT"
+
+
+# Phase-9:追記 ── レイアウトエンジン移植
+class LayoutNodeLimitExceededError(BadRequestError):
+    """`/layout`実行前のノード数上限チェック(診断3の「上限超過の検証エラー化」)。
+    要素数が多すぎる図は、レイアウトエンジンの計算量(O(n²)〜O(n!))が非現実的になるため、
+    実行前に拒否する(`app/uml/validation/structural.py`のMAX_ELEMENTSを再利用)。"""
+
+    code: ClassVar[str | None] = "LAYOUT_NODE_LIMIT_EXCEEDED"
+
+
+class LayoutValidationFailedError(BadRequestError):
+    """レイアウト対象の意味モデルがM4構造検証(ID重複・参照切れ等)を通らない場合に送出する。
+    重複ID・未定義ノード参照は、レイアウトエンジン内でassertせず、この事前検証
+    (`app.uml.validation.validate_diagram`)に一本化する(Phase-7-4.md申し送り#1)。"""
+
+    code: ClassVar[str | None] = "LAYOUT_VALIDATION_FAILED"
+
+
+class LayoutWidthExceededError(BadRequestError):
+    """レイアウト計算の結果、図の幅が上限(960px)を超えた場合に送出する
+    (入力次第で実行時に起こり得るため、`assert`ではなく専用例外にする)。"""
+
+    code: ClassVar[str | None] = "LAYOUT_WIDTH_EXCEEDED"
+
+
+class LayoutRouteNotFoundError(BadRequestError):
+    """辺の経路探索で有効な候補が1つも見つからなかった場合に送出する
+    (入力次第で実行時に起こり得るため、`assert`ではなく専用例外にする)。"""
+
+    code: ClassVar[str | None] = "LAYOUT_ROUTE_NOT_FOUND"

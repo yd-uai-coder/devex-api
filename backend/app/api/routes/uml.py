@@ -66,6 +66,18 @@ async def validate_diagram(
     )
 
 
+@router.post("/diagrams/{diagram_id}/layout", response_model=UmlDiagramRead)
+async def compute_diagram_layout(
+    diagram_id: uuid.UUID, session: SessionDep, current_project: CurrentProjectDep
+) -> UmlDiagramRead:
+    """UML図の自動レイアウト(M6)を実行し、`layout_model`を保存して返す。
+    要素数上限超過・M4構造検証エラーの場合は400(実行前チェック、Phase 9)。"""
+    diagram = await UmlDiagramService(session).compute_layout(
+        project_id=current_project.id, diagram_id=diagram_id
+    )
+    return UmlDiagramRead.model_validate(diagram)
+
+
 @router.get("/data-items", response_model=list[DataItemRead])
 async def list_data_items(
     session: SessionDep, current_project: CurrentProjectDep

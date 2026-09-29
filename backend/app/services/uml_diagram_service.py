@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -6,7 +7,12 @@ from app.core.errors import BadRequestError
 from app.models.uml_diagram import UmlDiagram
 from app.repositories.data_item import DataItemRepository
 from app.repositories.uml_diagram import UmlDiagramRepository
-from app.services.errors import UmlDiagramNotFoundError, UmlDiagramVersionConflictError
+from app.services.errors import (
+    LayoutNodeLimitExceededError,
+    LayoutValidationFailedError,
+    UmlDiagramNotFoundError,
+    UmlDiagramVersionConflictError,
+)
 from app.uml.domain import (
     NOTATION_TO_VIEW,
     ComponentSemanticModel,
@@ -16,7 +22,9 @@ from app.uml.domain import (
     SemanticModelAdapter,
     empty_semantic_model,
 )
+from app.uml.layout import compute_layout as compute_layout_engine
 from app.uml.validation import ValidationResult, validate_diagram
+from app.uml.validation.structural import MAX_ELEMENTS
 
 
 class UmlDiagramService:
@@ -106,6 +114,49 @@ class UmlDiagramService:
             data_item_ids = {item.id for item in data_items}
 
         return validate_diagram(model, data_item_ids=data_item_ids)
+
+    async def compute_layout(self, *, project_id: uuid.UUID, diagram_id: uuid.UUID) -> UmlDiagram:
+        """UML図の自動レイアウト(M6)を実行し、`layout_model`を保存する。
+
+        レイアウトエンジン(`app.uml.layout`)を実行する前に2つの事前チェックを行う
+        (Phase-7-4.md「Phase 9への申し送り」#1・#2): (1) 要素数が`MAX_ELEMENTS`
+        (`app.uml.validation.structural`と共有する上限、目安30)を超える場合は
+        `LayoutNodeLimitExceededError`(診断3「上限超過の検証エラー化」)。(2) M4構造検証
+        (ID重複・参照切れ等)を通らない場合は`LayoutValidationFailedError`
+        ── 重複ID・未定義ノード参照は、レイアウトエンジン内でassertせず
+        この事前検証に一本化する(レイアウトエンジン単体はもう防御しない)。
+
+        レイアウト計算自体はCPU負荷が高い(経路探索・交差削減の山登りでO(n²)〜O(n!))ため、
+        `asyncio.to_thread`でイベントループをブロックしないようにする
+        (devex-api既存コードベースに前例の無い新規パターン)。
+        """
+        diagram = await self._get_owned(project_id=project_id, diagram_id=diagram_id)
+        model = SemanticModelAdapter.validate_python(diagram.semantic_model)
+
+        if len(model.elements) > MAX_ELEMENTS:
+            raise LayoutNodeLimitExceededError(
+                f"要素数が上限({MAX_ELEMENTS})を超えています: {len(model.elements)}件"
+            )
+
+        data_item_ids: set[uuid.UUID] | None = None
+        if isinstance(model, DfdSemanticModel):
+            data_items = await self._data_items.list_for_project(project_id)
+            data_item_ids = {item.id for item in data_items}
+        validation_result = validate_diagram(model, data_item_ids=data_item_ids)
+        if not validation_result.is_valid:
+            messages = "; ".join(issue.message for issue in validation_result.errors)
+            raise LayoutValidationFailedError(
+                f"意味モデルの検証エラーのためレイアウトを計算できません: {messages}"
+            )
+
+        layout_model = await asyncio.to_thread(compute_layout_engine, str(diagram.id), model)
+        diagram.layout_model = layout_model.model_dump(mode="json")
+        await self._session.flush()
+        await self._session.commit()
+        # updated_at は server-side の onupdate=func.now() で決まるため、UPDATE後は
+        # DBが計算した値を明示的に取り直す(update()と同じ理由)。
+        await self._session.refresh(diagram)
+        return diagram
 
     async def _get_owned(self, *, project_id: uuid.UUID, diagram_id: uuid.UUID) -> UmlDiagram:
         diagram = await self._diagrams.get_by_id(diagram_id, project_id=project_id)

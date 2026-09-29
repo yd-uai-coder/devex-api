@@ -4,12 +4,14 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 from app.uml.domain import NotationType, SemanticModel
+from app.uml.layout.model import LayoutModel
 
 
 class UmlDiagramRead(BaseModel):
-    """UML図1件をAPIレスポンスとして返す際のスキーマ。`semantic_model`は生dictではなく
-    app.uml.domainの型付きdiscriminated unionをそのまま使う(既存のproject.intake等の
-    「生dict」パターンとは異なる新規パターン。Pydanticネイティブに構造を検証できるため)。"""
+    """UML図1件をAPIレスポンスとして返す際のスキーマ。`semantic_model`/`layout_model`は
+    生dictではなくapp.uml.domain/app.uml.layoutの型付きモデルをそのまま使う(既存の
+    project.intake等の「生dict」パターンとは異なる新規パターン。Pydanticネイティブに
+    構造を検証できるため)。`layout_model`は`POST .../layout`実行前はNone。"""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -17,6 +19,7 @@ class UmlDiagramRead(BaseModel):
     view: str
     notation: NotationType
     semantic_model: SemanticModel
+    layout_model: LayoutModel | None
     status: str
     version: int
     created_at: datetime

@@ -6,9 +6,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.project import Project
 from app.models.user import User
 from app.services.data_item_service import DataItemService
-from app.services.errors import UmlDiagramNotFoundError, UmlDiagramVersionConflictError
+from app.services.errors import (
+    LayoutNodeLimitExceededError,
+    LayoutValidationFailedError,
+    UmlDiagramNotFoundError,
+    UmlDiagramVersionConflictError,
+)
 from app.services.uml_diagram_service import UmlDiagramService
 from app.uml.domain import ComponentSemanticModel, DfdSemanticModel, SemanticModelAdapter
+from app.uml.validation.structural import MAX_ELEMENTS
 
 
 async def _create_project(session: AsyncSession) -> Project:
@@ -138,3 +144,66 @@ async def test_validate_uses_project_data_items_for_dfd(db_session: AsyncSession
     # data_item_id自体はプロジェクトのデータ辞書に実在するためUNKNOWN_DATA_ITEMにはならない。
     assert not any(issue.code == "UNKNOWN_DATA_ITEM" for issue in result.errors)
     assert any(issue.code == "PROCESS_MISSING_OUTPUT" for issue in result.errors)
+
+
+async def test_compute_layout_persists_layout_model(db_session: AsyncSession) -> None:
+    project = await _create_project(db_session)
+    service = UmlDiagramService(db_session)
+    diagram = await service.create(project_id=project.id, notation="component")
+    model = ComponentSemanticModel.model_validate(
+        {
+            "elements": [
+                {"id": "c1", "name": "認証API", "layer": "API層"},
+                {"id": "c2", "name": "認証サービス", "layer": "Service層"},
+            ],
+            "relations": [{"id": "r1", "source_id": "c1", "target_id": "c2"}],
+        }
+    )
+    await service.update(
+        project_id=project.id, diagram_id=diagram.id, expected_version=1, semantic_model=model
+    )
+
+    updated = await service.compute_layout(project_id=project.id, diagram_id=diagram.id)
+
+    assert updated.layout_model is not None
+    assert set(updated.layout_model["nodes"]) == {"c1", "c2"}
+    assert set(updated.layout_model["edges"]) == {"r1"}
+    assert updated.layout_model["metrics"]["crossings"] == 0
+
+
+async def test_compute_layout_raises_when_node_limit_exceeded(db_session: AsyncSession) -> None:
+    project = await _create_project(db_session)
+    service = UmlDiagramService(db_session)
+    diagram = await service.create(project_id=project.id, notation="component")
+    too_many = {
+        "elements": [{"id": f"c{i}", "name": f"module{i}"} for i in range(MAX_ELEMENTS + 1)],
+        "relations": [],
+    }
+    model = ComponentSemanticModel.model_validate(too_many)
+    await service.update(
+        project_id=project.id, diagram_id=diagram.id, expected_version=1, semantic_model=model
+    )
+
+    with pytest.raises(LayoutNodeLimitExceededError):
+        await service.compute_layout(project_id=project.id, diagram_id=diagram.id)
+
+
+async def test_compute_layout_raises_when_structural_validation_fails(
+    db_session: AsyncSession,
+) -> None:
+    project = await _create_project(db_session)
+    service = UmlDiagramService(db_session)
+    diagram = await service.create(project_id=project.id, notation="component")
+    model = ComponentSemanticModel.model_validate(
+        {
+            "elements": [{"id": "c1", "name": "auth"}],
+            # target_idが存在しない要素を参照している(参照切れ)
+            "relations": [{"id": "r1", "source_id": "c1", "target_id": "missing"}],
+        }
+    )
+    await service.update(
+        project_id=project.id, diagram_id=diagram.id, expected_version=1, semantic_model=model
+    )
+
+    with pytest.raises(LayoutValidationFailedError):
+        await service.compute_layout(project_id=project.id, diagram_id=diagram.id)
