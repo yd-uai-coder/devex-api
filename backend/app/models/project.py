@@ -11,8 +11,10 @@ from app.core.database import Base, PortableJSON
 # 通常の実行時には False -> importされない（循環import回避のため）
 if TYPE_CHECKING:
     from app.models.chat_history import ChatHistory
+    from app.models.data_item import DataItem
     from app.models.generated_document import GeneratedDocument
     from app.models.intake_file import IntakeFile
+    from app.models.uml_diagram import UmlDiagram
     from app.models.user import User
 
 
@@ -53,5 +55,11 @@ class Project(Base):
         back_populates="project", cascade="all, delete-orphan"
     )
     intake_files: Mapped[list["IntakeFile"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    data_items: Mapped[list["DataItem"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    uml_diagrams: Mapped[list["UmlDiagram"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )

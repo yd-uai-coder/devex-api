@@ -13,11 +13,13 @@ from app.core.database import Base
 from app.models import (  # noqa: F401
     ChatHistory,
     Conversation,
+    DataItem,
     GeneratedDocument,
     IntakeFile,
     Message,
     Project,
     PromptTemplate,
+    UmlDiagram,
     User,
 )
 

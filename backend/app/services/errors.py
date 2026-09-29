@@ -68,3 +68,26 @@ class PromptTemplateNotFoundError(NotFoundError):
     """プロジェクト作成時に指定されたtemplate_idが存在しない場合に送出する。"""
 
     code: ClassVar[str | None] = "RESOURCE_NOT_FOUND"
+
+# Phase-8-2:追記 ── ステージ3(UML設計図パイプライン)
+class UmlDiagramNotFoundError(NotFoundError):
+    """指定したUML図IDが存在しない、または他プロジェクトのものである場合に送出する。"""
+
+    code: ClassVar[str | None] = "RESOURCE_NOT_FOUND"
+
+class DataItemNotFoundError(NotFoundError):
+    """指定したデータ項目IDが存在しない、または他プロジェクトのものである場合に送出する。"""
+
+    code: ClassVar[str | None] = "RESOURCE_NOT_FOUND"
+
+class UmlDiagramVersionConflictError(ConflictError):
+    """UML図の更新(PUT)時、リクエストのversionがDB上の最新versionと一致しない場合に送出する
+    (楽観ロック)。既存コードベースに前例の無い新規パターン(generated_documents.versionは
+    「再生成のたびに増える版数」であり、書き込み競合検知の仕組みではない)。"""
+
+    code: ClassVar[str | None] = "VERSION_CONFLICT"
+
+class DataItemNameConflictError(ConflictError):
+    """同一プロジェクト内に同名のデータ項目が既に存在する場合に送出する(data_items.name一意制約)。"""
+
+    code: ClassVar[str | None] = "DATA_ITEM_NAME_CONFLICT"

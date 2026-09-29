@@ -1,5 +1,6 @@
 import json
 import time
+import uuid
 from collections.abc import AsyncIterator
 
 import structlog
@@ -77,6 +78,10 @@ class ChatService:
         self._chat_histories = ChatHistoryRepository(session)
         self._prompt_templates = PromptTemplateRepository(session)
 
+
+    async def list_history(self, project_id: uuid.UUID) -> list[ChatHistory]:
+        """プロジェクトのチャット履歴を送信日時の昇順(発生順)で取得する。"""
+        return await self._chat_histories.list_for_project(project_id)
 
     async def stream_reply(
         self, project: Project, *, user_message: str, llm=None

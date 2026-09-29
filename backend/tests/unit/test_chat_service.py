@@ -29,6 +29,20 @@ async def _create_project(session: AsyncSession) -> Project:
     return project
 
 
+async def test_list_history_returns_entries_in_chronological_order(
+    db_session: AsyncSession,
+) -> None:
+    project = await _create_project(db_session)
+    repo = ChatHistoryRepository(db_session)
+    await repo.add(project_id=project.id, sender="user", message="1件目")
+    await repo.add(project_id=project.id, sender="ai", message="2件目")
+    service = ChatService(db_session)
+
+    history = await service.list_history(project.id)
+
+    assert [h.message for h in history] == ["1件目", "2件目"]
+
+
 async def test_stream_reply_logs_debug_with_latency_and_prompt_chars(
     db_session: AsyncSession,
 ) -> None:

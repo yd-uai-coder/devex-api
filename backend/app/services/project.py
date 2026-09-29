@@ -9,6 +9,7 @@ from app.repositories.chat_history import ChatHistoryRepository
 from app.repositories.intake_file import IntakeFileRepository
 from app.repositories.project import ProjectRepository
 from app.repositories.prompt_template import PromptTemplateRepository
+from app.schemas.project import IntakeFileRead, ProjectDetail
 from app.services.errors import (
     FileTooLargeError,
     PromptTemplateNotFoundError,
@@ -79,6 +80,26 @@ class ProjectService:
         await self._session.commit()
         logger.info("project_created", project_id=str(project.id))
         return project
+
+    async def list_for_user(self, user_id: uuid.UUID) -> list[Project]:
+        """指定ユーザーのプロジェクト一覧を取得する。"""
+        return await self._projects.list_for_user(user_id)
+
+    async def get_detail(self, project: Project) -> ProjectDetail:
+        """プロジェクトの詳細(初期ヒアリング入力・添付ファイルサマリを含む)を返す。
+        Project単体のカラムに加え、別Repository(IntakeFile)の取得・整形も
+        このメソッドに集約する(ルーター層はRepositoryを直接参照しない)。"""
+        intake_files = await self._intake_files.list_for_project(project.id)
+        return ProjectDetail(
+            id=project.id,
+            title=project.title,
+            status=project.status,  # type: ignore[arg-type]
+            created_at=project.created_at,
+            updated_at=project.updated_at,
+            intake=project.intake,
+            intake_files=[IntakeFileRead.model_validate(f) for f in intake_files],
+            template_id=project.template_id,
+        )
 
     def _validate_file(self, file: UploadedFileInput) -> None:
         """対応形式・サイズ上限を満たさないファイルがあれば、記録前にまとめて弾く。"""

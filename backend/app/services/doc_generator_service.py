@@ -8,6 +8,7 @@ from app.ai.llm.gemini import extract_text_content, get_gemini_llm
 from app.core.database import AsyncSessionLocal
 from app.models.chat_history import ChatHistory
 from app.models.generated_document import GeneratedDocument
+from app.models.project import Project
 from app.repositories.chat_history import ChatHistoryRepository
 from app.repositories.generated_document import DOC_TYPES, GeneratedDocumentRepository
 from app.repositories.project import ProjectRepository
@@ -230,6 +231,21 @@ class DocGeneratorService:
         await self._session.commit()
         logger.info("documents_generated", project_id=str(project_id), doc_count=len(DOC_TYPES))
 
+
+    async def list_current_documents(self, project_id: uuid.UUID) -> list[GeneratedDocument]:
+        """生成された設計書(各doc_typeの現在表示中のバージョンのみ)一覧を取得する。"""
+        return await self._documents.list_current_for_project(project_id)
+
+    async def get_document(self, *, project: Project, doc_id: uuid.UUID) -> GeneratedDocument:
+        """指定ドキュメントを1件取得する(他プロジェクトのものは404扱い)。
+        GeneratedDocumentRepositoryはProjectRepositoryのような所有権スコープの
+        get_by_idを持たないため、その意味づけ(見つからなければNotFound)をここに集約する
+        (以前はルーター層に手書きされていた。ルーターがRepositoryを直接参照しない方針に
+        統一するため、サービス層へ移した)。"""
+        document = await self._documents.get_by_id(doc_id)
+        if document is None or document.project_id != project.id:
+            raise DocumentNotFoundError(f"Document {doc_id} not found")
+        return document
 
     async def list_versions(self, project_id: uuid.UUID, doc_type: str) -> list[GeneratedDocument]:
         """指定doc_typeの保管済み全バージョン(最大3件)を新しい順に返す。"""
