@@ -178,6 +178,9 @@ class LayoutEdgeGeometry(BaseModel):
     """
 
     points: list[tuple[float, float]]
+    # ラベル(ERの多重度・DFDのデータ項目名)の中心座標。ラベルの無い辺、配置を計算した後に
+    # 端点のノードを手で動かした辺(points=[])、Phase 12より前に計算した配置ではNone
+    label_pos: tuple[float, float] | None = None
 
 
 class LayoutMetrics(BaseModel):

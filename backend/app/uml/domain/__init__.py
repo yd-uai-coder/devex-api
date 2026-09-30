@@ -14,6 +14,16 @@ from app.uml.domain.dfd import (
     DfdSemanticModel,
 )
 from app.uml.domain.er import ErColumn, ErElement, ErRelation, ErRelationType, ErSemanticModel
+from app.uml.domain.status import (
+    DIAGRAM_STATUSES,
+    STATUS_AFTER_APPROVE,
+    STATUS_AFTER_EDIT,
+    STATUS_AFTER_EXPORT,
+    DiagramStatus,
+    can_approve,
+    can_export,
+    parse_status,
+)
 
 # 意味モデルのdiscriminated union。`notation`フィールドの値で3notationのいずれかへ解決する。
 # app/schemas/uml_diagram.py(APIスキーマ)・app/uml/validation(検証)双方がこの型をそのまま再利用する
@@ -46,7 +56,11 @@ def empty_semantic_model(notation: NotationType) -> _AnySemanticModel:
 
 
 __all__ = [
+    "DIAGRAM_STATUSES",
     "NOTATION_TO_VIEW",
+    "STATUS_AFTER_APPROVE",
+    "STATUS_AFTER_EDIT",
+    "STATUS_AFTER_EXPORT",
     "ComponentElement",
     "ComponentRelation",
     "ComponentSemanticModel",
@@ -57,6 +71,7 @@ __all__ = [
     "DfdFlow",
     "DfdProcess",
     "DfdSemanticModel",
+    "DiagramStatus",
     "ErColumn",
     "ErElement",
     "ErRelation",
@@ -67,5 +82,8 @@ __all__ = [
     "SemanticModelAdapter",
     "UmlElement",
     "UmlRelation",
+    "can_approve",
+    "can_export",
     "empty_semantic_model",
+    "parse_status",
 ]

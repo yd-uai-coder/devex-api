@@ -69,7 +69,7 @@ class PromptTemplateNotFoundError(NotFoundError):
 
     code: ClassVar[str | None] = "RESOURCE_NOT_FOUND"
 
-# Phase-8-2:追記 ── ステージ3(UML設計図パイプライン)
+# UML設計図パイプライン
 class UmlDiagramNotFoundError(NotFoundError):
     """指定したUML図IDが存在しない、または他プロジェクトのものである場合に送出する。"""
 
@@ -93,7 +93,7 @@ class DataItemNameConflictError(ConflictError):
     code: ClassVar[str | None] = "DATA_ITEM_NAME_CONFLICT"
 
 
-# Phase-9:追記 ── レイアウトエンジン移植
+# レイアウトエンジン
 class LayoutNodeLimitExceededError(BadRequestError):
     """`/layout`実行前のノード数上限チェック(診断3の「上限超過の検証エラー化」)。
     要素数が多すぎる図は、レイアウトエンジンの計算量(O(n²)〜O(n!))が非現実的になるため、
@@ -124,7 +124,7 @@ class LayoutRouteNotFoundError(BadRequestError):
     code: ClassVar[str | None] = "LAYOUT_ROUTE_NOT_FOUND"
 
 
-# ステージ3 Phase 10: UML図のAI生成
+# UML図のAI生成
 class UmlSourceDocumentMissingError(ConflictError):
     """UML図の生成元となる内部設計書(現行版)がまだ生成されていない場合に送出する。"""
 
@@ -172,3 +172,33 @@ class LLMInvalidOutputError(BadGatewayError):
     一時的な失敗でありうるため、invoke_with_retryの通常のリトライ対象にする)。"""
 
     code: ClassVar[str | None] = "LLM_INVALID_OUTPUT"
+
+
+# 承認フロー(M7)
+class UmlDiagramNotApprovableError(ConflictError):
+    """承認できない状態(承認済み・出力済み)の図を承認しようとした場合に送出する。
+    承認し直すには、いったん保存してレビュー中へ戻す必要がある。"""
+
+    code: ClassVar[str | None] = "UML_DIAGRAM_NOT_APPROVABLE"
+
+
+class UmlApprovalValidationFailedError(BadRequestError):
+    """承認しようとした図の意味モデルが検証(M4)を通らない場合に送出する。
+    エラーの一覧は`POST .../validate`で取り直す(このエラーは件数と要約だけを返す)。"""
+
+    code: ClassVar[str | None] = "UML_APPROVAL_VALIDATION_FAILED"
+
+
+class UmlLayoutRequiredError(BadRequestError):
+    """配置(`layout_model`)が無い図、または配置の無い要素を含む図を承認・出力しようとした場合に
+    送出する。出力(draw.io/SVG)は座標が無いと描けないため、承認の条件にする。"""
+
+    code: ClassVar[str | None] = "UML_LAYOUT_REQUIRED"
+
+
+# draw.io/SVG出力(M8)
+class UmlDiagramNotApprovedError(ConflictError):
+    """承認されていない(下書き・レビュー中の)図を出力しようとした場合に送出する。
+    出力は承認済みの図だけに許す(ダウンロードは最終成果物。D6)。"""
+
+    code: ClassVar[str | None] = "UML_DIAGRAM_NOT_APPROVED"

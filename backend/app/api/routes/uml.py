@@ -1,10 +1,12 @@
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, status
+from fastapi.responses import Response
 
 from app.api.deps import CurrentProjectDep, SessionDep
+from app.api.responses import content_disposition
 from app.schemas.data_item import DataItemCreate, DataItemRead, DataItemUpdate
-from app.schemas.uml_diagram import UmlDiagramRead, UmlDiagramUpdate
+from app.schemas.uml_diagram import UmlDiagramApprove, UmlDiagramRead, UmlDiagramUpdate
 from app.schemas.uml_generation import (
     DfdSubjectRead,
     UmlCandidatesRead,
@@ -12,7 +14,7 @@ from app.schemas.uml_generation import (
     UmlGenerationRunRead,
 )
 from app.services.data_item_service import DataItemService
-from app.services.uml_diagram_service import UmlDiagramService
+from app.services.uml_diagram_service import ExportFormat, UmlDiagramService
 from app.services.uml_generation_service import (
     SubjectRequest,
     UmlGenerationService,
@@ -130,6 +132,54 @@ async def compute_diagram_layout(
         project_id=current_project.id, diagram_id=diagram_id
     )
     return UmlDiagramRead.model_validate(diagram)
+
+
+@router.post("/diagrams/{diagram_id}/approve", response_model=UmlDiagramRead)
+async def approve_diagram(
+    diagram_id: uuid.UUID,
+    payload: UmlDiagramApprove,
+    session: SessionDep,
+    current_project: CurrentProjectDep,
+) -> UmlDiagramRead:
+    """UML図を承認する(M7)。versionの不一致・承認できない状態は409、
+    配置が無い・検証エラーがある場合は400。"""
+    diagram = await UmlDiagramService(session).approve(
+        project_id=current_project.id, diagram_id=diagram_id, expected_version=payload.version
+    )
+    return UmlDiagramRead.model_validate(diagram)
+
+
+async def _export(
+    diagram_id: uuid.UUID,
+    fmt: ExportFormat,
+    session: SessionDep,
+    current_project: CurrentProjectDep,
+) -> Response:
+    exported = await UmlDiagramService(session).export(
+        project_id=current_project.id, diagram_id=diagram_id, fmt=fmt
+    )
+    return Response(
+        content=exported.content,
+        media_type=exported.media_type,
+        headers={"Content-Disposition": content_disposition(exported.filename)},
+    )
+
+
+@router.get("/diagrams/{diagram_id}/export/drawio")
+async def export_diagram_drawio(
+    diagram_id: uuid.UUID, session: SessionDep, current_project: CurrentProjectDep
+) -> Response:
+    """承認済みのUML図を.drawioとしてダウンロードする(M8)。承認されていなければ409。
+    出力に成功すると状態が`exported`になる。"""
+    return await _export(diagram_id, "drawio", session, current_project)
+
+
+@router.get("/diagrams/{diagram_id}/export/svg")
+async def export_diagram_svg(
+    diagram_id: uuid.UUID, session: SessionDep, current_project: CurrentProjectDep
+) -> Response:
+    """承認済みのUML図をSVGとしてダウンロードする(M8。draw.ioと同じエンジンで書き出す)。"""
+    return await _export(diagram_id, "svg", session, current_project)
 
 
 @router.get("/data-items", response_model=list[DataItemRead])

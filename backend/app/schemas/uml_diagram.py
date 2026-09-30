@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
-from app.uml.domain import NotationType, SemanticModel
+from app.uml.domain import DiagramStatus, NotationType, SemanticModel
 from app.uml.layout.model import LayoutModel
 
 
@@ -25,7 +25,8 @@ class UmlDiagramRead(BaseModel):
     scope: dict | None
     semantic_model: SemanticModel
     layout_model: LayoutModel | None
-    status: str
+    # status: レビューの状態(draft→reviewing→approved→exported。app/uml/domain/status.py)
+    status: DiagramStatus
     version: int
     # generation_status: 'generating'/'completed'/'failed'(FEはgeneratingの間ポーリングする)
     generation_status: str
@@ -45,3 +46,10 @@ class UmlDiagramUpdate(BaseModel):
     version: int
     semantic_model: SemanticModel
     layout_model: LayoutModel | None = None
+
+
+class UmlDiagramApprove(BaseModel):
+    """UML図の承認リクエストのスキーマ。`version`は利用者が画面で見ていた版
+    (見ていない版を承認しないための楽観ロック。一致しなければ409)。"""
+
+    version: int

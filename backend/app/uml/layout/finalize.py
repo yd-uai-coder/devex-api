@@ -200,7 +200,8 @@ def reroute_final(state: LayoutState, offs: dict, slots: dict) -> None:
 
 
 # ---- ラベル配置
-def _label_size(text: str) -> tuple[float, float]:
+def label_size(text: str) -> tuple[float, float]:
+    """ラベルの背景矩形の大きさ(幅, 高さ)。出力(`app/uml/export/svg.py`)も同じ大きさで描く。"""
     lines = text.split("\n")
     return max(tw(line) for line in lines) + 10, LINE_H * len(lines)
 
@@ -214,7 +215,7 @@ def place_labels(state: LayoutState) -> None:
     for e in state.edges:
         if not e.label:
             continue
-        lw, lh = _label_size(e.label)
+        lw, lh = label_size(e.label)
         segs = []
         total = 0.0
         for i in range(len(e.pts) - 1):

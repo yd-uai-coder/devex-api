@@ -7,6 +7,8 @@
 呼び出し側(`app/services/uml_diagram_service.py`)の責務とする(HTTP境界に近い関心事のため)。
 """
 
+from collections.abc import Mapping
+
 from app.uml.domain import (
     ComponentSemanticModel,
     DfdDataStore,
@@ -17,6 +19,7 @@ from app.uml.domain import (
     UmlElement,
 )
 from app.uml.layout import crossing_reduction, ranking
+from app.uml.layout.labels import edge_labels
 from app.uml.layout.model import (
     LayoutBox,
     LayoutEdge,
@@ -31,8 +34,9 @@ from app.uml.layout.reconcile import reconcile_layout
 _AnySemanticModel = ComponentSemanticModel | ErSemanticModel | DfdSemanticModel
 
 
-def _element_kind(notation: NotationType, element: UmlElement) -> str:
-    """要素の種類から、レイアウト計算上のノード種別(サイズ見積もり・ポート形状に影響)を返す。"""
+def element_kind(notation: NotationType, element: UmlElement) -> str:
+    """要素の種類から、レイアウト計算上のノード種別(サイズ見積もり・ポート形状に影響)を返す。
+    出力(`app/uml/export/`)も同じ種別で図形を選ぶ。"""
     if notation == "er":
         return "table"
     if notation == "dfd":
@@ -44,7 +48,7 @@ def _element_kind(notation: NotationType, element: UmlElement) -> str:
     return "proc"  # component
 
 
-def _element_text(notation: NotationType, element: UmlElement) -> str:
+def element_text(notation: NotationType, element: UmlElement) -> str:
     """ノードに表示するテキスト。ER図のtable種別は「1行目=テーブル名、以降=カラム」という
     `kind=="table"`ノードの入力形式(改行区切り、折り返しなし)に合わせて組み立てる。"""
     if notation == "er":
@@ -59,7 +63,9 @@ def _element_text(notation: NotationType, element: UmlElement) -> str:
     return element.name
 
 
-def _build_state(diagram_id: str, model: _AnySemanticModel) -> LayoutState:
+def _build_state(
+    diagram_id: str, model: _AnySemanticModel, label_texts: Mapping[str, str]
+) -> LayoutState:
     lane_labels, lane_of, row_of = ranking.assign_lanes_and_rows(
         model.notation, model.elements, model.relations
     )
@@ -68,15 +74,17 @@ def _build_state(diagram_id: str, model: _AnySemanticModel) -> LayoutState:
             id=el.id,
             lane=lane_of[el.id],
             row=row_of[el.id],
-            text=_element_text(model.notation, el),
-            kind=_element_kind(model.notation, el),
+            text=element_text(model.notation, el),
+            kind=element_kind(model.notation, el),
         )
         for el in model.elements
     }
-    # devexの意味モデル(ComponentRelation/ErRelation/DfdFlow)はいずれも自由記述のラベルを
-    # 持たない(DfdFlowはDataItemへの参照のみ)ため、LayoutEdge.labelは常に空文字のままになる。
-    # 将来ラベルを持つnotationが追加された場合はここでelement側から引く。
-    edges = [LayoutEdge(id=rel.id, a=rel.source_id, b=rel.target_id) for rel in model.relations]
+    # ラベル(ERの多重度・DFDのデータ項目名)は意味モデルの外(データ辞書)も要るため、
+    # 呼び出し側が`edge_labels`で作って渡す。空文字の辺は`place_labels`が飛ばす。
+    edges = [
+        LayoutEdge(id=rel.id, a=rel.source_id, b=rel.target_id, label=label_texts.get(rel.id, ""))
+        for rel in model.relations
+    ]
     return LayoutState(diagram_id, lane_labels, nodes, edges)
 
 
@@ -86,7 +94,11 @@ def _to_layout_model(state: LayoutState) -> LayoutModel:
         for node_id, n in state.nodes.items()
     }
     edges = {
-        e.id: LayoutEdgeGeometry(points=[(float(x), float(y)) for x, y in e.pts])
+        e.id: LayoutEdgeGeometry(
+            points=[(float(x), float(y)) for x, y in e.pts],
+            # place_labelsのlabel_posは(中心x, 中心y, 矩形)。保存するのは中心だけ
+            label_pos=((float(e.label_pos[0]), float(e.label_pos[1])) if e.label_pos else None),
+        )
         for e in state.edges
     }
     metrics = LayoutMetrics(
@@ -99,15 +111,29 @@ def _to_layout_model(state: LayoutState) -> LayoutModel:
     )
 
 
-def compute_layout(diagram_id: str, model: _AnySemanticModel) -> LayoutModel:
+def compute_layout(
+    diagram_id: str,
+    model: _AnySemanticModel,
+    label_texts: Mapping[str, str] | None = None,
+) -> LayoutModel:
     """意味モデル1件のレイアウトを計算し、`uml_diagrams.layout_model`へ保存する形で返す。
+
+    `label_texts`は関係id → 辺ラベル(`edge_labels`で作る)。渡すとラベルの位置も探して
+    `LayoutEdgeGeometry.label_pos`に保存する(省略時はラベル無し)。
 
     CPU負荷の高い処理(交差削減の山登り、経路探索)を含むため、呼び出し側は
     `asyncio.to_thread`でラップして呼ぶこと(このモジュール自体は同期関数のまま提供する)。
     """
-    state = _build_state(diagram_id, model)
+    state = _build_state(diagram_id, model, label_texts or {})
     crossing_reduction.optimize(state)
     return _to_layout_model(state)
 
 
-__all__ = ["LayoutModel", "compute_layout", "reconcile_layout"]
+__all__ = [
+    "LayoutModel",
+    "compute_layout",
+    "edge_labels",
+    "element_kind",
+    "element_text",
+    "reconcile_layout",
+]

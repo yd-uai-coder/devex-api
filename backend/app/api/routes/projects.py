@@ -2,12 +2,12 @@ import contextlib
 import json
 import uuid
 from typing import Annotated
-from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, UploadFile, status
 from fastapi.responses import Response, StreamingResponse
 
 from app.api.deps import CurrentProjectDep, CurrentUserDep, SessionDep
+from app.api.responses import content_disposition
 from app.core.errors import BadRequestError
 from app.schemas.document import DocType, GeneratedDocumentRead
 from app.schemas.generation import HearingCompletionCheck
@@ -28,13 +28,6 @@ def _parse_environment(raw: str | None) -> dict | None:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
         raise BadRequestError("environment must be a valid JSON object") from exc
-
-def _content_disposition(filename: str) -> str:
-    """日本語等の非ASCII文字を含むファイル名用のContent-Disposition値を組み立てる(RFC 5987)。
-    ASCII非対応のクライアント向けにfilename(置換フォールバック)とfilename*(UTF-8)の両方を含める。"""
-    ascii_fallback = filename.encode("ascii", errors="replace").decode("ascii")
-    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(filename)}"
-
 
 @router.post("", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
 async def create_project(
@@ -157,7 +150,7 @@ async def download_generated_document(
     return Response(
         content=document.content,
         media_type="text/markdown",
-        headers={"Content-Disposition": _content_disposition(filename)},
+        headers={"Content-Disposition": content_disposition(filename)},
     )
 
 @router.get(

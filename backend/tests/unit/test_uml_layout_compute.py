@@ -14,7 +14,7 @@ from app.uml.domain import (
     ErRelation,
     ErSemanticModel,
 )
-from app.uml.layout import compute_layout
+from app.uml.layout import compute_layout, edge_labels
 
 # スタブ不要 ── 純粋関数のみで構成され、DB・外部依存を一切呼ばないため。
 
@@ -120,3 +120,46 @@ def test_compute_layout_never_places_two_nodes_in_the_same_cell() -> None:
         for b in boxes[i + 1 :]:
             separated = a.x + a.w <= b.x or b.x + b.w <= a.x or a.y + a.h <= b.y or b.y + b.h <= a.y
             assert separated, f"{a} と {b} が重なっている"
+
+
+# ---- 辺ラベルの配置
+def _overlaps(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
+    return not (
+        a[0] + a[2] <= b[0] or b[0] + b[2] <= a[0] or a[1] + a[3] <= b[1] or b[1] + b[3] <= a[1]
+    )
+
+
+def test_compute_layout_places_labels_away_from_nodes() -> None:
+    model = ErSemanticModel(
+        elements=[
+            ErElement(id="t1", name="users", columns=[ErColumn(name="id", type="UUID")]),
+            ErElement(id="t2", name="reservations", columns=[ErColumn(name="id", type="UUID")]),
+            ErElement(id="t3", name="items", columns=[ErColumn(name="id", type="UUID")]),
+        ],
+        relations=[
+            ErRelation(id="r1", source_id="t1", target_id="t2", relation_type="one_to_many"),
+            ErRelation(id="r2", source_id="t3", target_id="t2", relation_type="one_to_many"),
+        ],
+    )
+
+    result = compute_layout("d1", model, edge_labels(model))
+
+    for edge_id in ("r1", "r2"):
+        label_pos = result.edges[edge_id].label_pos
+        assert label_pos is not None
+        # 「1:N」の大きさ(幅は見積もり。高さは1行分)の矩形がノードに重ならない
+        cx, cy = label_pos
+        label_rect = (cx - 20, cy - 10, 40, 20)
+        for box in result.nodes.values():
+            assert not _overlaps(label_rect, (box.x, box.y, box.w, box.h))
+
+
+def test_compute_layout_without_labels_keeps_label_pos_empty() -> None:
+    model = ComponentSemanticModel(
+        elements=[ComponentElement(id="c1", name="a"), ComponentElement(id="c2", name="b")],
+        relations=[ComponentRelation(id="r1", source_id="c1", target_id="c2")],
+    )
+
+    result = compute_layout("d1", model)
+
+    assert result.edges["r1"].label_pos is None

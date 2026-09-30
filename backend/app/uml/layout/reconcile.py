@@ -6,6 +6,8 @@
 
 - 未知のidはエラーにせず黙って落とす(削除した要素の座標をFEが消し忘れても保存を止めない)。
 - 意味モデルにあって配置に無い要素は補わない(自動レイアウトは明示的な再実行のときだけ走らせる。M6)。
+- 折れ点を捨てた辺(`points=[]`、端点のノードを手で動かした辺。D2)は、ラベルの位置
+  (`label_pos`)も捨てる。ラベルは経路に沿って置いたものなので、経路と一緒に無効になる。
 - `width`/`height`は、残ったノードと辺の外接矩形が元の値を超えたときだけ広げる
   (手で右下へ動かしたノードがキャンバスからはみ出さないようにするため)。
 """
@@ -21,7 +23,11 @@ def reconcile_layout(layout: LayoutModel, model: _AnySemanticModel) -> LayoutMod
     element_ids = {el.id for el in model.elements}
     relation_ids = {rel.id for rel in model.relations}
     nodes = {node_id: box for node_id, box in layout.nodes.items() if node_id in element_ids}
-    edges = {edge_id: geo for edge_id, geo in layout.edges.items() if edge_id in relation_ids}
+    edges = {
+        edge_id: geo if geo.points else geo.model_copy(update={"label_pos": None})
+        for edge_id, geo in layout.edges.items()
+        if edge_id in relation_ids
+    }
 
     width = max(
         [layout.width]
