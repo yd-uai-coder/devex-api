@@ -42,7 +42,48 @@ def test_assign_rows_diamond_shape_takes_longest_path() -> None:
 
     _labels, _lanes, rows = assign_lanes_and_rows("component", elements, relations)
 
-    assert rows == {"a": 0, "b": 1, "c": 1, "d": 2}
+    # b・c は同じレーン(layer 未設定)なので同じ行には置かない(同じ (lane, row) は重なる)。
+    # 定義順で b が先、c は次の空き行へ下がり、d は両方より下に来る。
+    assert rows == {"a": 0, "b": 1, "c": 2, "d": 3}
+
+
+def test_assign_rows_same_lane_sources_do_not_share_a_row() -> None:
+    """前提の無い要素が同じレーンに2つあっても、同じ行にしない(デモで重なった形)。"""
+    elements = [
+        ComponentElement(id="auth", name="認証ルート", layer="API層"),
+        ComponentElement(id="project", name="プロジェクトルート", layer="API層"),
+        ComponentElement(id="svc", name="認証サービス", layer="Service層"),
+    ]
+    relations = [ComponentRelation(id="r1", source_id="auth", target_id="svc")]
+
+    _labels, lanes, rows = assign_lanes_and_rows("component", elements, relations)
+
+    assert rows == {"auth": 0, "project": 1, "svc": 1}
+    assert len({(lanes[i], rows[i]) for i in rows}) == len(rows)
+
+
+def test_assign_rows_different_lanes_may_share_a_row() -> None:
+    """別レーンなら同じ行を共有してよい(図を不必要に縦へ伸ばさない)。"""
+    elements = [
+        ComponentElement(id="a", name="a", layer="L1"),
+        ComponentElement(id="b", name="b", layer="L2"),
+    ]
+
+    _labels, _lanes, rows = assign_lanes_and_rows("component", elements, [])
+
+    assert rows == {"a": 0, "b": 0}
+
+
+def test_assign_rows_is_deterministic_by_definition_order() -> None:
+    """同じ深さで衝突したときは、定義順で先の要素が上の行になる。"""
+    elements = [
+        ComponentElement(id="z", name="z"),
+        ComponentElement(id="a", name="a"),
+    ]
+
+    _labels, _lanes, rows = assign_lanes_and_rows("component", elements, [])
+
+    assert rows == {"z": 0, "a": 1}
 
 
 def test_assign_rows_handles_cycle_without_raising() -> None:

@@ -89,3 +89,34 @@ def test_compute_layout_for_dfd_model_with_process_entity_store() -> None:
     assert set(result.nodes) == {"e1", "p1", "s1"}
     assert set(result.edges) == {"f1", "f2"}
     assert result.metrics.crossings == 0
+
+
+def test_compute_layout_never_places_two_nodes_in_the_same_cell() -> None:
+    """交差削減の後も (lane, row) は一意で、ノードの矩形どうしが重ならない。
+    同じレーンに前提の無い要素・同じ深さの要素が複数ある形(デモページで重なった形)で確かめる。"""
+    model = ComponentSemanticModel(
+        elements=[
+            ComponentElement(id="c1", name="認証ルート", layer="API層"),
+            ComponentElement(id="c2", name="プロジェクトルート", layer="API層"),
+            ComponentElement(id="c3", name="認証サービス", layer="Service層"),
+            ComponentElement(id="c4", name="プロジェクトサービス", layer="Service層"),
+            ComponentElement(id="c5", name="ユーザーリポジトリ", layer="Repository層"),
+            ComponentElement(id="c6", name="プロジェクトリポジトリ", layer="Repository層"),
+        ],
+        relations=[
+            ComponentRelation(id="r1", source_id="c1", target_id="c3"),
+            ComponentRelation(id="r2", source_id="c2", target_id="c4"),
+            ComponentRelation(id="r3", source_id="c3", target_id="c5"),
+            ComponentRelation(id="r4", source_id="c4", target_id="c6"),
+            ComponentRelation(id="r5", source_id="c4", target_id="c5"),
+        ],
+    )
+
+    result = compute_layout("no-overlap", model)
+
+    boxes = list(result.nodes.values())
+    assert len({(b.lane, b.row) for b in boxes}) == len(boxes)
+    for i, a in enumerate(boxes):
+        for b in boxes[i + 1 :]:
+            separated = a.x + a.w <= b.x or b.x + b.w <= a.x or a.y + a.h <= b.y or b.y + b.h <= a.y
+            assert separated, f"{a} と {b} が重なっている"

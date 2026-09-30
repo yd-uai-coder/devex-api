@@ -24,6 +24,7 @@ from app.schemas.uml_generation import UmlGenerateRequest, UmlSubjectSpec
 from app.services.errors import UmlDiagramNotFoundError, UmlDiagramVersionConflictError
 from app.services.uml_generation_service import run_uml_generation
 from app.uml.domain import ComponentSemanticModel, DfdSemanticModel
+from app.uml.layout import LayoutModel
 
 
 async def test_get_diagram_raises_not_found_for_other_project(db_session: AsyncSession) -> None:
@@ -48,6 +49,34 @@ async def test_update_diagram_increments_version(db_session: AsyncSession) -> No
 
     assert result.version == 2
     assert len(result.semantic_model.elements) == 1
+
+
+async def test_update_diagram_passes_layout_model_to_service(db_session: AsyncSession) -> None:
+    project = await create_project(db_session)
+    created = await create_empty_diagram(db_session, project.id, "component")
+    new_model = ComponentSemanticModel.model_validate(
+        {"elements": [{"id": "c1", "name": "auth"}], "relations": []}
+    )
+    layout = LayoutModel.model_validate(
+        {
+            "width": 200,
+            "height": 100,
+            "nodes": {"c1": {"x": 40, "y": 20, "w": 100, "h": 40, "lane": 0, "row": 0}},
+            "edges": {},
+            "metrics": {"crossings": 0, "overlaps": 0, "collisions": 0},
+        }
+    )
+
+    result = await update_diagram(
+        created.id,
+        UmlDiagramUpdate(version=1, semantic_model=new_model, layout_model=layout),
+        db_session,
+        project,
+    )
+
+    assert result.version == 2
+    assert result.layout_model is not None
+    assert result.layout_model.nodes["c1"].x == 40
 
 
 async def test_update_diagram_raises_conflict_on_stale_version(db_session: AsyncSession) -> None:

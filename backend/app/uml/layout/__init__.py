@@ -26,6 +26,7 @@ from app.uml.layout.model import (
     LayoutNode,
     LayoutState,
 )
+from app.uml.layout.reconcile import reconcile_layout
 
 _AnySemanticModel = ComponentSemanticModel | ErSemanticModel | DfdSemanticModel
 
@@ -109,4 +110,4 @@ def compute_layout(diagram_id: str, model: _AnySemanticModel) -> LayoutModel:
     return _to_layout_model(state)
 
 
-__all__ = ["LayoutModel", "compute_layout"]
+__all__ = ["LayoutModel", "compute_layout", "reconcile_layout"]

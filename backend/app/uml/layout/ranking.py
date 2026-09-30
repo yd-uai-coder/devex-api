@@ -7,9 +7,11 @@ lane(レーン)・row(行)をこちらで算出する必要がある
 
 - lane: 要素の`layer`属性(component/dfdの一部要素が持つ)。未設定の要素は共有の
   フォールバックレーンにまとめる。ER図は`layer`を持たないため常に単一レーン。
-- row: relationsから構築した有向グラフの最長経路法によるレイヤリング
-  (循環はDFSで検出したback edgeを除外して計算。トポロジカル順の層分けは標準ライブラリ
-  `graphlib`に任せる)。ER図は多重度を表すだけで時系列を持たないため、
+- row: relationsから構築した有向グラフの最長経路法によるレイヤリング。ただしレーンごとに
+  1つの行には1ノードしか置かない(`geometry.place_rows`はノードをレーンの中央・行の縦位置に
+  置くため、同じ`(lane, row)`のノードは完全に重なる)。同じレーンで行が衝突したら、
+  そのレーンの次の空き行へ下げる(循環はDFSで検出したback edgeを除外して計算。
+  トポロジカル順の層分けは標準ライブラリ`graphlib`に任せる)。ER図は多重度を表すだけで時系列を持たないため、
   このアルゴリズムを使わず意味モデル内の定義順indexをそのまま使う
   (このセッションでの決定。textbook/decision-digest.md参照)。
 """
@@ -55,31 +57,39 @@ def _find_back_edges(
     return back_edges
 
 
-def _longest_path_rank(
-    node_ids: Sequence[str], edges: Sequence[tuple[str, str]]
+def _assign_rows(
+    node_ids: Sequence[str], edges: Sequence[tuple[str, str]], lane_of: dict[str, int]
 ) -> dict[str, int]:
-    """有向グラフ(循環を含みうる)から、各ノードのrow(行)を最長経路法で算出する。
-    入力が無いノードはrow=0。循環はback edgeとして除外した上で、標準ライブラリの
-    `graphlib.TopologicalSorter`でトポロジカル順に層分けする(バッチ番号がそのままrow)。
+    """各ノードのrow(行)を、レーンごとに1行1ノードの最長経路法で算出する。
+
+    トポロジカル順(同じ層の中は`node_ids`の定義順)に1つずつ置き、行は
+    「全ての前提ノードの行+1」以上で、そのノードのレーンでまだ使われていない最小の行にする。
+    衝突が無ければ最長経路法の層番号と一致し、衝突したときだけ下へずれる。前提ノードより
+    必ず下に置くので、辺の向き(上から下)は保たれる。循環はback edgeとして除外する。
     """
     back_edges = _find_back_edges(node_ids, edges)
-    # 前提ノードを全て処理し終えたノードが1バッチずつ`get_ready()`で返るので、
-    # バッチ番号 = 「入ってくる辺の中で最大のrank+1」= 最長経路rankになる。
+    order = {n: i for i, n in enumerate(node_ids)}
+    predecessors: dict[str, list[str]] = {n: [] for n in node_ids}
     sorter: TopologicalSorter[str] = TopologicalSorter(dict.fromkeys(node_ids, ()))
     for a, b in edges:
         if (a, b) not in back_edges:
             sorter.add(b, a)  # bはaの後(aが前提)
+            predecessors.setdefault(b, []).append(a)
     sorter.prepare()
 
-    rank: dict[str, int] = {}
-    level = 0
+    row: dict[str, int] = {}
+    taken: set[tuple[int, int]] = set()  # 使用済みの(lane, row)
     while sorter.is_active():
-        ready = sorter.get_ready()
+        # get_ready()の返す順は文書化されていないため、定義順に並べて決定的にする
+        ready = sorted(sorter.get_ready(), key=lambda n: order.get(n, len(order)))
         for n in ready:
-            rank[n] = level
+            r = max((row[p] + 1 for p in predecessors.get(n, [])), default=0)
+            while (lane_of[n], r) in taken:
+                r += 1
+            row[n] = r
+            taken.add((lane_of[n], r))
         sorter.done(*ready)
-        level += 1
-    return rank
+    return row
 
 
 def assign_lanes_and_rows(
@@ -120,6 +130,6 @@ def assign_lanes_and_rows(
 
     # 行: relationsから有向グラフを組み立て、最長経路法でレイヤリングする。
     edges = [(rel.source_id, rel.target_id) for rel in relations]
-    row_of = _longest_path_rank(element_ids, edges)
+    row_of = _assign_rows(element_ids, edges, lane_of)
 
     return lane_labels, lane_of, row_of

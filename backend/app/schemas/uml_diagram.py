@@ -37,7 +37,11 @@ class UmlDiagramRead(BaseModel):
 
 class UmlDiagramUpdate(BaseModel):
     """UML図の全体更新リクエストのスキーマ。`version`は楽観ロック用
-    (更新対象を最後に取得した時点のUmlDiagramRead.versionをそのまま返す想定)。"""
+    (更新対象を最後に取得した時点のUmlDiagramRead.versionをそのまま返す想定)。
+    `layout_model`はレビュー画面で手動移動した座標を意味モデルと同じ保存・同じversionで
+    保存するための任意項目。省略した場合は保存済みの配置を保つ(M6: 手動座標は自動レイアウト
+    以外では上書きしない)。"""
 
     version: int
     semantic_model: SemanticModel
+    layout_model: LayoutModel | None = None

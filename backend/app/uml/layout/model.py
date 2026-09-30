@@ -170,13 +170,23 @@ class LayoutBox(BaseModel):
 
 
 class LayoutEdgeGeometry(BaseModel):
-    """1辺の計算済み経路(`uml_diagrams.layout_model.edges[relation_id]`)。"""
+    """1辺の計算済み経路(`uml_diagrams.layout_model.edges[relation_id]`)。
+
+    `points`が空リストのときは「折れ点なし」を意味する。レビュー画面でユーザーが端点の
+    ノードを手で動かした辺は、エンジンが計算した経路が合わなくなるため折れ点を捨て、
+    描画を React Flow の smoothstep / draw.io の `orthogonalEdgeStyle` に任せる(D2)。
+    """
 
     points: list[tuple[float, float]]
 
 
 class LayoutMetrics(BaseModel):
-    """交差数・重なり数・衝突数(見づらさを主観でなく測定するための指標)。"""
+    """交差数・重なり数・衝突数(見づらさを主観でなく測定するための指標)。
+
+    いずれも辺(線)についての指標である。`overlaps`は線どうしが同じ区間を重ねて走る数、
+    `collisions`は線がノードの矩形を横切る数で、ノードどうしの重なりは数えない
+    (ノードが重ならないことは`ranking.py`の行の割り当てで保証する)。
+    """
 
     crossings: int
     overlaps: int

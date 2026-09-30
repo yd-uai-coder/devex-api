@@ -99,12 +99,13 @@ async def update_diagram(
     session: SessionDep,
     current_project: CurrentProjectDep,
 ) -> UmlDiagramRead:
-    """UML図の意味モデル全体を更新する(楽観ロック。versionが不一致の場合は409)。"""
+    """UML図の意味モデル全体(と、任意で配置)を更新する(楽観ロック。versionが不一致の場合は409)。"""
     diagram = await UmlDiagramService(session).update(
         project_id=current_project.id,
         diagram_id=diagram_id,
         expected_version=payload.version,
         semantic_model=payload.semantic_model,
+        layout_model=payload.layout_model,
     )
     return UmlDiagramRead.model_validate(diagram)
 
