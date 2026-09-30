@@ -6,7 +6,7 @@ from typing import TypeVar
 import structlog
 from langchain_core.messages import BaseMessage
 
-from app.services.errors import GenerationFailedError, LLMQuotaExceededError
+from app.services.errors import GenerationFailedError, LLMQuotaExceededError, LLMTokenLimitError
 
 T = TypeVar("T")
 
@@ -57,7 +57,16 @@ async def invoke_with_retry[T](
                 latency_ms=round((time.monotonic() - started) * 1000, 1),
             )
             return result
+        except LLMTokenLimitError:
+            # トークン上限超過は同じ入力で再試行しても解消しないため即座に諦める
+            logger.warning("llm_token_limit_exceeded", attempt=attempt)
+            raise
         except Exception as exc:
+            if _is_input_token_limit_error(exc):
+                logger.warning("llm_token_limit_exceeded", attempt=attempt)
+                raise LLMTokenLimitError(
+                    "AIへの入力が大きすぎるため処理できませんでした。"
+                ) from exc
             if _is_quota_error(exc):
                 # クォータ超過はリトライしても解消しないため即座に諦める
                 logger.warning("llm_quota_exceeded", attempt=attempt)
@@ -93,3 +102,18 @@ def _is_quota_error(exc: Exception) -> bool:
         # google-genaiが未インストールの環境向けフォールバック
         return False
     return isinstance(exc, GoogleAPIError) and getattr(exc, "code", None) == 429
+
+
+def _is_input_token_limit_error(exc: Exception) -> bool:
+    """例外がGemini APIの「入力トークン数が上限を超えた」(400相当)を示すものかどうかを判定する。
+    Gemini APIはこの場合に専用のエラーコードを持たず、400とメッセージで伝えるため、
+    メッセージに"token"を含む400をトークン上限超過とみなす(UML図のAI生成・Phase 10で追加)。"""
+    try:
+        from google.genai.errors import APIError as GoogleAPIError
+    except ImportError:
+        return False
+    return (
+        isinstance(exc, GoogleAPIError)
+        and getattr(exc, "code", None) == 400
+        and "token" in str(exc).lower()
+    )

@@ -119,6 +119,34 @@ def test_validate_dfd_rules_warns_about_unreferenced_data_item() -> None:
     assert any(issue.code == "UNREFERENCED_DATA_ITEM" for issue in warnings)
 
 
+def test_validate_dfd_rules_does_not_warn_when_other_dfd_references_item() -> None:
+    """Phase 10: DFDは処理ごとに1枚なので、未参照の判定はプロジェクト内の全DFDを横断する。"""
+    data_item_id = uuid.uuid4()
+    used_elsewhere_id = uuid.uuid4()
+    elements, flows = _dfd_fixture(data_item_id)
+
+    _errors, warnings = validate_dfd_rules(
+        elements, flows, {data_item_id, used_elsewhere_id}, {used_elsewhere_id}
+    )
+
+    assert not any(issue.code == "UNREFERENCED_DATA_ITEM" for issue in warnings)
+
+
+def test_validate_diagram_passes_referenced_elsewhere_to_dfd_rules() -> None:
+    data_item_id = uuid.uuid4()
+    used_elsewhere_id = uuid.uuid4()
+    elements, flows = _dfd_fixture(data_item_id)
+    model = DfdSemanticModel(elements=elements, relations=flows)
+
+    result = validate_diagram(
+        model,
+        data_item_ids={data_item_id, used_elsewhere_id},
+        referenced_elsewhere={used_elsewhere_id},
+    )
+
+    assert result.warnings == []
+
+
 def test_validate_diagram_skips_dfd_rules_for_component_notation() -> None:
     model = ComponentSemanticModel(
         elements=[ComponentElement(id="c1", name="auth")], relations=[]

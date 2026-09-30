@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from app.models.generated_document import GeneratedDocument
     from app.models.intake_file import IntakeFile
     from app.models.uml_diagram import UmlDiagram
+    from app.models.uml_generation_run import UmlGenerationRun
     from app.models.user import User
 
 
@@ -61,5 +62,8 @@ class Project(Base):
         back_populates="project", cascade="all, delete-orphan"
     )
     uml_diagrams: Mapped[list["UmlDiagram"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    uml_generation_runs: Mapped[list["UmlGenerationRun"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )

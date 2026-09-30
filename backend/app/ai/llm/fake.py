@@ -8,6 +8,7 @@ Playwrightのブラウザ操作からPythonプロセス内部へ台本を注入�
 手がかりに、外部から一切設定を注入されなくても意味のある応答を返せるよう、ステートレスかつ
 決定論的に応答を組み立てる設計にした。
 """
+
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
@@ -18,6 +19,20 @@ from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel
 
 from app.schemas.generation import HearingCompletionCheck
+from app.uml.generation.schemas import (
+    ComponentGenerationOutput,
+    DfdGenerationOutput,
+    ErGenerationOutput,
+    GeneratedColumn,
+    GeneratedDataItem,
+    GeneratedDataItemField,
+    GeneratedDependency,
+    GeneratedFlow,
+    GeneratedModule,
+    GeneratedNode,
+    GeneratedProcess,
+    GeneratedTable,
+)
 
 # ヒアリング完了(is_sufficient=True)と判定するまでに要するHumanMessage数(末尾の判定プロンプト
 # 自身を除く)。「初期ヒアリング入力(intake)1件+実際のチャット発話2件」で3件になる。
@@ -47,6 +62,74 @@ _DOC_TYPE_LABELS: dict[str, str] = {
     "implementation_plan": "実装計画書",
 }
 
+# 内部設計書だけは、UML図の生成候補(3.2節のテーブル見出し・処理別データフローのDF見出し)を
+# E2Eでも列挙できるよう、内部設計書プロンプトが指示する固定形式の見出しを含めて返す(Phase 10)。
+_INTERNAL_DESIGN_REPLY = (
+    "# 内部設計書(E2E Fake)\n\n"
+    "## 3.1 技術スタック選定・アーキテクチャ方針\n- api / service / repository の3層構成\n\n"
+    "## 3.2 データモデル定義\n\n"
+    "### テーブル: reservations\n| カラム名 | データ型 | 制約 | 説明 |\n|---|---|---|---|\n"
+    "| id | UUID | PK | 予約ID |\n\n"
+    "## 3.3 バックエンド処理・モジュール設計\n- api → service → repository\n\n"
+    "### 処理別データフロー\n\n"
+    "#### DF-1: POST /api/v1/reservations\n| 元 | データ | 変換 | 先 |\n|---|---|---|---|\n"
+    "| 利用者 | 予約リクエスト | 検証して保存 | reservations |\n"
+    "- データ項目: 予約リクエスト(item_id, start_at)\n"
+)
+
+# UML図の生成(Phase 10)で返す固定の構造化出力。記法ごとに、検証(M4)を通る最小の図にする。
+_UML_OUTPUTS: dict[type[BaseModel], BaseModel] = {
+    ComponentGenerationOutput: ComponentGenerationOutput(
+        modules=[
+            GeneratedModule(id="m1", name="api", description="[E2E Fake] ルーター", layer="api"),
+            GeneratedModule(
+                id="m2", name="service", description="[E2E Fake] ユースケース", layer="service"
+            ),
+        ],
+        dependencies=[GeneratedDependency(id="d1", source_id="m1", target_id="m2")],
+    ),
+    ErGenerationOutput: ErGenerationOutput(
+        tables=[
+            GeneratedTable(
+                id="t1",
+                name="reservations",
+                columns=[
+                    GeneratedColumn(
+                        name="id",
+                        type="UUID",
+                        is_primary_key=True,
+                        is_foreign_key=False,
+                        nullable=False,
+                    )
+                ],
+            )
+        ],
+        relations=[],
+    ),
+    DfdGenerationOutput: DfdGenerationOutput(
+        data_items=[
+            GeneratedDataItem(
+                name="予約リクエスト",
+                fields=[GeneratedDataItemField(name="item_id", type="UUID")],
+            )
+        ],
+        processes=[
+            GeneratedProcess(
+                id="p1",
+                name="予約を登録する",
+                description="[E2E Fake] 検証して保存",
+                layer="service",
+            )
+        ],
+        external_entities=[GeneratedNode(id="e1", name="利用者")],
+        data_stores=[GeneratedNode(id="s1", name="reservations")],
+        flows=[
+            GeneratedFlow(id="f1", source_id="e1", target_id="p1", data_item_name="予約リクエスト"),
+            GeneratedFlow(id="f2", source_id="p1", target_id="s1", data_item_name="予約リクエスト"),
+        ],
+    ),
+}
+
 _HEARING_REPLY = "[E2E Fake] 承知しました。次に、想定している主なユーザー層を教えてください。"
 _SELF_DIAGNOSIS_REPLY = "[E2E Fake] 自己診断: 特に致命的な不足点はありません。"
 
@@ -61,10 +144,21 @@ class _FakeChunk:
 class _FakeStructuredE2e:
     """`with_structured_output(schema)`が返す構造化出力用サブクライアントのE2E版。"""
 
-    def __init__(self, schema: type[BaseModel]) -> None:
+    def __init__(self, schema: type[BaseModel], *, include_raw: bool = False) -> None:
         self._schema = schema
+        self._include_raw = include_raw
 
-    async def ainvoke(self, messages: list[Any]) -> BaseModel:
+    async def ainvoke(self, messages: list[Any]) -> Any:
+        parsed = self._parsed_for(messages)
+        if not self._include_raw:
+            return parsed
+        # with_structured_output(schema, include_raw=True)の実物と同じ形で返す
+        raw = AIMessage(content="", response_metadata={"finish_reason": "STOP"})
+        return {"raw": raw, "parsed": parsed, "parsing_error": None}
+
+    def _parsed_for(self, messages: list[Any]) -> BaseModel:
+        if self._schema in _UML_OUTPUTS:
+            return _UML_OUTPUTS[self._schema]
         if self._schema is HearingCompletionCheck:
             # 末尾の1件は常にchat_service.check_completionが追記する
             # _COMPLETION_CHECK_PROMPT自身のHumanMessageであり、実際の対話ターンではないため
@@ -84,7 +178,7 @@ class _FakeStructuredE2e:
                 ),
                 missing_points=[] if sufficient else ["[E2E Fake] 想定ユーザーの具体化"],
             )
-        # HearingCompletionCheck以外のスキーマは現時点でこのアプリ内に無く、追加された場合は
+        # HearingCompletionCheck・UML生成スキーマ以外のスキーマが追加された場合は
         # 「対応漏れ」に気づけるよう黙って汎用値を返さず例外にする。
         raise NotImplementedError(f"E2eFakeLLMが未対応のスキーマ: {self._schema}")
 
@@ -104,8 +198,10 @@ class E2eFakeLLM:
     async def ainvoke(self, messages: list[Any]) -> AIMessage:
         return AIMessage(content=self._reply_for(messages))
 
-    def with_structured_output(self, schema: type[BaseModel]) -> _FakeStructuredE2e:
-        return _FakeStructuredE2e(schema)
+    def with_structured_output(
+        self, schema: type[BaseModel], *, include_raw: bool = False
+    ) -> _FakeStructuredE2e:
+        return _FakeStructuredE2e(schema, include_raw=include_raw)
 
     def _reply_for(self, messages: list[Any]) -> str:
         system_text = "\n".join(
@@ -113,6 +209,8 @@ class E2eFakeLLM:
         )
         for doc_type, marker in _DOC_TYPE_MARKERS.items():
             if marker in system_text:
+                if doc_type == "internal_design":
+                    return _INTERNAL_DESIGN_REPLY
                 label = _DOC_TYPE_LABELS[doc_type]
                 return f"# {label}(E2E Fake)\n\nこれはE2Eテスト用に生成されたダミーの{label}です。"
         if "レビュアー" in system_text:

@@ -91,6 +91,7 @@ typeCheckingMode = "standard"
 #   - app/repositories/project.py      : 同上
 #   - app/repositories/data_item.py    : 同上(Phase 8、project_idスコープ)
 #   - app/repositories/uml_diagram.py  : 同上(Phase 8、project_idスコープ)
+#   - app/repositories/uml_generation_run.py : 同上(Phase 10、project_idスコープ)
 #   - tests/unit/test_auth_service.py  : テスト用 FakeRedis の型付け未整備
 ignore = [
     "app/ai/graph/nodes.py",
@@ -99,5 +100,6 @@ ignore = [
     "app/repositories/project.py",
     "app/repositories/data_item.py",
     "app/repositories/uml_diagram.py",
+    "app/repositories/uml_generation_run.py",
     "tests/unit/test_auth_service.py",
 ]

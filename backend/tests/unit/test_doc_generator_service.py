@@ -353,3 +353,16 @@ def test_render_transcript_excludes_others_sender() -> None:
     assert "要望A" in transcript
     assert "応答A" in transcript
     assert "自己診断結果" not in transcript
+
+
+def test_internal_design_prompt_asks_for_fixed_format_headings_for_uml_generation() -> None:
+    """Phase 10: UML図の生成候補を決定的に列挙できるよう、内部設計書プロンプトが
+    テーブル見出しと処理別データフロー(DF見出し)の固定形式を指示していること。"""
+    from app.services.doc_generator_service import _DOC_TYPE_PROMPTS
+
+    prompt = _DOC_TYPE_PROMPTS["internal_design"]
+
+    assert "### テーブル: <テーブル名>" in prompt
+    assert "### 処理別データフロー" in prompt
+    assert "#### DF-<連番>: <HTTPメソッド> <パス>" in prompt
+    assert "元/データ/変換/先" in prompt

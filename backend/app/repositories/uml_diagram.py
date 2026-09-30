@@ -6,18 +6,32 @@ from app.repositories.base import CRUDRepository
 
 class UmlDiagramRepository(CRUDRepository[UmlDiagram]):
     """UmlDiagramモデルに対する永続化操作をまとめるリポジトリ。楽観ロックの版チェックや
-    生成トリガーとしてのプレースホルダー生成といったビジネスロジックはサービス層
-    (app/services/uml_diagram_service.py)が担い、ここでは純粋な永続化操作のみを提供する。"""
+    AI生成の受け付け・上書きといったビジネスロジックはサービス層
+    (app/services/uml_diagram_service.py・uml_generation_service.py)が担い、ここでは純粋な永続化操作のみを提供する。"""
 
     model = UmlDiagram
 
     async def create(
-        self, *, project_id: uuid.UUID, view: str, notation: str, semantic_model: dict
+        self,
+        *,
+        project_id: uuid.UUID,
+        view: str,
+        notation: str,
+        semantic_model: dict,
+        subject: str = "",
+        scope: dict | None = None,
+        generation_status: str = "completed",
     ) -> UmlDiagram:
         """新規UML図をセッションに追加し、flushしてIDを確定させた状態で返す
         (status/versionはORM側のデフォルト値'draft'/1のまま)。"""
         diagram = UmlDiagram(
-            project_id=project_id, view=view, notation=notation, semantic_model=semantic_model
+            project_id=project_id,
+            view=view,
+            notation=notation,
+            semantic_model=semantic_model,
+            subject=subject,
+            scope=scope,
+            generation_status=generation_status,
         )
         self._session.add(diagram)
         await self._session.flush()
@@ -31,3 +45,19 @@ class UmlDiagramRepository(CRUDRepository[UmlDiagram]):
     async def list_for_project(self, project_id: uuid.UUID) -> list[UmlDiagram]:
         """指定プロジェクトのUML図一覧を更新日時の降順で取得する。"""
         return await self.list_all(order_by=UmlDiagram.updated_at.desc(), project_id=project_id)
+
+    async def list_by_notation(self, project_id: uuid.UUID, notation: str) -> list[UmlDiagram]:
+        """指定プロジェクト・記法のUML図一覧を取得する(DFDの横断検証で使う)。"""
+        return await self.list_all(
+            order_by=UmlDiagram.updated_at.desc(), project_id=project_id, notation=notation
+        )
+
+    async def get_by_subject(
+        self, *, project_id: uuid.UUID, notation: str, subject: str
+    ) -> UmlDiagram | None:
+        """(project_id, notation, subject)で図を1件取得する(再生成時の上書き対象の検索)。"""
+        return await self.find_one(project_id=project_id, notation=notation, subject=subject)
+
+    async def has_generating(self, project_id: uuid.UUID) -> bool:
+        """指定プロジェクトにAI生成中の図があるかどうか(生成はプロジェクトごとに1本に限る)。"""
+        return await self.count(project_id=project_id, generation_status="generating") > 0

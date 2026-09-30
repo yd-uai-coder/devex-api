@@ -6,6 +6,7 @@ from app.models.intake_file import IntakeFile
 from app.models.project import Project
 from app.models.prompt_template import PromptTemplate
 from app.models.uml_diagram import UmlDiagram
+from app.models.uml_generation_run import UmlGenerationRun
 from app.models.user import User
 
 # alembicにimportさせるモデル
@@ -19,5 +20,6 @@ __all__ = [
     "Project",
     "PromptTemplate",
     "UmlDiagram",
+    "UmlGenerationRun",
     "User",
 ]

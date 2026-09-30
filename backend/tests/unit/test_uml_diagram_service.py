@@ -2,66 +2,35 @@ import uuid
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
+from tests.fixtures.uml import create_empty_diagram, create_project
 
-from app.models.project import Project
-from app.models.user import User
 from app.services.data_item_service import DataItemService
 from app.services.errors import (
     LayoutNodeLimitExceededError,
     LayoutValidationFailedError,
     UmlDiagramNotFoundError,
     UmlDiagramVersionConflictError,
+    UmlGenerationInProgressError,
 )
 from app.services.uml_diagram_service import UmlDiagramService
 from app.uml.domain import ComponentSemanticModel, DfdSemanticModel, SemanticModelAdapter
 from app.uml.validation.structural import MAX_ELEMENTS
 
 
-async def _create_project(session: AsyncSession) -> Project:
-    user = User(email=f"owner-{uuid.uuid4()}@example.com", hashed_password="x")
-    session.add(user)
-    await session.flush()
-    project = Project(user_id=user.id, title="備品予約システム")
-    session.add(project)
-    await session.flush()
-    return project
-
-
-async def test_create_returns_draft_with_empty_component_model(db_session: AsyncSession) -> None:
-    project = await _create_project(db_session)
-    service = UmlDiagramService(db_session)
-
-    diagram = await service.create(project_id=project.id, notation="component")
-
-    assert diagram.status == "draft"
-    assert diagram.version == 1
-    assert diagram.view == "structure"
-    assert diagram.semantic_model == {"notation": "component", "elements": [], "relations": []}
-
-
-async def test_create_derives_view_from_notation_for_dfd(db_session: AsyncSession) -> None:
-    project = await _create_project(db_session)
-    service = UmlDiagramService(db_session)
-
-    diagram = await service.create(project_id=project.id, notation="dfd")
-
-    assert diagram.view == "dataflow"
-
-
 async def test_get_raises_not_found_for_other_project(db_session: AsyncSession) -> None:
-    project = await _create_project(db_session)
-    other_project = await _create_project(db_session)
+    project = await create_project(db_session)
+    other_project = await create_project(db_session)
     service = UmlDiagramService(db_session)
-    diagram = await service.create(project_id=project.id, notation="component")
+    diagram = await create_empty_diagram(db_session, project.id, "component")
 
     with pytest.raises(UmlDiagramNotFoundError):
         await service.get(project_id=other_project.id, diagram_id=diagram.id)
 
 
 async def test_update_persists_new_model_and_increments_version(db_session: AsyncSession) -> None:
-    project = await _create_project(db_session)
+    project = await create_project(db_session)
     service = UmlDiagramService(db_session)
-    diagram = await service.create(project_id=project.id, notation="component")
+    diagram = await create_empty_diagram(db_session, project.id, "component")
     new_model = ComponentSemanticModel.model_validate(
         {"elements": [{"id": "c1", "name": "auth"}], "relations": []}
     )
@@ -80,9 +49,9 @@ async def test_update_persists_new_model_and_increments_version(db_session: Asyn
 
 
 async def test_update_raises_conflict_on_stale_version(db_session: AsyncSession) -> None:
-    project = await _create_project(db_session)
+    project = await create_project(db_session)
     service = UmlDiagramService(db_session)
-    diagram = await service.create(project_id=project.id, notation="component")
+    diagram = await create_empty_diagram(db_session, project.id, "component")
     new_model = ComponentSemanticModel.model_validate({"elements": [], "relations": []})
 
     with pytest.raises(UmlDiagramVersionConflictError):
@@ -97,9 +66,9 @@ async def test_update_raises_conflict_on_stale_version(db_session: AsyncSession)
 async def test_validate_returns_valid_result_for_empty_component_model(
     db_session: AsyncSession,
 ) -> None:
-    project = await _create_project(db_session)
+    project = await create_project(db_session)
     service = UmlDiagramService(db_session)
-    diagram = await service.create(project_id=project.id, notation="component")
+    diagram = await create_empty_diagram(db_session, project.id, "component")
 
     result = await service.validate(project_id=project.id, diagram_id=diagram.id)
 
@@ -107,12 +76,12 @@ async def test_validate_returns_valid_result_for_empty_component_model(
 
 
 async def test_validate_uses_project_data_items_for_dfd(db_session: AsyncSession) -> None:
-    project = await _create_project(db_session)
+    project = await create_project(db_session)
     diagram_service = UmlDiagramService(db_session)
     data_item_service = DataItemService(db_session)
     data_item = await data_item_service.create(project_id=project.id, name="予約情報", fields=[])
 
-    diagram = await diagram_service.create(project_id=project.id, notation="dfd")
+    diagram = await create_empty_diagram(db_session, project.id, "dfd")
     dfd_model = SemanticModelAdapter.validate_python(
         {
             "notation": "dfd",
@@ -147,9 +116,9 @@ async def test_validate_uses_project_data_items_for_dfd(db_session: AsyncSession
 
 
 async def test_compute_layout_persists_layout_model(db_session: AsyncSession) -> None:
-    project = await _create_project(db_session)
+    project = await create_project(db_session)
     service = UmlDiagramService(db_session)
-    diagram = await service.create(project_id=project.id, notation="component")
+    diagram = await create_empty_diagram(db_session, project.id, "component")
     model = ComponentSemanticModel.model_validate(
         {
             "elements": [
@@ -172,9 +141,9 @@ async def test_compute_layout_persists_layout_model(db_session: AsyncSession) ->
 
 
 async def test_compute_layout_raises_when_node_limit_exceeded(db_session: AsyncSession) -> None:
-    project = await _create_project(db_session)
+    project = await create_project(db_session)
     service = UmlDiagramService(db_session)
-    diagram = await service.create(project_id=project.id, notation="component")
+    diagram = await create_empty_diagram(db_session, project.id, "component")
     too_many = {
         "elements": [{"id": f"c{i}", "name": f"module{i}"} for i in range(MAX_ELEMENTS + 1)],
         "relations": [],
@@ -191,9 +160,9 @@ async def test_compute_layout_raises_when_node_limit_exceeded(db_session: AsyncS
 async def test_compute_layout_raises_when_structural_validation_fails(
     db_session: AsyncSession,
 ) -> None:
-    project = await _create_project(db_session)
+    project = await create_project(db_session)
     service = UmlDiagramService(db_session)
-    diagram = await service.create(project_id=project.id, notation="component")
+    diagram = await create_empty_diagram(db_session, project.id, "component")
     model = ComponentSemanticModel.model_validate(
         {
             "elements": [{"id": "c1", "name": "auth"}],
@@ -207,3 +176,84 @@ async def test_compute_layout_raises_when_structural_validation_fails(
 
     with pytest.raises(LayoutValidationFailedError):
         await service.compute_layout(project_id=project.id, diagram_id=diagram.id)
+
+
+async def test_update_and_layout_are_rejected_while_generating(db_session: AsyncSession) -> None:
+    """Phase 10: 生成中の図は生成結果で上書きされるため、更新・レイアウト実行を拒否する。"""
+    project = await create_project(db_session)
+    service = UmlDiagramService(db_session)
+    diagram = await create_empty_diagram(db_session, project.id, "component")
+    diagram.generation_status = "generating"
+    await db_session.commit()
+    model = ComponentSemanticModel.model_validate({"elements": [], "relations": []})
+
+    with pytest.raises(UmlGenerationInProgressError):
+        await service.update(
+            project_id=project.id, diagram_id=diagram.id, expected_version=1, semantic_model=model
+        )
+    with pytest.raises(UmlGenerationInProgressError):
+        await service.compute_layout(project_id=project.id, diagram_id=diagram.id)
+
+
+async def test_validate_does_not_warn_for_data_item_used_by_another_dfd(
+    db_session: AsyncSession,
+) -> None:
+    """Phase 10: 未参照データ項目の判定は、プロジェクト内の全DFDを横断する。"""
+    project = await create_project(db_session)
+    service = UmlDiagramService(db_session)
+    data_item_service = DataItemService(db_session)
+    used_here = await data_item_service.create(
+        project_id=project.id, name="予約リクエスト", fields=[]
+    )
+    used_elsewhere = await data_item_service.create(
+        project_id=project.id, name="予約一覧", fields=[]
+    )
+    unused = await data_item_service.create(project_id=project.id, name="未使用", fields=[])
+
+    def _dfd(item_id: uuid.UUID) -> DfdSemanticModel:
+        model = SemanticModelAdapter.validate_python(
+            {
+                "notation": "dfd",
+                "elements": [
+                    {"id": "e1", "name": "利用者", "element_type": "external_entity"},
+                    {"id": "p1", "name": "処理", "element_type": "process"},
+                    {"id": "s1", "name": "reservations", "element_type": "data_store"},
+                ],
+                "relations": [
+                    {
+                        "id": "f1",
+                        "source_id": "e1",
+                        "target_id": "p1",
+                        "data_item_id": str(item_id),
+                    },
+                    {
+                        "id": "f2",
+                        "source_id": "p1",
+                        "target_id": "s1",
+                        "data_item_id": str(item_id),
+                    },
+                ],
+            }
+        )
+        assert isinstance(model, DfdSemanticModel)
+        return model
+
+    first = await create_empty_diagram(db_session, project.id, "dfd", subject="POST /a")
+    second = await create_empty_diagram(db_session, project.id, "dfd", subject="GET /a")
+    await service.update(
+        project_id=project.id,
+        diagram_id=first.id,
+        expected_version=1,
+        semantic_model=_dfd(used_here.id),
+    )
+    await service.update(
+        project_id=project.id,
+        diagram_id=second.id,
+        expected_version=1,
+        semantic_model=_dfd(used_elsewhere.id),
+    )
+
+    result = await service.validate(project_id=project.id, diagram_id=first.id)
+
+    unreferenced = {w.element_id for w in result.warnings if w.code == "UNREFERENCED_DATA_ITEM"}
+    assert unreferenced == {str(unused.id)}

@@ -89,3 +89,29 @@ async def test_astream_yields_a_single_chunk_with_the_same_reply() -> None:
     chunks = [chunk.content async for chunk in llm.astream(messages)]
 
     assert chunks == ["[E2E Fake] 承知しました。次に、想定している主なユーザー層を教えてください。"]
+
+
+async def test_internal_design_reply_has_uml_generation_candidates() -> None:
+    """Phase 10: E2E用の内部設計書は、UML図の生成候補(テーブル見出し・DF見出し)を含む。"""
+    from app.uml.generation import extract_dfd_subjects, extract_er_tables
+
+    llm = E2eFakeLLM()
+    messages = [
+        SystemMessage(content=_DOC_TYPE_PROMPTS["internal_design"]),
+        HumanMessage(content="dummy input"),
+    ]
+    result = await llm.ainvoke(messages)
+    assert isinstance(result.content, str)
+
+    assert extract_er_tables(result.content) == ["reservations"]
+    assert [s.title for s in extract_dfd_subjects(result.content)] == ["POST /api/v1/reservations"]
+
+
+async def test_uml_schemas_return_parsed_output_with_raw_when_include_raw() -> None:
+    from app.uml.generation import GENERATION_SCHEMAS
+
+    llm = E2eFakeLLM()
+    for schema in GENERATION_SCHEMAS.values():
+        result = await llm.with_structured_output(schema, include_raw=True).ainvoke([])
+        assert isinstance(result["parsed"], schema)
+        assert result["raw"].response_metadata["finish_reason"] == "STOP"

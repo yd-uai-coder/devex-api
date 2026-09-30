@@ -30,8 +30,8 @@ SemanticModelAdapter: TypeAdapter[
 ] = TypeAdapter(SemanticModel)
 
 # notation別の空の意味モデルを組み立てるためのファクトリ。
-# UmlDiagramService.create()が、Phase 10のAI生成トリガーが実装されるまでの間、
-# draft状態の空モデルを持つ図を作成する際に使う。
+# AI生成(app/services/uml_generation_service.py)が、生成を受け付けた直後(生成中)の
+# 新規の図に、まだ中身の無い空モデルを持たせる際に使う。
 _AnySemanticModel = ComponentSemanticModel | ErSemanticModel | DfdSemanticModel
 _EMPTY_MODEL_FACTORIES: dict[NotationType, type[_AnySemanticModel]] = {
     "component": ComponentSemanticModel,

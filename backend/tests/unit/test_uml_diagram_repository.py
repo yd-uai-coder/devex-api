@@ -73,3 +73,49 @@ async def test_list_for_project_orders_by_updated_at_desc(db_session: AsyncSessi
     result = await repo.list_for_project(project.id)
 
     assert [d.id for d in result] == [second.id, first.id]
+
+
+async def test_get_by_subject_finds_diagram_by_notation_and_subject(
+    db_session: AsyncSession,
+) -> None:
+    project = await _create_project(db_session)
+    repo = UmlDiagramRepository(db_session)
+    diagram = await repo.create(
+        project_id=project.id,
+        view="dataflow",
+        notation="dfd",
+        semantic_model={"notation": "dfd", "elements": [], "relations": []},
+        subject="POST /api/v1/reservations",
+    )
+
+    found = await repo.get_by_subject(
+        project_id=project.id, notation="dfd", subject="POST /api/v1/reservations"
+    )
+    missing = await repo.get_by_subject(project_id=project.id, notation="dfd", subject="other")
+
+    assert found is not None and found.id == diagram.id
+    assert missing is None
+
+
+async def test_has_generating_and_list_by_notation(db_session: AsyncSession) -> None:
+    project = await _create_project(db_session)
+    repo = UmlDiagramRepository(db_session)
+    await repo.create(
+        project_id=project.id,
+        view="structure",
+        notation="component",
+        semantic_model={"notation": "component", "elements": [], "relations": []},
+    )
+    assert not await repo.has_generating(project.id)
+
+    await repo.create(
+        project_id=project.id,
+        view="dataflow",
+        notation="dfd",
+        semantic_model={"notation": "dfd", "elements": [], "relations": []},
+        subject="GET /api/v1/reservations",
+        generation_status="generating",
+    )
+
+    assert await repo.has_generating(project.id)
+    assert [d.notation for d in await repo.list_by_notation(project.id, "dfd")] == ["dfd"]

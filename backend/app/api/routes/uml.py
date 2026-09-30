@@ -1,12 +1,23 @@
 import uuid
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, BackgroundTasks, status
 
 from app.api.deps import CurrentProjectDep, SessionDep
 from app.schemas.data_item import DataItemCreate, DataItemRead, DataItemUpdate
-from app.schemas.uml_diagram import UmlDiagramCreate, UmlDiagramRead, UmlDiagramUpdate
+from app.schemas.uml_diagram import UmlDiagramRead, UmlDiagramUpdate
+from app.schemas.uml_generation import (
+    DfdSubjectRead,
+    UmlCandidatesRead,
+    UmlGenerateRequest,
+    UmlGenerationRunRead,
+)
 from app.services.data_item_service import DataItemService
 from app.services.uml_diagram_service import UmlDiagramService
+from app.services.uml_generation_service import (
+    SubjectRequest,
+    UmlGenerationService,
+    run_uml_generation,
+)
 from app.uml.validation import ValidationResult
 
 # project_idをprefixに含める(既存のprojects.pyはエンドポイント側にproject_idを書く方式だが、
@@ -16,16 +27,58 @@ from app.uml.validation import ValidationResult
 router = APIRouter(prefix="/projects/{project_id}/uml", tags=["uml"])
 
 
-@router.post("/diagrams", response_model=UmlDiagramRead, status_code=status.HTTP_201_CREATED)
-async def create_diagram(
-    payload: UmlDiagramCreate, session: SessionDep, current_project: CurrentProjectDep
-) -> UmlDiagramRead:
-    """UML図を新規作成する(Phase 8時点ではAI生成トリガーのプレースホルダーとして、
-    要素・関係が空のdraftを返す。実AI生成はPhase 10で追加)。"""
-    diagram = await UmlDiagramService(session).create(
-        project_id=current_project.id, notation=payload.notation
+@router.post(
+    "/diagrams", response_model=UmlGenerationRunRead, status_code=status.HTTP_202_ACCEPTED
+)
+async def generate_diagrams(
+    payload: UmlGenerateRequest,
+    session: SessionDep,
+    current_project: CurrentProjectDep,
+    background_tasks: BackgroundTasks,
+) -> UmlGenerationRunRead:
+    """UML図のAI生成(M1)を受け付け、バックグラウンドで実行する。対象の図は`generating`になり、
+    完了すると`completed`/`failed`になる(FEは`GET /diagrams`をポーリングする)。同じ対象の図が
+    既にあれば上書きする。戻り値は生成履歴(実行中)で、止まった理由は`GET /generation-runs`で
+    確認できる。background taskにはproject_id・run_idの値だけを渡す
+    (doc生成の`POST /projects/{id}/generate`と同じ理由)。"""
+    run = await UmlGenerationService(session).request_generation(
+        project_id=current_project.id,
+        notation=payload.notation,
+        subjects=[SubjectRequest(subject=s.subject, tables=s.tables) for s in payload.subjects],
     )
-    return UmlDiagramRead.model_validate(diagram)
+    background_tasks.add_task(run_uml_generation, current_project.id, run.id)
+    return UmlGenerationRunRead.model_validate(run)
+
+
+@router.get("/diagrams", response_model=list[UmlDiagramRead])
+async def list_diagrams(
+    session: SessionDep, current_project: CurrentProjectDep
+) -> list[UmlDiagramRead]:
+    """プロジェクトのUML図一覧を取得する(更新日時の降順)。"""
+    diagrams = await UmlDiagramService(session).list_for_project(current_project.id)
+    return [UmlDiagramRead.model_validate(d) for d in diagrams]
+
+
+@router.get("/candidates", response_model=UmlCandidatesRead)
+async def list_generation_candidates(
+    session: SessionDep, current_project: CurrentProjectDep
+) -> UmlCandidatesRead:
+    """生成対象の候補(DFDの処理・ERのテーブル)を、内部設計書の見出しから列挙する。"""
+    candidates = await UmlGenerationService(session).list_candidates(current_project.id)
+    return UmlCandidatesRead(
+        internal_design_version=candidates.internal_design_version,
+        dfd_subjects=[DfdSubjectRead(code=s.code, title=s.title) for s in candidates.dfd_subjects],
+        er_tables=candidates.er_tables,
+    )
+
+
+@router.get("/generation-runs", response_model=list[UmlGenerationRunRead])
+async def list_generation_runs(
+    session: SessionDep, current_project: CurrentProjectDep
+) -> list[UmlGenerationRunRead]:
+    """UML図のAI生成の履歴を新しい順に取得する(止まった理由と再度の生成指示が必要な旨を含む)。"""
+    runs = await UmlGenerationService(session).list_runs(current_project.id)
+    return [UmlGenerationRunRead.model_validate(r) for r in runs]
 
 
 @router.get("/diagrams/{diagram_id}", response_model=UmlDiagramRead)
