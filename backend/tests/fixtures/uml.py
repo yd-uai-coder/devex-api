@@ -15,7 +15,13 @@ from app.models.uml_diagram import UmlDiagram
 from app.models.user import User
 from app.repositories.generated_document import GeneratedDocumentRepository
 from app.repositories.uml_diagram import UmlDiagramRepository
-from app.uml.domain import NOTATION_TO_VIEW, NotationType, empty_semantic_model
+from app.services.uml_diagram_service import UmlDiagramService
+from app.uml.domain import (
+    NOTATION_TO_VIEW,
+    NotationType,
+    SemanticModelAdapter,
+    empty_semantic_model,
+)
 from app.uml.generation.schemas import (
     ComponentGenerationOutput,
     DfdGenerationOutput,
@@ -172,4 +178,40 @@ def dfd_output(data_item_name: str = "予約リクエスト") -> DfdGenerationOu
             GeneratedFlow(id="f1", source_id="e1", target_id="p1", data_item_name=data_item_name),
             GeneratedFlow(id="f2", source_id="p1", target_id="s1", data_item_name=data_item_name),
         ],
+    )
+
+
+TWO_MODULES = {
+    "elements": [
+        {"id": "c1", "name": "認証API", "description": "ルーター"},
+        {"id": "c2", "name": "認証サービス"},
+    ],
+    "relations": [{"id": "r1", "source_id": "c1", "target_id": "c2"}],
+}
+
+
+async def create_approved_diagram(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    *,
+    model: dict | None = None,
+    notation: NotationType = "component",
+    subject: str = "",
+) -> UmlDiagram:
+    """意味モデルを保存 → 自動レイアウト → 承認まで済ませた図を返す(version=2、status=approved)。
+    内部設計書があれば、承認と同時に反映される(Phase 13-2)。"""
+    service = UmlDiagramService(session)
+    diagram = await create_empty_diagram(session, project_id, notation, subject)
+    semantic_model = SemanticModelAdapter.validate_python(
+        {"notation": notation, **(model if model is not None else TWO_MODULES)}
+    )
+    await service.update(
+        project_id=project_id,
+        diagram_id=diagram.id,
+        expected_version=1,
+        semantic_model=semantic_model,
+    )
+    laid_out = await service.compute_layout(project_id=project_id, diagram_id=diagram.id)
+    return await service.approve(
+        project_id=project_id, diagram_id=diagram.id, expected_version=laid_out.version
     )

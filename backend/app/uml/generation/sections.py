@@ -89,3 +89,25 @@ def extract_er_table_blocks(markdown: str, table_names: list[str]) -> str:
         body = rest[: next_heading.start()] if next_heading else rest
         blocks.append(f"{match.group(0).strip()}\n{body.strip()}")
     return "\n\n".join(blocks)
+
+
+def find_section_heading_end(markdown: str, number: str) -> int | None:
+    """`## <number>`(例: "3.2")の見出し行の直後(改行の後ろ)の位置を返す。無ければNone。
+    `extract_section`と同じ見出しの判定を使う。"""
+    match = re.search(rf"^##\s+{re.escape(number)}(\s.*)?$", markdown, re.MULTILINE)
+    return _line_end(markdown, match.end()) if match else None
+
+
+def find_dfd_heading_end(markdown: str, title: str) -> int | None:
+    """`#### DF-<n>: <title>`の見出し行の直後の位置を返す。無ければNone。
+    DF-nの番号は再生成で振り直されうるため、`extract_dfd_subjects`と同じく処理名(title)で探す。"""
+    for match in _DFD_SUBJECT_HEADING.finditer(markdown):
+        if match.group(2) == title:
+            return _line_end(markdown, match.end())
+    return None
+
+
+def _line_end(markdown: str, index: int) -> int:
+    """`index`を含む行の改行の直後(最終行なら文字列の末尾)。"""
+    newline = markdown.find("\n", index)
+    return len(markdown) if newline == -1 else newline + 1

@@ -1,8 +1,6 @@
 import asyncio
-import re
 import uuid
 from dataclasses import dataclass
-from typing import Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +19,7 @@ from app.services.errors import (
     UmlGenerationInProgressError,
     UmlLayoutRequiredError,
 )
+from app.services.uml_sync_service import UmlSyncService
 from app.uml.domain import (
     STATUS_AFTER_APPROVE,
     STATUS_AFTER_EDIT,
@@ -28,31 +27,23 @@ from app.uml.domain import (
     ComponentSemanticModel,
     DfdSemanticModel,
     ErSemanticModel,
-    NotationType,
     SemanticModelAdapter,
     can_approve,
     can_export,
     parse_status,
 )
-from app.uml.export import build_render, to_drawio, to_svg
+from app.uml.export import (
+    MEDIA_TYPES,
+    ExportFormat,
+    build_render,
+    diagram_title,
+    export_filename,
+    render_content,
+)
 from app.uml.layout import LayoutModel, edge_labels, reconcile_layout
 from app.uml.layout import compute_layout as compute_layout_engine
 from app.uml.validation import ValidationResult, validate_diagram
 from app.uml.validation.structural import MAX_ELEMENTS
-
-ExportFormat = Literal["drawio", "svg"]
-
-_MEDIA_TYPES: dict[ExportFormat, str] = {"drawio": "application/xml", "svg": "image/svg+xml"}
-
-# 出力するファイルの題名(devex-ui labels.tsのNOTATION_LABELS/diagramTitleと同じ文言)
-_NOTATION_TITLES: dict[NotationType, str] = {
-    "component": "コンポーネント図",
-    "er": "ER図",
-    "dfd": "データフロー図",
-}
-
-# ファイル名に使えない文字(Windowsを含む主要OSの禁止文字と制御文字)
-_UNSAFE_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 
 @dataclass(frozen=True)
@@ -74,6 +65,7 @@ class UmlDiagramService:
         self._session = session
         self._diagrams = UmlDiagramRepository(session)
         self._data_items = DataItemRepository(session)
+        self._sync = UmlSyncService(session)
 
     async def list_for_project(self, project_id: uuid.UUID) -> list[UmlDiagram]:
         """指定プロジェクトのUML図一覧を取得する。"""
@@ -222,6 +214,8 @@ class UmlDiagramService:
             )
 
         diagram.status = STATUS_AFTER_APPROVE
+        # 承認した内容を、同じトランザクションで内部設計書へ反映する(M9a。版は増やさない)
+        await self._sync.reflect(diagram)
         await self._session.flush()
         await self._session.commit()
         await self._session.refresh(diagram)
@@ -247,20 +241,16 @@ class UmlDiagramService:
         render = build_render(
             model, layout, edge_labels(model, await self._data_item_names(diagram, model))
         )
-        title = _diagram_title(model.notation, diagram.subject)
-        content = (
-            to_drawio(render, diagram_id=str(diagram.id), title=title)
-            if fmt == "drawio"
-            else to_svg(render)
-        )
+        title = diagram_title(model.notation, diagram.subject)
+        content = render_content(render, fmt, diagram_id=str(diagram.id), title=title)
 
         diagram.status = STATUS_AFTER_EXPORT
         await self._session.flush()
         await self._session.commit()
         return ExportedFile(
-            filename=_export_filename(model.notation, diagram.subject, fmt),
+            filename=export_filename(model.notation, diagram.subject, fmt),
             content=content,
-            media_type=_MEDIA_TYPES[fmt],
+            media_type=MEDIA_TYPES[fmt],
         )
 
     async def _validate_model(
@@ -302,19 +292,6 @@ class UmlDiagramService:
         if diagram is None:
             raise UmlDiagramNotFoundError(f"Diagram {diagram_id} not found")
         return diagram
-
-
-def _diagram_title(notation: NotationType, subject: str) -> str:
-    """図の題名(component・ER全体図はsubjectが空文字)。"""
-    notation_title = _NOTATION_TITLES[notation]
-    return f"{notation_title}: {subject}" if subject else f"{notation_title}(全体)"
-
-
-def _export_filename(notation: NotationType, subject: str, fmt: ExportFormat) -> str:
-    """出力するファイル名(`{notation}[_{subject}].{拡張子}`)。subjectはDFDの処理名などで
-    `/`を含みうる(例: `DF-1: POST /api/v1/reservations`)ため、使えない文字を`_`に置き換える。"""
-    base = f"{notation}_{subject}" if subject else notation
-    return f"{_UNSAFE_FILENAME_CHARS.sub('_', base).strip()}.{fmt}"
 
 
 def _ensure_version(diagram: UmlDiagram, expected_version: int) -> None:
