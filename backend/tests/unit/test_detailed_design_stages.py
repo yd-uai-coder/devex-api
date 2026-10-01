@@ -89,7 +89,25 @@ def test_current_inputs_lists_stages_then_documents() -> None:
 
 def test_can_approve_allows_reapproving_only_outdated_stages() -> None:
     assert can_approve("draft") is True
+    assert can_approve("regenerated") is True
     assert can_approve("reviewing") is True
     assert can_approve("outdated") is True
     assert can_approve("approved") is False
     assert can_approve("not_started") is False
+
+
+def test_regenerated_stage_keeps_its_state_until_inputs_change() -> None:
+    """作り直した段階(Phase 16)は、生成時の入力の記録と一致すれば「再生成済」のまま、
+    食い違えば「古い」になる。"""
+    record = StageRecord(
+        status="regenerated",
+        version=3,
+        approved_version=2,
+        input_fingerprint={"doc:external_design": 2},
+    )
+
+    current = derive_states({1: record}, {**DOCS, "external_design": 2})
+    changed = derive_states({1: record}, {**DOCS, "external_design": 3})
+
+    assert current[1].state == "regenerated"
+    assert changed[1].state == "outdated"

@@ -27,3 +27,24 @@ async def create_detailed_project(
             )
     await session.commit()
     return project
+
+
+def function_list_model(*, group: str = "reservations") -> dict:
+    """段階1の検証を通る最小の機能一覧(処理1件・機能グループ1つ)。`group`を一覧に無い名前に
+    すると、検証のエラー(UNKNOWN_GROUP)になる。"""
+    return {
+        "groups": ["reservations"],
+        "functions": [
+            {
+                "id": "F-01",
+                "name": "予約を登録する",
+                "kind": "API",
+                "trigger": "POST /api/v1/reservations",
+                "screens": ["SCR-001"],
+                "group_initial": "reservations",
+                "group": group,
+                "summary": "予約を保存する",
+            }
+        ],
+        "next_number": 2,
+    }

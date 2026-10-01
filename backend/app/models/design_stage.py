@@ -9,6 +9,7 @@ from sqlalchemy import (
     Integer,
     SmallInteger,
     String,
+    Text,
     UniqueConstraint,
     Uuid,
     func,
@@ -31,6 +32,9 @@ class DesignStage(Base):
     `version`は内容の楽観ロック用で、承認しても増やさない(UML図と同じ)。`approved_version`は
     最後に承認したときの`version`、`input_fingerprint`は承認したときの入力の版
     (app/detailed_design/stages.py参照)。
+
+    `generation_*`はAIの下書きの生成の状態(Phase 16)。生成中は保存・承認できない(AIの結果で
+    人の編集を上書きしないため)。
     """
 
     __tablename__ = "design_stages"
@@ -44,12 +48,21 @@ class DesignStage(Base):
         Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
     )
     stage: Mapped[int] = mapped_column(SmallInteger, nullable=False)
-    # status: 'draft'(AIの下書き)/'reviewing'(人が編集した)/'approved'
+    # status: 'draft'(AIの下書き)/'regenerated'(AIが作り直した・未承認)/
+    # 'reviewing'(人が編集した)/'approved'
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
     model: Mapped[dict | None] = mapped_column(PortableJSON, nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     approved_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     input_fingerprint: Mapped[dict | None] = mapped_column(PortableJSON, nullable=True)
+    # AIの下書きの生成の状態(Phase 16)。レビューの状態`status`とは別の軸(UML図と同じ)。
+    # None = まだ生成していない / 'generating' / 'completed' / 'failed'
+    generation_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    generation_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 生成を始めた時刻。止まった生成(15分超)の回収に使う(app/services/generation_staleness.py)
+    generation_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

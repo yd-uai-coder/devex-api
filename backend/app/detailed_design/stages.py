@@ -1,7 +1,8 @@
 """詳細設計モードの段階(1〜7)の状態と陳腐化を決める純粋関数(docs/external_design.md 2.7節)。
 
-DBに保存する状態は`draft`/`reviewing`/`approved`の3つだけで、画面に出す5つの状態のうち
-「未着手」(行が無い)と「古い」(入力が承認時から変わった)は、ここで導く。
+DBに保存する状態は`draft`/`regenerated`/`reviewing`/`approved`の4つだけで、画面に出す6つの
+状態のうち「未着手」(行が無い)と「古い」(入力が承認時・生成時から変わった)は、ここで導く。
+`regenerated`(再生成済・未承認)は、内容のある段階をAIが作り直したときの状態(Phase 16)。
 
 陳腐化は Phase 13 の`app/uml/sync/staleness.py`と同じく「等しくない」で比べる。段階を承認したとき、
 その段階が入力にしたもの(前の段階の承認済みの版・文書の表示中の版)を`input_fingerprint`に
@@ -19,8 +20,8 @@ from typing import Literal
 
 STAGES: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7)
 
-StoredStatus = Literal["draft", "reviewing", "approved"]
-StageState = Literal["not_started", "draft", "reviewing", "approved", "outdated"]
+StoredStatus = Literal["draft", "regenerated", "reviewing", "approved"]
+StageState = Literal["not_started", "draft", "regenerated", "reviewing", "approved", "outdated"]
 Fingerprint = dict[str, int | None]
 
 
@@ -124,4 +125,4 @@ def _state_of(record: StageRecord | None, current: Fingerprint) -> StageState:
 
 def can_approve(state: StageState) -> bool:
     """承認できる状態か。承認済みでも「古い」なら、内容を変えずに承認し直せる(入力の版を記録し直す)。"""
-    return state in ("draft", "reviewing", "outdated")
+    return state in ("draft", "regenerated", "reviewing", "outdated")

@@ -18,6 +18,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel
 
+from app.detailed_design.drafting import FunctionListGenerationOutput, GeneratedFunction
 from app.schemas.generation import HearingCompletionCheck
 from app.uml.generation.schemas import (
     ComponentGenerationOutput,
@@ -77,6 +78,17 @@ _INTERNAL_DESIGN_REPLY = (
     "- データ項目: 予約リクエスト(item_id, start_at)\n"
 )
 
+# 外部設計書は、詳細設計モードの段階1(機能一覧)がAPI一覧(2.6節)を読むため、外部設計書
+# プロンプトが指示する固定形式の表を含めて返す(Phase 16)。
+_EXTERNAL_DESIGN_REPLY = (
+    "# 外部設計書(E2E Fake)\n\n"
+    "## 2.2 画面一覧・画面遷移フロー（概要）\n| 画面ID | 画面名 | 主要な役割 | 優先度 |\n"
+    "|---|---|---|---|\n| SCR-001 | 予約画面 | 備品を予約する | Must |\n\n"
+    "## 2.6 API一覧\n| メソッド | パス | 概要 | 関連画面 |\n|---|---|---|---|\n"
+    "| POST | /api/v1/reservations | 予約を登録する | SCR-001 |\n"
+    "| GET | /api/v1/reservations | 予約の一覧を返す | SCR-001 |\n"
+)
+
 # UML図の生成(Phase 10)で返す固定の構造化出力。記法ごとに、検証(M4)を通る最小の図にする。
 _UML_OUTPUTS: dict[type[BaseModel], BaseModel] = {
     ComponentGenerationOutput: ComponentGenerationOutput(
@@ -129,6 +141,26 @@ _UML_OUTPUTS: dict[type[BaseModel], BaseModel] = {
         ],
     ),
 }
+
+# 詳細設計モードの段階1(機能一覧)の下書き(Phase 16)。_EXTERNAL_DESIGN_REPLY の API 一覧と同じAPI
+_UML_OUTPUTS[FunctionListGenerationOutput] = FunctionListGenerationOutput(
+    functions=[
+        GeneratedFunction(
+            name="予約を登録する",
+            kind="API",
+            trigger="POST /api/v1/reservations",
+            screens=["SCR-001"],
+            summary="[E2E Fake] 備品と期間を検証して予約を保存する",
+        ),
+        GeneratedFunction(
+            name="予約の一覧を返す",
+            kind="API",
+            trigger="GET /api/v1/reservations",
+            screens=["SCR-001"],
+            summary="[E2E Fake] 利用者の予約を返す",
+        ),
+    ]
+)
 
 _HEARING_REPLY = "[E2E Fake] 承知しました。次に、想定している主なユーザー層を教えてください。"
 _SELF_DIAGNOSIS_REPLY = "[E2E Fake] 自己診断: 特に致命的な不足点はありません。"
@@ -211,6 +243,8 @@ class E2eFakeLLM:
             if marker in system_text:
                 if doc_type == "internal_design":
                     return _INTERNAL_DESIGN_REPLY
+                if doc_type == "external_design":
+                    return _EXTERNAL_DESIGN_REPLY
                 label = _DOC_TYPE_LABELS[doc_type]
                 return f"# {label}(E2E Fake)\n\nこれはE2Eテスト用に生成されたダミーの{label}です。"
         if "レビュアー" in system_text:

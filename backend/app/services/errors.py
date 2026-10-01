@@ -239,6 +239,27 @@ class DesignStageNotApprovableError(ConflictError):
     code: ClassVar[str | None] = "DESIGN_STAGE_NOT_APPROVABLE"
 
 
+class DesignStageInvalidError(ConflictError):
+    """段階ごとの検証(app/detailed_design/validation.py)でエラーがある段階を承認しようとした場合に
+    送出する。警告だけなら承認できる。指摘の一覧は段階の取得(`issues`)で確かめる。"""
+
+    code: ClassVar[str | None] = "DESIGN_STAGE_INVALID"
+
+
+class DesignStageGenerationInProgressError(ConflictError):
+    """段階の下書きを生成中に、その段階の生成・保存・承認を要求した場合に送出する。
+    生成の結果で人の編集を上書きしないため、生成が終わるまで待たせる。"""
+
+    code: ClassVar[str | None] = "DESIGN_STAGE_GENERATION_IN_PROGRESS"
+
+
+class DesignStageGenerationNotSupportedError(ConflictError):
+    """AIの下書きの生成にまだ対応していない段階の生成を要求した場合に送出する
+    (Phase 16 は段階1だけ)。"""
+
+    code: ClassVar[str | None] = "DESIGN_STAGE_GENERATION_NOT_SUPPORTED"
+
+
 class DocGenerationInProgressError(ConflictError):
     """設計書の生成が実行中(`projects.status='generating'`)のプロジェクトで、生成を再度要求した
     場合に送出する。二重実行で生成が並行し、版の番号が重複するのを防ぐ(画面側のボタンの無効化と
