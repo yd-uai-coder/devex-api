@@ -61,7 +61,9 @@ async def generate_diagrams(
 async def list_diagrams(
     session: SessionDep, current_project: CurrentProjectDep
 ) -> list[UmlDiagramRead]:
-    """プロジェクトのUML図一覧を取得する(更新日時の降順)。"""
+    """プロジェクトのUML図一覧を取得する(更新日時の降順)。画面は生成の完了をこの一覧の
+    ポーリングで待つため、止まった生成(15分超)はここで回収してから返す。"""
+    await UmlGenerationService(session).recover_stale(current_project.id)
     diagrams = await UmlDiagramService(session).list_for_project(current_project.id)
     return [UmlDiagramRead.model_validate(d) for d in diagrams]
 

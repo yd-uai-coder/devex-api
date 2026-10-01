@@ -32,6 +32,10 @@ class UmlGenerationRunRepository(CRUDRepository[UmlGenerationRun]):
         """履歴IDとプロジェクトIDの両方が一致するものだけを取得する。"""
         return await self.find_one(id=run_id, project_id=project_id)
 
+    async def list_running(self, project_id: uuid.UUID) -> list[UmlGenerationRun]:
+        """指定プロジェクトの実行中('running')の生成履歴を返す(止まった生成の回収用)。"""
+        return await self.list_all(project_id=project_id, status="running")
+
     async def list_recent(
         self, project_id: uuid.UUID, *, limit: int = 20
     ) -> list[UmlGenerationRun]:

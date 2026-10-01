@@ -37,7 +37,9 @@ class Settings(BaseSettings):
     JWT_SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 30
+    # refresh の JWT・Redis の TTL・Cookie の max_age は、すべてこの日数から導く
+    # (Phase 15 で14日に統一)
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 14
 
     # AI
     GOOGLE_API_KEY: str | None = None

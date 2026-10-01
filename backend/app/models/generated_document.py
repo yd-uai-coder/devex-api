@@ -2,7 +2,18 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, Uuid, false, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+    false,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -23,6 +34,13 @@ class GeneratedDocument(Base):
     """
 
     __tablename__ = "generated_documents"
+    # 版の番号は(プロジェクト, 種別)の中で一意。生成の二重実行は409と画面のボタンの無効化で
+    # 塞ぐが、それをすり抜けた並行実行もDBで止める(Phase 15、気づき#4)
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "doc_type", "version", name="uq_generated_documents_project_type_version"
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id: Mapped[uuid.UUID] = mapped_column(

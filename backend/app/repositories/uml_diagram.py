@@ -58,6 +58,10 @@ class UmlDiagramRepository(CRUDRepository[UmlDiagram]):
         """(project_id, notation, subject)で図を1件取得する(再生成時の上書き対象の検索)。"""
         return await self.find_one(project_id=project_id, notation=notation, subject=subject)
 
+    async def list_generating(self, project_id: uuid.UUID) -> list[UmlDiagram]:
+        """指定プロジェクトのAI生成中の図を返す(止まった生成の回収用)。"""
+        return await self.list_all(project_id=project_id, generation_status="generating")
+
     async def has_generating(self, project_id: uuid.UUID) -> bool:
         """指定プロジェクトにAI生成中の図があるかどうか(生成はプロジェクトごとに1本に限る)。"""
         return await self.count(project_id=project_id, generation_status="generating") > 0

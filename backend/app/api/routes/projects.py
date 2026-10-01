@@ -3,20 +3,23 @@ import json
 import uuid
 from typing import Annotated
 
+import structlog
 from fastapi import APIRouter, BackgroundTasks, File, Form, UploadFile, status
 from fastapi.responses import Response, StreamingResponse
 
 from app.api.deps import CurrentProjectDep, CurrentUserDep, SessionDep
 from app.api.responses import content_disposition
-from app.core.errors import BadRequestError
+from app.core.errors import AppError, BadRequestError
 from app.schemas.document import DocType, GeneratedDocumentRead
 from app.schemas.generation import HearingCompletionCheck
 from app.schemas.hearing import ChatHistoryRead, HearingMessageRequest
-from app.schemas.project import ProjectDetail, ProjectRead
+from app.schemas.project import ProjectDetail, ProjectMode, ProjectRead
 from app.services.chat_service import ChatService
 from app.services.doc_generator_service import DocGeneratorService, generate_documents
 from app.services.errors import GenerationFailedError, LLMQuotaExceededError
 from app.services.project import ProjectService, UploadedFileInput
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -29,6 +32,18 @@ def _parse_environment(raw: str | None) -> dict | None:
     except json.JSONDecodeError as exc:
         raise BadRequestError("environment must be a valid JSON object") from exc
 
+def _sse_error_event(exc: Exception) -> str:
+    """ストリームの途中で起きた失敗を`event: error`のSSEイベントにする(`{code, detail}`は
+    通常のエラーレスポンスと同じ形)。応答のヘッダーは送信済みでステータスコードを変えられないため、
+    失敗はイベントで伝える。AppError以外の例外は詳細を返さず、ログにだけ残す。"""
+    if isinstance(exc, AppError):
+        body = {"code": exc.code or "INTERNAL_SERVER_ERROR", "detail": str(exc)}
+    else:
+        logger.error("chat_stream_failed", error_type=type(exc).__name__, exc_info=exc)
+        body = {"code": "INTERNAL_SERVER_ERROR", "detail": "応答の生成中にエラーが発生しました。"}
+    return f"event: error\ndata: {json.dumps(body, ensure_ascii=False)}\n\n"
+
+
 @router.post("", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
 async def create_project(
     session: SessionDep,
@@ -38,6 +53,7 @@ async def create_project(
     notes_raw: Annotated[str | None, Form()] = None,
     environment: Annotated[str | None, Form()] = None,
     template_id: Annotated[uuid.UUID | None, Form()] = None,
+    mode: Annotated[ProjectMode, Form()] = "simple",
     files: Annotated[list[UploadFile] | None, File()] = None,
 ) -> ProjectRead:
     """初期ヒアリング入力(+添付ファイル最大3件、txt/md/pdfのみ)を受け取り、新規プロジェクトを作成する。"""
@@ -53,7 +69,11 @@ async def create_project(
         UploadedFileInput(filename=f.filename or "unnamed", data=await f.read()) for f in files
     ]
     project = await ProjectService(session).create(
-        user_id=current_user.id, intake=intake, files=file_inputs
+        user_id=current_user.id,
+        intake=intake,
+        files=file_inputs,
+        template_id=template_id,
+        mode=mode,
     )
     with contextlib.suppress(LLMQuotaExceededError, GenerationFailedError):
         # AIの最初の発話生成に失敗しても、プロジェクト作成自体は成功させる
@@ -83,10 +103,15 @@ async def send_hearing_message(
     AI応答をSSE(Server-Sent Events)でストリーミング返却する。"""
 
     async def event_stream():
-        async for chunk in ChatService(session).stream_reply(
-            current_project, user_message=payload.message
-        ):
-            yield f"data: {json.dumps({'delta': chunk}, ensure_ascii=False)}\n\n"
+        try:
+            async for chunk in ChatService(session).stream_reply(
+                current_project, user_message=payload.message
+            ):
+                yield f"data: {json.dumps({'delta': chunk}, ensure_ascii=False)}\n\n"
+        except Exception as exc:  # noqa: BLE001 -- 200を返した後なので、失敗はSSEのイベントで伝える
+            await session.rollback()
+            yield _sse_error_event(exc)
+            return
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
@@ -113,6 +138,7 @@ async def get_hearing_completion(
 
 @router.post("/{project_id}/generate", status_code=status.HTTP_202_ACCEPTED)
 async def trigger_generation(
+    session: SessionDep,
     current_project: CurrentProjectDep,
     current_user: CurrentUserDep,
     background_tasks: BackgroundTasks,
@@ -123,8 +149,16 @@ async def trigger_generation(
     実行前にクローズされるため、リクエストのセッションやORMオブジェクトはそのまま渡さない。詳細は
     doc_generator_service.generate_documentsのdocstring参照)。user_idも渡すのは、所有者チェック
     無しの専用メソッドを増やすのではなく、既存の所有者スコープ版get_by_idに統一するため。
+
+    生成中なら409(DOC_GENERATION_IN_PROGRESS)。受け付けた時点で`generating`にし、受け付ける前の
+    状態(失敗時に戻す先)をbackground taskへ渡す。
     """
-    background_tasks.add_task(generate_documents, current_project.id, current_user.id)
+    status_before_generation = await DocGeneratorService(session).request_generation(
+        current_project
+    )
+    background_tasks.add_task(
+        generate_documents, current_project.id, current_user.id, status_before_generation
+    )
 
 @router.get("/{project_id}/documents", response_model=list[GeneratedDocumentRead])
 async def list_generated_documents(

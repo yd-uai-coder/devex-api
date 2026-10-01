@@ -4,6 +4,7 @@ LLM呼び出しとDB操作はサービス層(app/services/uml_generation_service
 
 from app.uml.generation.failures import (
     SKIPPED_MESSAGE,
+    STALE_MESSAGE,
     GenerationFailure,
     ReasonCode,
     classify_failure,
@@ -42,6 +43,7 @@ __all__ = [
     "DFD_SECTION_TITLE",
     "GENERATION_SCHEMAS",
     "SKIPPED_MESSAGE",
+    "STALE_MESSAGE",
     "ComponentGenerationOutput",
     "DfdGenerationOutput",
     "DfdSubject",

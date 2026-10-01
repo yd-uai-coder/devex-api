@@ -6,6 +6,7 @@ from typing import TypeVar
 import structlog
 from langchain_core.messages import BaseMessage
 
+from app.core.errors import AppError
 from app.services.errors import GenerationFailedError, LLMQuotaExceededError, LLMTokenLimitError
 
 T = TypeVar("T")
@@ -13,7 +14,7 @@ T = TypeVar("T")
 logger = structlog.get_logger(__name__)
 
 # LLM呼び出しの一時的な失敗に対する最大リトライ回数・リトライ間隔(秒)。
-# app/services/chat.py(既存の汎用デモ)の_invoke_with_retryと同じ値を踏襲する。
+# 汎用チャット(app/services/chat.py)も含め、全てのLLM呼び出しがこの値を使う。
 MAX_GENERATION_ATTEMPTS = 3
 RETRY_DELAY_SECONDS = 1.0
 
@@ -93,15 +94,42 @@ async def invoke_with_retry[T](
     ) from last_error
 
 
+def as_llm_error(exc: Exception) -> Exception:
+    """再試行しないLLM呼び出し(ストリーミング)の失敗を、invoke_with_retryと同じ共通の例外に
+    揃える(トークン上限 / クォータ超過 / それ以外の失敗)。既にAppErrorならそのまま返す。"""
+    if isinstance(exc, AppError):
+        return exc
+    if _is_input_token_limit_error(exc):
+        return LLMTokenLimitError("AIへの入力が大きすぎるため処理できませんでした。")
+    if _is_quota_error(exc):
+        return LLMQuotaExceededError("本日の利用上限に達しました。時間をおいて再度お試しください。")
+    return GenerationFailedError("AIからの応答生成に失敗しました。時間をおいて再度お試しください。")
+
+
 def _is_quota_error(exc: Exception) -> bool:
-    """例外がGemini APIのクォータ超過(429相当)を示すものかどうかを判定する。
-    app/services/chat.pyの同名関数と同じ判定基準(Tavily分はDevexでは使わないため除く)。"""
+    """例外が外部APIのクォータ超過を示すものかどうかを判定する。Gemini APIの429と、Tavily(検索)の
+    利用上限超過の2つ(Tavilyは汎用チャットのワークフローが使う。Phase 15で汎用チャットの独自の
+    再試行をこの共通の部品へ寄せたときに足した)。"""
     try:
         from google.genai.errors import APIError as GoogleAPIError
     except ImportError:
         # google-genaiが未インストールの環境向けフォールバック
-        return False
-    return isinstance(exc, GoogleAPIError) and getattr(exc, "code", None) == 429
+        GoogleAPIError = None
+    try:
+        from tavily import UsageLimitExceededError as TavilyUsageLimitExceededError
+    except ImportError:
+        # tavily-pythonが未インストールの環境向けフォールバック
+        TavilyUsageLimitExceededError = None
+
+    if (
+        GoogleAPIError is not None
+        and isinstance(exc, GoogleAPIError)
+        and getattr(exc, "code", None) == 429
+    ):
+        return True
+    return TavilyUsageLimitExceededError is not None and isinstance(
+        exc, TavilyUsageLimitExceededError
+    )
 
 
 def _is_input_token_limit_error(exc: Exception) -> bool:

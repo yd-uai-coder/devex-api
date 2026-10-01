@@ -16,7 +16,9 @@ from app.services.user import UserService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-_REFRESH_TOKEN_MAX_AGE_SECONDS = 14 * 24 * 3600
+# Cookie の寿命は JWT・Redis の TTL と同じ設定から導く(食い違うと、サーバーでは有効なのに
+# Cookie が消えていて使えない期間ができる)
+_REFRESH_TOKEN_MAX_AGE_SECONDS = settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600
 _REFRESH_TOKEN_COOKIE_PATH = "/api/v1/auth"
 
 def _set_refresh_cookie(response: Response, refresh_token: str) -> None:

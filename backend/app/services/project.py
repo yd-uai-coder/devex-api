@@ -9,7 +9,8 @@ from app.repositories.chat_history import ChatHistoryRepository
 from app.repositories.intake_file import IntakeFileRepository
 from app.repositories.project import ProjectRepository
 from app.repositories.prompt_template import PromptTemplateRepository
-from app.schemas.project import IntakeFileRead, ProjectDetail
+from app.schemas.project import IntakeFileRead, ProjectDetail, ProjectMode
+from app.services.doc_generator_service import DocGeneratorService
 from app.services.errors import (
     FileTooLargeError,
     PromptTemplateNotFoundError,
@@ -52,6 +53,7 @@ class ProjectService:
         intake: dict,
         files: list[UploadedFileInput],
         template_id: uuid.UUID | None = None,
+        mode: ProjectMode = "simple",
     ) -> Project:
         """プロジェクトを作成し、初期ヒアリング入力と添付ファイルの内容をchat_historiesへ記録する。"""
         if len(files) > MAX_FILES_PER_PROJECT:
@@ -64,7 +66,7 @@ class ProjectService:
 
         title = (intake.get("system_overview") or "").strip()[:255] or "無題のプロジェクト"
         project = await self._projects.create(
-            user_id=user_id, title=title, intake=intake, template_id=template_id
+            user_id=user_id, title=title, intake=intake, template_id=template_id, mode=mode
         )
         filenames = [file.filename for file in files]
         await self._chat_histories.add(
@@ -88,12 +90,17 @@ class ProjectService:
     async def get_detail(self, project: Project) -> ProjectDetail:
         """プロジェクトの詳細(初期ヒアリング入力・添付ファイルサマリを含む)を返す。
         Project単体のカラムに加え、別Repository(IntakeFile)の取得・整形も
-        このメソッドに集約する(ルーター層はRepositoryを直接参照しない)。"""
+        このメソッドに集約する(ルーター層はRepositoryを直接参照しない)。
+
+        画面は生成の完了をこの取得のポーリングで待つため、止まった「生成中」(15分超)はここで
+        回収する(DocGeneratorService.recover_if_stale)。"""
+        await DocGeneratorService(self._session).recover_if_stale(project)
         intake_files = await self._intake_files.list_for_project(project.id)
         return ProjectDetail(
             id=project.id,
             title=project.title,
             status=project.status,  # type: ignore[arg-type]
+            mode=project.mode,  # type: ignore[arg-type]
             created_at=project.created_at,
             updated_at=project.updated_at,
             intake=project.intake,

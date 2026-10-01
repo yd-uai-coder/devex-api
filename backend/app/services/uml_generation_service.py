@@ -20,11 +20,13 @@ from app.services.errors import (
     UmlSourceDocumentMissingError,
     UmlSubjectNotFoundError,
 )
+from app.services.generation_staleness import is_stale
 from app.services.llm_retry import invoke_with_retry
 from app.uml.domain import NOTATION_TO_VIEW, NotationType, empty_semantic_model
 from app.uml.generation import (
     GENERATION_SCHEMAS,
     SKIPPED_MESSAGE,
+    STALE_MESSAGE,
     DfdGenerationOutput,
     DfdSubject,
     ExistingDataItem,
@@ -131,6 +133,7 @@ class UmlGenerationService:
             raise UmlSourceDocumentMissingError(
                 "内部設計書がまだ生成されていません。先に設計書を生成してください。"
             )
+        await self.recover_stale(project_id)
         if await self._diagrams.has_generating(project_id):
             raise UmlGenerationInProgressError(
                 "このプロジェクトでは設計図の生成が実行中です。完了してから再度お試しください。"
@@ -162,6 +165,49 @@ class UmlGenerationService:
         run = await self._runs.create(project_id=project_id, notation=notation, requested=requested)
         await self._session.commit()
         return run
+
+    async def recover_stale(self, project_id: uuid.UUID, *, now: datetime | None = None) -> int:
+        """しきい値(15分)を超えて生成中のまま止まった図を`failed`(STALE_GENERATION)にし、
+        実行中のまま止まった生成履歴を`failed`にする(app/services/generation_staleness.py)。
+        回収した図の数を返す。
+
+        生成の受け付け時と図の一覧の取得時に呼ぶ。止まった図が残ると`has_generating`が真のままに
+        なり、以後の生成・編集がすべて409で塞がるため。"""
+        now = now or datetime.now(UTC)
+        generating = await self._diagrams.list_generating(project_id)
+        stale_diagrams = [d for d in generating if is_stale(d.updated_at, now)]
+        stale_runs = [
+            r for r in await self._runs.list_running(project_id) if is_stale(r.started_at, now)
+        ]
+        if not stale_diagrams and not stale_runs:
+            return 0
+        for diagram in stale_diagrams:
+            diagram.generation_status = "failed"
+            diagram.generation_error = STALE_MESSAGE
+        for run in stale_runs:
+            finished = {r["diagram_id"] for r in run.results}
+            # 結果が記録されていない対象を、中断として記録する(JSON列は新しいリストを代入する)
+            run.results = [dict(r) for r in run.results] + [
+                {
+                    "subject": entry["subject"],
+                    "diagram_id": entry["diagram_id"],
+                    "outcome": "failed",
+                    "reason_code": "STALE_GENERATION",
+                    "message": STALE_MESSAGE,
+                }
+                for entry in run.requested
+                if entry["diagram_id"] not in finished
+            ]
+            run.status = "failed"
+            run.finished_at = now
+        await self._session.commit()
+        logger.warning(
+            "uml_generation_stale",
+            project_id=str(project_id),
+            diagrams=len(stale_diagrams),
+            runs=len(stale_runs),
+        )
+        return len(stale_diagrams)
 
     async def execute_run(self, *, project_id: uuid.UUID, run_id: uuid.UUID, llm=None) -> None:
         """受け付け済みの生成リクエストを実行する。対象を順番に1件ずつ生成し(1件=構造化出力1回)、
