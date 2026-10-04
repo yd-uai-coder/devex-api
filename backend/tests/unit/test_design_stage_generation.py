@@ -1,17 +1,19 @@
 """段階の下書きの生成(受け付け・実行・回収)と、生成・検証に関わる段階のAPIのテスト。
 
 SUT: DesignStageGenerationService(request_generation / execute / recover_stale)、
-     generate_function_list・generate_data_flow・STAGE_GENERATORS・StageGenerationContext
-     (app/services/design_stage_generation_service.py)、
+     generate_function_list・generate_data_flow・generate_data_model・STAGE_GENERATORS・
+     StageGenerationContext(app/services/design_stage_generation_service.py)、
      DataItemService.resolve_by_name(app/services/data_item_service.py。段階2の生成から)、
-     DesignStageService の入力(承認済みの段階の内容・DFD の要約)と段階2の承認、
+     DesignStageService の入力(承認済みの段階の内容・DFD の要約・ER の要約)と段階2・3の承認
+     (段階3は承認で下書きの印を外す)、段階3の`dfd_accesses`(app/schemas/design_stage.py)、
      generate_design_stage / list_design_stages(app/api/routes/design_stages.py)、
      DesignStageService の生成中の保存の拒否、
      build_function_list_messages / to_drafts(app/detailed_design/drafting.py)、
      E2E用の偽LLMの段階1の出力(app/ai/llm/fake.py)
 ドライバ: 各テスト関数(ルート関数・サービスのメソッドを直接呼ぶ)
 スタブ: FakeLLM(tests/fixtures/fake_llm.py)── 構造化出力(Gemini)の代わり。段階2は1回の生成で
-      処理概要表 → グループの DFD の順に呼ぶので、`structured_sequence`で順に返す。
+      処理概要表 → グループの DFD の順に、段階3は ER → CRUD 図の順に呼ぶので、`structured_sequence`
+      で順に返す。
 DBはインメモリSQLite(db_session)で、スタブにはしない(段階の行の状態の移り変わりそのものが検証対象のため)。
 """
 
@@ -24,6 +26,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 from tests.fixtures.detailed_design import (
     create_detailed_project,
+    create_stage3_project,
     data_flow_model,
     function_list_model,
 )
@@ -38,6 +41,13 @@ from app.detailed_design.data_flow_drafting import (
     GroupDfdGenerationOutput,
     ProcessSummaryGenerationOutput,
 )
+from app.detailed_design.data_model_drafting import (
+    CrudGenerationOutput,
+    DataModelErOutput,
+    DraftedColumn,
+    DraftedTable,
+    GeneratedCrudCell,
+)
 from app.detailed_design.drafting import (
     FunctionListGenerationOutput,
     GeneratedFunction,
@@ -49,6 +59,7 @@ from app.repositories.data_item import DataItemRepository
 from app.repositories.design_stage import DesignStageRepository
 from app.repositories.generated_document import GeneratedDocumentRepository
 from app.repositories.uml_diagram import UmlDiagramRepository
+from app.schemas.design_stage import DfdAccessRead
 from app.services import llm_retry
 from app.services.data_item_service import DataItemService
 from app.services.design_stage_generation_service import (
@@ -56,6 +67,7 @@ from app.services.design_stage_generation_service import (
     DesignStageGenerationService,
     StageGenerationContext,
     generate_data_flow,
+    generate_data_model,
     generate_function_list,
     run_design_stage_generation,
 )
@@ -217,7 +229,7 @@ async def test_generation_rejects_unsupported_locked_and_running_stages(
     service = DesignStageGenerationService(db_session)
 
     with pytest.raises(DesignStageGenerationNotSupportedError):
-        await service.request_generation(project, stage=3)
+        await service.request_generation(project, stage=4)
     no_docs = await create_detailed_project(db_session, with_documents=False)
     with pytest.raises(DesignStageLockedError):
         await service.request_generation(no_docs, stage=1)
@@ -474,3 +486,125 @@ async def test_resolve_by_name_reuses_existing_and_creates_missing(
     assert ids["予約"] == existing.id
     assert set(ids) == {"予約", "備品"}
     assert [(item.name, item.fields) for item in items] == [("予約", [{"name": "id"}])]
+
+
+# ---- 段階3(データモデル、Phase 18) ----
+
+
+def _er_output() -> DataModelErOutput:
+    return DataModelErOutput(
+        tables=[
+            DraftedTable(
+                id="t1",
+                name="reservations",
+                columns=[
+                    DraftedColumn(
+                        name="id",
+                        type="UUID",
+                        is_primary_key=True,
+                        is_foreign_key=False,
+                        nullable=False,
+                        description="予約ID",
+                    )
+                ],
+            )
+        ],
+        relations=[],
+    )
+
+
+def _crud_output(ops: str = "C") -> CrudGenerationOutput:
+    return CrudGenerationOutput(
+        cells=[GeneratedCrudCell(function_id="F-01", table="reservations", ops=ops)]
+    )
+
+
+async def _generate_stage3(session: AsyncSession, project: Project, llm) -> None:
+    service = DesignStageGenerationService(session)
+    await service.request_generation(project, stage=3)
+    await service.execute(project_id=project.id, user_id=project.user_id, stage=3, llm=llm)
+
+
+async def test_stage3_generation_writes_er_and_crud_and_approval_confirms_drafts(
+    db_session: AsyncSession,
+) -> None:
+    """統合スモーク(段階3): ER と CRUD 図を書き、ER を承認すると段階3を承認でき、承認で CRUD 図の
+    下書きの印が外れる。"""
+    project = await create_stage3_project(db_session)
+    project_id = project.id
+    llm = FakeLLM(structured_sequence=[_er_output(), _crud_output()])
+
+    await _generate_stage3(db_session, project, llm)
+    service = DesignStageService(db_session)
+    stage3 = await service.read(project_id, 3)
+    er = await UmlDiagramRepository(db_session).get_by_subject(
+        project_id=project_id, notation="er", subject=""
+    )
+
+    assert STAGE_GENERATORS[3] is generate_data_model
+    assert llm.structured_output_calls == [DataModelErOutput, CrudGenerationOutput]
+    assert stage3.state == "draft"
+    assert stage3.model == {
+        "cells": [{"function_id": "F-01", "table": "reservations", "ops": "C", "draft": True}]
+    }
+    assert stage3.dfd_accesses == [
+        DfdAccessRead(function_id="F-01", table="reservations", kind="write")
+    ]
+    assert er is not None
+    assert er.status == "draft"
+    assert er.source_doc_versions == {"stage:2": 1}
+    assert er.semantic_model["elements"][0]["columns"][0]["description"] == "予約ID"
+    assert [issue.code for issue in stage3.issues] == ["ER_NOT_APPROVED", "DRAFT_CELLS"]
+
+    er.status = "approved"
+    await db_session.commit()
+    approved = await service.approve(project, stage=3, expected_version=stage3.version or 0)
+    assert approved.state == "approved"
+    assert approved.model is not None
+    assert approved.model["cells"][0]["draft"] is False
+    assert approved.issues == []
+
+
+async def test_stage3_regeneration_overwrites_er_and_replaces_crud(
+    db_session: AsyncSession,
+) -> None:
+    project = await create_stage3_project(db_session)
+    project_id = project.id
+    await _generate_stage3(
+        db_session, project, FakeLLM(structured_sequence=[_er_output(), _crud_output()])
+    )
+    repo = UmlDiagramRepository(db_session)
+    first = await repo.get_by_subject(project_id=project_id, notation="er", subject="")
+    assert first is not None
+    first.status = "approved"
+    first_version = first.version
+    await db_session.commit()
+
+    await _generate_stage3(
+        db_session, project, FakeLLM(structured_sequence=[_er_output(), _crud_output("CU")])
+    )
+    stage3 = await DesignStageService(db_session).read(project_id, 3)
+    diagrams = await repo.list_by_notation(project_id, "er")
+
+    assert stage3.state == "regenerated"
+    assert stage3.model is not None
+    assert [cell["ops"] for cell in stage3.model["cells"]] == ["CU"]
+    assert len(diagrams) == 1
+    assert (diagrams[0].status, diagrams[0].version) == ("draft", first_version + 1)
+
+
+async def test_stage3_failure_rolls_back_er(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = await create_stage3_project(db_session)
+    project_id = project.id
+    monkeypatch.setattr(llm_retry, "_is_quota_error", lambda _exc: True)
+
+    await _generate_stage3(
+        db_session, project, FakeLLM(structured_sequence=[_er_output(), RuntimeError("429")])
+    )
+    stage3 = await DesignStageService(db_session).read(project_id, 3)
+
+    assert stage3.generation_status == "failed"
+    assert stage3.model is None
+    assert await UmlDiagramRepository(db_session).list_by_notation(project_id, "er") == []

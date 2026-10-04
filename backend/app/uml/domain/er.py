@@ -17,6 +17,10 @@ class ErColumn(BaseModel):
     is_primary_key: bool = False
     is_foreign_key: bool = False
     nullable: bool = True
+    # 詳細設計モードの段階3で、テーブル定義の表に出す制約(UNIQUE・既定値・FK の削除時の動きなど)と
+    # 説明。テーブル定義の正本を ER に置き、別の表に二重に持たないため(Phase 18)
+    constraints: str = ""
+    description: str = ""
 
 
 class ErElement(UmlElement):
@@ -24,6 +28,8 @@ class ErElement(UmlElement):
 
     kind: Literal["table"] = "table"
     columns: list[ErColumn] = []
+    # テーブル単位の注記(複合一意制約・テーブルの役割など。Phase 18)
+    description: str = ""
 
 
 class ErRelation(UmlRelation):

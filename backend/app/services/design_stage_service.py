@@ -4,18 +4,27 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.detailed_design import (
+    DATA_MODEL_STAGE,
+    ER_SUBJECT,
     STAGE_INPUTS,
     Fingerprint,
     StageRecord,
     StageView,
     can_approve,
+    confirm_drafts,
     current_inputs,
     derive_states,
+    dfd_accesses,
+    er_table_names,
+    table_key,
+    tables_without_primary_key,
 )
 from app.detailed_design.validation import (
     DfdDiagramSummary,
+    ErDiagramSummary,
     StageSources,
     has_errors,
+    selected_dfd_accesses,
     validate_stage,
 )
 from app.models.design_stage import DesignStage
@@ -25,7 +34,7 @@ from app.models.uml_diagram import UmlDiagram
 from app.repositories.design_stage import DesignStageRepository
 from app.repositories.generated_document import GeneratedDocumentRepository
 from app.repositories.uml_diagram import UmlDiagramRepository
-from app.schemas.design_stage import DesignStageRead, StageIssueRead
+from app.schemas.design_stage import DesignStageRead, DfdAccessRead, StageIssueRead
 from app.services.errors import (
     DesignStageGenerationInProgressError,
     DesignStageInvalidError,
@@ -155,6 +164,9 @@ class DesignStageService:
         if has_errors(validate_stage(stage, row.model, sources)):
             raise DesignStageInvalidError(f"Stage {stage} has validation errors")
 
+        if stage == DATA_MODEL_STAGE:
+            # 承認 = 人の確定なので、CRUD 図に残っている AI の下書きの印を外す(Phase 18)
+            row.model = confirm_drafts(row.model)
         row.status = "approved"
         row.approved_version = row.version
         row.input_fingerprint = current_inputs(
@@ -194,9 +206,14 @@ class DesignStageService:
 
         - 文書: 入力になる文書の表示中の版の本文。
         - 段階: 承認済み(古くない)段階の内容。後ろの段階は、承認済みの前の段階だけを入力にする。
-        - DFD: 機能グループの DFD(段階2)の要約。詳細設計モードでは DFD はすべて段階2のもの。
+        - DFD: 機能グループの DFD(段階2)の要約と、線から読み取った R/W(段階3)。詳細設計モードでは
+          DFD はすべて段階2のもの。
+        - ER: 段階3の ER(全体1枚)の要約。
         """
         diagrams = await self._diagrams.list_by_notation(project_id, "dfd")
+        er = await self._diagrams.get_by_subject(
+            project_id=project_id, notation="er", subject=ER_SUBJECT
+        )
         return StageSources(
             documents={
                 doc_type: document.content
@@ -209,6 +226,7 @@ class DesignStageService:
                 if views[stage].state == "approved" and row.model
             },
             dfd_diagrams={diagram.subject: _dfd_summary(diagram) for diagram in diagrams},
+            er_diagram=_er_summary(er) if er is not None else None,
         )
 
     async def _current_documents(
@@ -237,6 +255,16 @@ def _dfd_summary(diagram: UmlDiagram) -> DfdDiagramSummary:
         process_ids=tuple(
             str(e.get("id")) for e in elements if e.get("element_type") == "process"
         ),
+        accesses=tuple(dfd_accesses([diagram.semantic_model or {}])),
+    )
+
+
+def _er_summary(diagram: UmlDiagram) -> ErDiagramSummary:
+    return ErDiagramSummary(
+        status=diagram.status,
+        generation_status=diagram.generation_status,
+        tables=tuple(er_table_names(diagram.semantic_model)),
+        tables_without_pk=tuple(tables_without_primary_key(diagram.semantic_model)),
     )
 
 
@@ -303,4 +331,16 @@ def _to_read(view: StageView, row: DesignStage | None, sources: StageSources) ->
         generation_status=row.generation_status if row is not None else None,  # type: ignore[arg-type]
         generation_error=row.generation_error if row is not None else None,
         issues=[StageIssueRead.model_validate(issue, from_attributes=True) for issue in issues],
+        dfd_accesses=_dfd_access_reads(sources) if view.stage == DATA_MODEL_STAGE else [],
     )
+
+
+def _dfd_access_reads(sources: StageSources) -> list[DfdAccessRead]:
+    """段階3の画面に渡す DFD の R/W。テーブル名は ER の名前に戻す(画面は ER の列の名前で引く)。"""
+    names = {table_key(t): t for t in (sources.er_diagram.tables if sources.er_diagram else ())}
+    return [
+        DfdAccessRead(
+            function_id=a.function_id, table=names.get(a.table, a.table), kind=a.kind
+        )
+        for a in selected_dfd_accesses(sources)
+    ]

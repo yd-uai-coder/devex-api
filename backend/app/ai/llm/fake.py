@@ -24,6 +24,13 @@ from app.detailed_design.data_flow_drafting import (
     GroupDfdGenerationOutput,
     ProcessSummaryGenerationOutput,
 )
+from app.detailed_design.data_model_drafting import (
+    CrudGenerationOutput,
+    DataModelErOutput,
+    DraftedColumn,
+    DraftedTable,
+    GeneratedCrudCell,
+)
 from app.detailed_design.drafting import FunctionListGenerationOutput, GeneratedFunction
 from app.schemas.generation import HearingCompletionCheck
 from app.uml.generation.schemas import (
@@ -209,6 +216,44 @@ _UML_OUTPUTS[GroupDfdGenerationOutput] = GroupDfdGenerationOutput(
         GeneratedFlow(id="f3", source_id="s1", target_id="F-02", data_item_name="予約"),
         GeneratedFlow(id="f4", source_id="F-02", target_id="e1", data_item_name="予約"),
     ],
+)
+
+# 詳細設計モードの段階3(データモデル)の下書き(Phase 18)。段階2の下書きの DFD のデータストア
+# reservations(F-01 が書き、F-02 が読む)に対応する
+_UML_OUTPUTS[DataModelErOutput] = DataModelErOutput(
+    tables=[
+        DraftedTable(
+            id="t1",
+            name="reservations",
+            description="[E2E Fake] 備品の予約",
+            columns=[
+                DraftedColumn(
+                    name="id",
+                    type="UUID",
+                    is_primary_key=True,
+                    is_foreign_key=False,
+                    nullable=False,
+                    description="予約ID",
+                ),
+                DraftedColumn(
+                    name="item_id",
+                    type="UUID",
+                    is_primary_key=False,
+                    is_foreign_key=False,
+                    nullable=False,
+                    constraints="INDEX",
+                    description="予約する備品",
+                ),
+            ],
+        )
+    ],
+    relations=[],
+)
+_UML_OUTPUTS[CrudGenerationOutput] = CrudGenerationOutput(
+    cells=[
+        GeneratedCrudCell(function_id="F-01", table="reservations", ops="C"),
+        GeneratedCrudCell(function_id="F-02", table="reservations", ops="R"),
+    ]
 )
 
 _HEARING_REPLY = "[E2E Fake] 承知しました。次に、想定している主なユーザー層を教えてください。"

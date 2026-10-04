@@ -7,6 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.project import Project
 from app.models.user import User
 from app.repositories.generated_document import GeneratedDocumentRepository
+from app.repositories.uml_diagram import UmlDiagramRepository
+from app.services.data_item_service import DataItemService
+from app.services.design_stage_service import DesignStageService
 
 
 async def create_detailed_project(
@@ -64,3 +67,66 @@ def data_flow_model(*, dfd_groups: list[str] | None = None) -> dict:
             }
         ],
     }
+
+
+def er_model(*, tables: tuple[str, ...] = ("reservations",)) -> dict:
+    """ER の意味モデル(テーブルごとに主キーの列 id だけ)。段階3の検証・生成のテストで使う。"""
+    return {
+        "notation": "er",
+        "elements": [
+            {
+                "id": f"t-{name}",
+                "name": name,
+                "kind": "table",
+                "columns": [{"name": "id", "type": "UUID", "is_primary_key": True}],
+            }
+            for name in tables
+        ],
+        "relations": [],
+    }
+
+
+def crud_model(*, ops: str = "C", draft: bool = False) -> dict:
+    """`function_list_model()`の F-01 が reservations に書く、段階3の CRUD 図(セル1つ)。"""
+    return {"cells": [{"function_id": "F-01", "table": "reservations", "ops": ops, "draft": draft}]}
+
+
+def group_dfd_model(data_item_id: uuid.UUID) -> dict:
+    """機能グループ reservations の DFD(利用者 → F-01 → reservations。F-01 が書き込む)。"""
+    return {
+        "notation": "dfd",
+        "elements": [
+            {"id": "e1", "name": "利用者", "element_type": "external_entity"},
+            {"id": "F-01", "name": "F-01 予約を登録する", "element_type": "process"},
+            {"id": "s1", "name": "reservations", "element_type": "data_store"},
+        ],
+        "relations": [
+            {"id": "f1", "source_id": "e1", "target_id": "F-01", "data_item_id": str(data_item_id)},
+            {"id": "f2", "source_id": "F-01", "target_id": "s1", "data_item_id": str(data_item_id)},
+        ],
+    }
+
+
+async def create_stage3_project(session: AsyncSession) -> Project:
+    """段階1・2を承認したプロジェクト(段階3が開いている)。段階2は機能グループ reservations の
+    DFD(承認済み)を1枚持ち、データ辞書に「予約」がある。"""
+    project = await create_detailed_project(session)
+    stages = DesignStageService(session)
+    await stages.save(project, stage=1, expected_version=None, model=function_list_model())
+    await stages.approve(project, stage=1, expected_version=1)
+    item = await DataItemService(session).create(
+        project_id=project.id, name="予約", fields=[{"name": "id", "type": "UUID"}]
+    )
+    diagram = await UmlDiagramRepository(session).create(
+        project_id=project.id,
+        view="dataflow",
+        notation="dfd",
+        semantic_model=group_dfd_model(item.id),
+        subject="reservations",
+    )
+    diagram.status = "approved"
+    await session.commit()
+    model = data_flow_model(dfd_groups=["reservations"])
+    await stages.save(project, stage=2, expected_version=None, model=model)
+    await stages.approve(project, stage=2, expected_version=1)
+    return project

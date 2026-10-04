@@ -1,9 +1,10 @@
-"""DFD・データ辞書の編集による、承認済みの段階2の差し戻しのテスト(Phase 17)。
+"""DFD・データ辞書の編集による承認済みの段階2の差し戻し(Phase 17)と、ER の編集による承認済みの
+段階3の差し戻し(Phase 18)のテスト。
 
 SUT: DesignStageService.mark_edited(app/services/design_stage_service.py)、
      UmlDiagramService.update / compute_layout(app/services/uml_diagram_service.py)、
      DataItemService.create / update / delete(app/services/data_item_service.py)、
-     DATA_FLOW_STAGE(app/detailed_design/data_flow.py)
+     DATA_FLOW_STAGE(app/detailed_design/data_flow.py)、DATA_MODEL_STAGE(app/detailed_design/data_model.py)
 ドライバ: 各テスト関数(サービスのメソッドを直接呼ぶ)
 スタブ不要 ── LLM を呼ばない。DB はインメモリSQLite(db_session)で、スタブにはしない(段階の行の
 状態と版が変わることそのものが検証対象のため)。
@@ -14,17 +15,20 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 from tests.fixtures.detailed_design import (
     create_detailed_project,
+    create_stage3_project,
+    crud_model,
     data_flow_model,
+    er_model,
     function_list_model,
 )
 
-from app.detailed_design import DATA_FLOW_STAGE
+from app.detailed_design import DATA_FLOW_STAGE, DATA_MODEL_STAGE
 from app.models.project import Project
 from app.repositories.uml_diagram import UmlDiagramRepository
 from app.services.data_item_service import DataItemService
 from app.services.design_stage_service import DesignStageService
 from app.services.uml_diagram_service import UmlDiagramService
-from app.uml.domain import DfdSemanticModel, SemanticModelAdapter
+from app.uml.domain import DfdSemanticModel, ErSemanticModel, SemanticModelAdapter
 
 
 async def _approved_stage2(session: AsyncSession) -> Project:
@@ -144,3 +148,35 @@ async def test_mark_edited_ignores_unapproved_and_simple_projects(db_session: As
     assert await stages.mark_edited(simple.id, DATA_FLOW_STAGE) is False
     item = await DataItemService(db_session).create(project_id=simple.id, name="x", fields=[])
     assert item.name == "x"
+
+
+async def test_er_save_and_layout_reopen_approved_stage3(db_session: AsyncSession) -> None:
+    """ER を保存・自動レイアウトすると、承認済みの段階3がレビュー中に戻り版が増える。"""
+    project = await create_stage3_project(db_session)
+    project_id = project.id
+    diagram = await UmlDiagramRepository(db_session).create(
+        project_id=project_id, view="data", notation="er", semantic_model=er_model()
+    )
+    diagram.status = "approved"
+    await db_session.commit()
+    stages = DesignStageService(db_session)
+    await stages.save(project, stage=DATA_MODEL_STAGE, expected_version=None, model=crud_model())
+    approved = await stages.approve(project, stage=DATA_MODEL_STAGE, expected_version=1)
+    service = UmlDiagramService(db_session)
+
+    await service.update(
+        project_id=project_id,
+        diagram_id=diagram.id,
+        expected_version=diagram.version,
+        semantic_model=ErSemanticModel.model_validate(er_model()),
+    )
+    saved = await stages.read(project_id, DATA_MODEL_STAGE)
+    diagram.status = "approved"  # ER の保存で ER 自体の承認もやり直しになるので、承認し直す
+    await db_session.commit()
+    await stages.approve(project, stage=DATA_MODEL_STAGE, expected_version=saved.version or 0)
+    await service.compute_layout(project_id=project_id, diagram_id=diagram.id)
+    laid_out = await stages.read(project_id, DATA_MODEL_STAGE)
+
+    assert (approved.state, approved.version) == ("approved", 1)
+    assert (saved.state, saved.version) == ("reviewing", 2)
+    assert (laid_out.state, laid_out.version) == ("reviewing", 3)

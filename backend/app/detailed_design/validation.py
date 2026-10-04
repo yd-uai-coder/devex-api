@@ -5,10 +5,11 @@ app/services/design_stage_service.py)に加えて、段階ごとの検証で「�
 止めない(UML図の検証と同じ考え方。app/uml/validation/)。保存は検証の結果によらず通す(編集の
 途中の状態も保存できるようにするため)。
 
-段階ごとの検証は`STAGE_VALIDATORS`に登録する。今は段階1・2で、段階3以降は各段階の Phase で
+段階ごとの検証は`STAGE_VALIDATORS`に登録する。今は段階1〜3で、段階4以降は各段階の Phase で
 足す(登録の無い段階は検証なし)。検証には段階の内容のほかに入力の文書の本文が要ることがあるので、
 `StageSources`で渡す(段階1は外部設計書のAPI一覧と照らして、下書きの漏れを警告する)。
 段階2は、入力の段階1の内容と、機能グループの DFD(`uml_diagrams`)の要約も使う(Phase 17)。
+段階3は、段階1・2の内容と、DFD の線から読み取った R/W と、ER の要約を使う(Phase 18)。
 """
 
 from collections import Counter
@@ -25,6 +26,12 @@ from app.detailed_design.data_flow import (
     DataFlowModel,
     dfd_subject,
     group_functions,
+)
+from app.detailed_design.data_model import (
+    CrudModel,
+    DfdAccess,
+    is_canonical_ops,
+    table_key,
 )
 from app.detailed_design.function_list import FunctionListModel, function_number
 
@@ -48,6 +55,17 @@ class DfdDiagramSummary:
     status: str
     generation_status: str
     process_ids: tuple[str, ...] = ()
+    accesses: tuple[DfdAccess, ...] = ()
+
+
+@dataclass(frozen=True)
+class ErDiagramSummary:
+    """段階3の検証に使う、ER(全体1枚)の要約(`uml_diagrams`の行から作る)。"""
+
+    status: str
+    generation_status: str
+    tables: tuple[str, ...] = ()
+    tables_without_pk: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -56,12 +74,14 @@ class StageSources:
 
     - `documents`: 入力の文書の本文(doc_type → 表示中の版の本文)。
     - `stages`: 入力の段階の内容(段階番号 → 承認済みの段階の`model`)。
-    - `dfd_diagrams`: 機能グループの DFD の要約(subject → 要約)。段階2が使う。
+    - `dfd_diagrams`: 機能グループの DFD の要約(subject → 要約)。段階2・3が使う。
+    - `er_diagram`: ER の要約(まだ無ければ None)。段階3が使う。
     """
 
     documents: Mapping[str, str] = field(default_factory=dict)
     stages: Mapping[int, Mapping[str, Any]] = field(default_factory=dict)
     dfd_diagrams: Mapping[str, DfdDiagramSummary] = field(default_factory=dict)
+    er_diagram: ErDiagramSummary | None = None
 
 
 StageValidator = Callable[[Mapping[str, Any], StageSources], list[StageIssue]]
@@ -217,6 +237,106 @@ def _dfd_issues(
     return issues
 
 
+def selected_dfd_accesses(sources: StageSources) -> list[DfdAccess]:
+    """段階2で DFD を描くと選んだグループの DFD から読み取った R/W(段階3の CRUD 図の固定部分)。
+    選択を外したグループの DFD は消さずに残っているので、選択で絞る。"""
+    data_flow = DataFlowModel.model_validate(sources.stages.get(2) or {})
+    accesses: set[DfdAccess] = set()
+    for group in data_flow.dfd_groups:
+        diagram = sources.dfd_diagrams.get(dfd_subject(group))
+        if diagram is not None:
+            accesses.update(diagram.accesses)
+    return sorted(accesses)
+
+
+def validate_data_model(model: Mapping[str, Any], sources: StageSources) -> list[StageIssue]:
+    """段階3(データモデル)の検証。
+
+    エラー: 形が不正 / ER が無い・生成中・未承認 / セルの処理IDが機能一覧に無い /
+    セルのテーブルが ER に無い / セルの重複 / 操作が空・C,R,U,D の順の形でない /
+    DFD に読みの線があるのに R が無い / DFD に書き込みの線があるのに C/U/D が無い。
+    警告: 下書きのままのセルがある / DFD のデータストアが ER に無い /
+    どの処理も触れないテーブル / 主キーの無いテーブル。
+    """
+    try:
+        parsed = CrudModel.model_validate(model)
+    except ValidationError as exc:
+        return [_error("INVALID_MODEL", f"CRUD 図の形が正しくありません: {exc}")]
+    function_list = FunctionListModel.model_validate(sources.stages.get(1) or {})
+    function_ids = {row.id for row in function_list.functions}
+
+    issues: list[StageIssue] = []
+    er = sources.er_diagram
+    if er is None:
+        issues.append(_error("ER_MISSING", "ER がまだありません。"))
+    elif er.generation_status == "generating":
+        issues.append(_error("ER_GENERATING", "ER を生成中です。"))
+    elif er.status not in APPROVED_DIAGRAM_STATUSES:
+        issues.append(_error("ER_NOT_APPROVED", "ER が承認されていません。"))
+    tables = {table_key(name): name for name in (er.tables if er is not None else ())}
+
+    ops_by_cell: dict[tuple[str, str], str] = {}
+    for cell in parsed.cells:
+        target = f"{cell.function_id} × {cell.table}"
+        key = (cell.function_id, table_key(cell.table))
+        if cell.function_id not in function_ids:
+            message = f"CRUD 図の {cell.function_id} が、機能一覧にありません。"
+            issues.append(_error("UNKNOWN_FUNCTION", message, target))
+        if er is not None and key[1] not in tables:
+            message = f"CRUD 図のテーブル「{cell.table}」が、ER にありません。"
+            issues.append(_error("UNKNOWN_TABLE", message, target))
+        if key in ops_by_cell:
+            issues.append(_error("DUPLICATE_CELL", f"{target} のセルが重複しています。", target))
+        elif cell.ops and not is_canonical_ops(cell.ops):
+            message = (
+                f"{target} の操作「{cell.ops}」は、C・R・U・D をこの順に並べた形ではありません。"
+            )
+            issues.append(_error("INVALID_OPS", message, target))
+        ops_by_cell.setdefault(key, cell.ops)
+
+    accesses = selected_dfd_accesses(sources)
+    writes = {(a.function_id, a.table) for a in accesses if a.kind == "write"}
+    store_not_in_er: list[str] = []
+    for access in accesses:
+        if access.table not in tables:
+            if er is not None and access.table not in store_not_in_er:
+                store_not_in_er.append(access.table)
+            continue
+        target = f"{access.function_id} × {tables[access.table]}"
+        ops = ops_by_cell.get((access.function_id, access.table), "")
+        if access.kind == "read" and "R" not in ops:
+            message = f"DFD では {target} の読みの線がありますが、CRUD 図に R がありません。"
+            issues.append(_error("DFD_READ_MISSING", message, target))
+        if access.kind == "write" and not set(ops) & {"C", "U", "D"}:
+            message = (
+                f"DFD では {target} の書き込みの線がありますが、CRUD 図に C/U/D がありません"
+                "(C・U・D のどれかを決めてください)。"
+            )
+            issues.append(_error("DFD_WRITE_MISSING", message, target))
+    for (function_id, table), ops in ops_by_cell.items():
+        # DFD の書き込みのセルが空なのは DFD_WRITE_MISSING で知らせるので、ここでは重ねない
+        if not ops and (function_id, table) not in writes:
+            target = f"{function_id} × {tables.get(table, table)}"
+            issues.append(_error("EMPTY_OPS", f"{target} のセルに操作がありません。", target))
+
+    drafts = sum(1 for cell in parsed.cells if cell.draft)
+    if drafts:
+        message = f"AI の下書きのままのセルが {drafts} 個あります(承認すると確定します)。"
+        issues.append(_warning("DRAFT_CELLS", message))
+    for table in store_not_in_er:
+        message = f"DFD のデータストア「{table}」が、ER のテーブルにありません。"
+        issues.append(_warning("STORE_NOT_IN_ER", message, table))
+    used = {table for (_, table) in ops_by_cell}
+    for key, name in tables.items():
+        if key not in used:
+            message = f"テーブル「{name}」を読み書きする処理がありません。"
+            issues.append(_warning("UNUSED_TABLE", message, name))
+    for name in er.tables_without_pk if er is not None else ():
+        message = f"テーブル「{name}」に主キーがありません。"
+        issues.append(_warning("TABLE_WITHOUT_PK", message, name))
+    return issues
+
+
 def _error(code: str, message: str, target: str | None = None) -> StageIssue:
     return StageIssue("error", code, message, target)
 
@@ -229,6 +349,7 @@ def _warning(code: str, message: str, target: str | None = None) -> StageIssue:
 STAGE_VALIDATORS: dict[int, StageValidator] = {
     1: validate_function_list,
     2: validate_data_flow,
+    3: validate_data_model,
 }
 
 
