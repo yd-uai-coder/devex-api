@@ -252,8 +252,9 @@ def selected_dfd_accesses(sources: StageSources) -> list[DfdAccess]:
 def validate_data_model(model: Mapping[str, Any], sources: StageSources) -> list[StageIssue]:
     """段階3(データモデル)の検証。
 
-    エラー: 形が不正 / ER が無い・生成中・未承認 / セルの処理IDが機能一覧に無い /
-    セルのテーブルが ER に無い / セルの重複 / 操作が空・C,R,U,D の順の形でない /
+    エラー: 形が不正 / ER が無い・生成中・未承認 / ER のテーブル名の重複 /
+    セルの処理IDが機能一覧に無い / セルのテーブルが ER に無い / セルの重複 /
+    操作が空・C,R,U,D の順の形でない /
     DFD に読みの線があるのに R が無い / DFD に書き込みの線があるのに C/U/D が無い。
     警告: 下書きのままのセルがある / DFD のデータストアが ER に無い /
     どの処理も触れないテーブル / 主キーの無いテーブル。
@@ -273,7 +274,15 @@ def validate_data_model(model: Mapping[str, Any], sources: StageSources) -> list
         issues.append(_error("ER_GENERATING", "ER を生成中です。"))
     elif er.status not in APPROVED_DIAGRAM_STATUSES:
         issues.append(_error("ER_NOT_APPROVED", "ER が承認されていません。"))
-    tables = {table_key(name): name for name in (er.tables if er is not None else ())}
+    tables: dict[str, str] = {}
+    for name in er.tables if er is not None else ():
+        key = table_key(name)
+        if key in tables:
+            # テーブル名は CRUD 図のセルを引く鍵なので、重なるとどちらのテーブルのセルかが決まらない
+            message = f"ER のテーブル名「{name}」が重複しています。テーブル名を変えてください。"
+            issues.append(_error("DUPLICATE_TABLE", message, name))
+        else:
+            tables[key] = name
 
     ops_by_cell: dict[tuple[str, str], str] = {}
     for cell in parsed.cells:
