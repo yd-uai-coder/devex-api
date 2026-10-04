@@ -1,28 +1,43 @@
 """段階の下書きの生成(受け付け・実行・回収)と、生成・検証に関わる段階のAPIのテスト。
 
 SUT: DesignStageGenerationService(request_generation / execute / recover_stale)、
-     generate_function_list・STAGE_GENERATORS(app/services/design_stage_generation_service.py)、
+     generate_function_list・generate_data_flow・STAGE_GENERATORS・StageGenerationContext
+     (app/services/design_stage_generation_service.py)、
+     DataItemService.resolve_by_name(app/services/data_item_service.py。段階2の生成から)、
+     DesignStageService の入力(承認済みの段階の内容・DFD の要約)と段階2の承認、
      generate_design_stage / list_design_stages(app/api/routes/design_stages.py)、
      DesignStageService の生成中の保存の拒否、
      build_function_list_messages / to_drafts(app/detailed_design/drafting.py)、
      E2E用の偽LLMの段階1の出力(app/ai/llm/fake.py)
 ドライバ: 各テスト関数(ルート関数・サービスのメソッドを直接呼ぶ)
-スタブ: FakeLLM(tests/fixtures/fake_llm.py)── 構造化出力(Gemini)の代わり。
+スタブ: FakeLLM(tests/fixtures/fake_llm.py)── 構造化出力(Gemini)の代わり。段階2は1回の生成で
+      処理概要表 → グループの DFD の順に呼ぶので、`structured_sequence`で順に返す。
 DBはインメモリSQLite(db_session)で、スタブにはしない(段階の行の状態の移り変わりそのものが検証対象のため)。
 """
 
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import BackgroundTasks
 from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy.ext.asyncio import AsyncSession
-from tests.fixtures.detailed_design import create_detailed_project, function_list_model
+from tests.fixtures.detailed_design import (
+    create_detailed_project,
+    data_flow_model,
+    function_list_model,
+)
 from tests.fixtures.fake_llm import FakeLLM
 
 from app.ai.llm.fake import E2eFakeLLM
 from app.api.routes.design_stages import generate_design_stage, list_design_stages
 from app.detailed_design import StageSources, validate_stage
+from app.detailed_design.data_flow_drafting import (
+    GeneratedGroupProcess,
+    GeneratedSummary,
+    GroupDfdGenerationOutput,
+    ProcessSummaryGenerationOutput,
+)
 from app.detailed_design.drafting import (
     FunctionListGenerationOutput,
     GeneratedFunction,
@@ -30,12 +45,17 @@ from app.detailed_design.drafting import (
     to_drafts,
 )
 from app.models.project import Project
+from app.repositories.data_item import DataItemRepository
 from app.repositories.design_stage import DesignStageRepository
 from app.repositories.generated_document import GeneratedDocumentRepository
+from app.repositories.uml_diagram import UmlDiagramRepository
 from app.services import llm_retry
+from app.services.data_item_service import DataItemService
 from app.services.design_stage_generation_service import (
     STAGE_GENERATORS,
     DesignStageGenerationService,
+    StageGenerationContext,
+    generate_data_flow,
     generate_function_list,
     run_design_stage_generation,
 )
@@ -43,8 +63,11 @@ from app.services.design_stage_service import DesignStageService
 from app.services.errors import (
     DesignStageGenerationInProgressError,
     DesignStageGenerationNotSupportedError,
+    DesignStageInvalidError,
     DesignStageLockedError,
 )
+from app.uml.domain import DataItemField
+from app.uml.generation.schemas import GeneratedDataItem, GeneratedFlow, GeneratedNode
 
 EXTERNAL_DESIGN = (
     "# 2. 外部設計書\n\n## 2.6 API一覧\n| メソッド | パス | 概要 | 関連画面 |\n|---|---|---|---|\n"
@@ -194,7 +217,7 @@ async def test_generation_rejects_unsupported_locked_and_running_stages(
     service = DesignStageGenerationService(db_session)
 
     with pytest.raises(DesignStageGenerationNotSupportedError):
-        await service.request_generation(project, stage=2)
+        await service.request_generation(project, stage=3)
     no_docs = await create_detailed_project(db_session, with_documents=False)
     with pytest.raises(DesignStageLockedError):
         await service.request_generation(no_docs, stage=1)
@@ -223,12 +246,24 @@ async def test_stale_generation_is_recovered(db_session: AsyncSession) -> None:
     assert "時間内に終わらなかった" in stage1.generation_error
 
 
-async def test_generate_function_list_reads_external_design() -> None:
-    llm = FakeLLM(structured=_output(("予約", "POST /api/v1/reservations")))
-
-    model = await generate_function_list(
-        llm, StageSources(documents={"external_design": EXTERNAL_DESIGN}), None
+def _context(
+    session: AsyncSession, llm, sources: StageSources, previous: dict | None = None
+) -> StageGenerationContext:
+    return StageGenerationContext(
+        llm=llm,
+        sources=sources,
+        previous=previous,
+        fingerprint={},
+        session=session,
+        project_id=uuid.uuid4(),
     )
+
+
+async def test_generate_function_list_reads_external_design(db_session: AsyncSession) -> None:
+    llm = FakeLLM(structured=_output(("予約", "POST /api/v1/reservations")))
+    sources = StageSources(documents={"external_design": EXTERNAL_DESIGN})
+
+    model = await generate_function_list(_context(db_session, llm, sources))
 
     assert STAGE_GENERATORS[1] is generate_function_list
     assert llm.structured_output_calls == [FunctionListGenerationOutput]
@@ -255,12 +290,187 @@ def test_messages_and_drafts() -> None:
     assert [(d.name, d.screens, d.group_hint) for d in drafts] == [("集計する", ("SCR-1",), "運用")]
 
 
-async def test_e2e_fake_function_list_passes_validation() -> None:
+async def test_e2e_fake_function_list_passes_validation(db_session: AsyncSession) -> None:
     """偽LLM(E2E)の段階1の出力は、偽LLMの外部設計書と照らしてエラー・漏れなく通る。"""
     llm = E2eFakeLLM()
     external = str((await llm.ainvoke([SystemMessage(content="# 2. 外部設計書")])).content)
     sources = StageSources(documents={"external_design": external})
 
-    model = await generate_function_list(llm, sources, None)
+    model = await generate_function_list(_context(db_session, llm, sources))
 
     assert validate_stage(1, model, sources) == []
+
+
+# ---- 段階2(データフロー、Phase 17) ----
+
+
+def _summary_output() -> ProcessSummaryGenerationOutput:
+    return ProcessSummaryGenerationOutput(
+        rows=[GeneratedSummary(function_id="F-01", input="予約", process="保存", output="予約")]
+    )
+
+
+def _dfd_output(*, item: str = "予約") -> GroupDfdGenerationOutput:
+    return GroupDfdGenerationOutput(
+        data_items=[GeneratedDataItem(name=item, fields=[])],
+        processes=[GeneratedGroupProcess(function_id="F-01", description="保存", layer="受付")],
+        external_entities=[GeneratedNode(id="e1", name="利用者")],
+        data_stores=[GeneratedNode(id="s1", name="reservations")],
+        flows=[
+            GeneratedFlow(id="f1", source_id="e1", target_id="F-01", data_item_name=item),
+            GeneratedFlow(id="f2", source_id="F-01", target_id="s1", data_item_name=item),
+        ],
+    )
+
+
+async def _stage2_project(session: AsyncSession, *, dfd_groups: list[str]) -> Project:
+    """段階1を承認し、段階2に DFD を描くグループを保存したプロジェクト。"""
+    project = await create_detailed_project(session)
+    service = DesignStageService(session)
+    await service.save(project, stage=1, expected_version=None, model=function_list_model())
+    await service.approve(project, stage=1, expected_version=1)
+    model = {"dfd_groups": dfd_groups, "summaries": []}
+    await service.save(project, stage=2, expected_version=None, model=model)
+    return project
+
+
+async def _generate_stage2(session: AsyncSession, project: Project, llm) -> None:
+    service = DesignStageGenerationService(session)
+    await service.request_generation(project, stage=2)
+    await service.execute(project_id=project.id, user_id=project.user_id, stage=2, llm=llm)
+
+
+async def test_stage2_generation_writes_summaries_dfd_and_data_items(
+    db_session: AsyncSession,
+) -> None:
+    """統合スモーク(段階2): 処理概要表と、選んだグループの DFD・データ項目を書き、DFD を承認すると
+    段階2を承認できる。"""
+    project = await _stage2_project(db_session, dfd_groups=["reservations"])
+    project_id = project.id
+    llm = FakeLLM(structured_sequence=[_summary_output(), _dfd_output()])
+
+    await _generate_stage2(db_session, project, llm)
+    service = DesignStageService(db_session)
+    stage2 = await service.read(project_id, 2)
+    diagram = await UmlDiagramRepository(db_session).get_by_subject(
+        project_id=project_id, notation="dfd", subject="reservations"
+    )
+    items = await DataItemRepository(db_session).list_for_project(project_id)
+
+    assert STAGE_GENERATORS[2] is generate_data_flow
+    assert llm.structured_output_calls == [
+        ProcessSummaryGenerationOutput,
+        GroupDfdGenerationOutput,
+    ]
+    assert stage2.state == "draft"
+    assert stage2.model is not None
+    assert stage2.model["dfd_groups"] == ["reservations"]
+    assert [row["function_id"] for row in stage2.model["summaries"]] == ["F-01"]
+    assert diagram is not None
+    assert diagram.status == "draft"
+    assert diagram.source_doc_versions == {"stage:1": 1, "doc:requirements": 1}
+    assert [e["id"] for e in diagram.semantic_model["elements"]][0] == "F-01"
+    assert [item.name for item in items] == ["予約"]
+    assert [issue.code for issue in stage2.issues] == ["DFD_NOT_APPROVED"]
+
+    diagram.status = "approved"
+    await db_session.commit()
+    approved = await service.approve(project, stage=2, expected_version=stage2.version or 0)
+    assert approved.state == "approved"
+
+
+async def test_stage2_regeneration_keeps_groups_and_overwrites_dfd(
+    db_session: AsyncSession,
+) -> None:
+    project = await _stage2_project(db_session, dfd_groups=["reservations"])
+    project_id = project.id
+    await _generate_stage2(
+        db_session, project, FakeLLM(structured_sequence=[_summary_output(), _dfd_output()])
+    )
+    repo = UmlDiagramRepository(db_session)
+    first = await repo.get_by_subject(project_id=project_id, notation="dfd", subject="reservations")
+    assert first is not None
+    first.status = "approved"
+    first_version = first.version
+    await db_session.commit()
+
+    await _generate_stage2(
+        db_session,
+        project,
+        FakeLLM(structured_sequence=[_summary_output(), _dfd_output(item="予約内容")]),
+    )
+    stage2 = await DesignStageService(db_session).read(project_id, 2)
+    diagrams = await repo.list_by_notation(project_id, "dfd")
+
+    assert stage2.state == "regenerated"
+    assert stage2.model is not None
+    assert stage2.model["dfd_groups"] == ["reservations"]
+    assert len(diagrams) == 1
+    assert diagrams[0].status == "draft"
+    assert diagrams[0].version == first_version + 1
+
+
+async def test_stage2_failure_rolls_back_dfd_and_data_items(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = await _stage2_project(db_session, dfd_groups=["reservations"])
+    project_id = project.id
+    monkeypatch.setattr(llm_retry, "_is_quota_error", lambda _exc: True)
+
+    await _generate_stage2(
+        db_session, project, FakeLLM(structured_sequence=[_summary_output(), RuntimeError("429")])
+    )
+    stage2 = await DesignStageService(db_session).read(project_id, 2)
+
+    assert stage2.generation_status == "failed"
+    assert stage2.model == {"dfd_groups": ["reservations"], "summaries": []}
+    assert await UmlDiagramRepository(db_session).list_by_notation(project_id, "dfd") == []
+    assert await DataItemRepository(db_session).list_for_project(project_id) == []
+
+
+async def test_stage2_rejects_too_many_groups_and_validates_with_stage1(
+    db_session: AsyncSession,
+) -> None:
+    project = await _stage2_project(db_session, dfd_groups=[f"g{i}" for i in range(6)])
+
+    with pytest.raises(DesignStageInvalidError):
+        await DesignStageGenerationService(db_session).request_generation(project, stage=2)
+
+    [_, stage2, *_] = await list_design_stages(db_session, project)
+    codes = {issue.code for issue in stage2.issues}
+    assert {"TOO_MANY_DFD_GROUPS", "UNKNOWN_DFD_GROUP", "MISSING_SUMMARY"} <= codes
+
+
+async def test_stage2_without_dfd_groups_writes_only_summaries(db_session: AsyncSession) -> None:
+    project = await _stage2_project(db_session, dfd_groups=[])
+    project_id = project.id
+    llm = FakeLLM(structured_sequence=[_summary_output()])
+
+    await _generate_stage2(db_session, project, llm)
+    stage2 = await DesignStageService(db_session).read(project_id, 2)
+
+    assert llm.structured_output_calls == [ProcessSummaryGenerationOutput]
+    assert stage2.model is not None
+    assert stage2.model == data_flow_model() | {"summaries": stage2.model["summaries"]}
+    assert stage2.issues == []
+
+
+async def test_resolve_by_name_reuses_existing_and_creates_missing(
+    db_session: AsyncSession,
+) -> None:
+    """データ項目の名前の解決(UML図の生成と段階2の生成で共有): 既存はフィールドを変えずに使い、
+    無い名前だけを作る。commitしないので、呼び出し元の rollback で一緒に消える。"""
+    project = await create_detailed_project(db_session)
+    project_id = project.id
+    service = DataItemService(db_session)
+    existing = await service.create(project_id=project_id, name="予約", fields=[{"name": "id"}])
+
+    ids = await service.resolve_by_name(
+        project_id, {"予約": [DataItemField(name="別")], "備品": [DataItemField(name="code")]}
+    )
+    await db_session.rollback()
+    items = await DataItemRepository(db_session).list_for_project(project_id)
+
+    assert ids["予約"] == existing.id
+    assert set(ids) == {"予約", "備品"}
+    assert [(item.name, item.fields) for item in items] == [("予約", [{"name": "id"}])]

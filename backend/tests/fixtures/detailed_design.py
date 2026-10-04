@@ -48,3 +48,19 @@ def function_list_model(*, group: str = "reservations") -> dict:
         ],
         "next_number": 2,
     }
+
+
+def data_flow_model(*, dfd_groups: list[str] | None = None) -> dict:
+    """`function_list_model()`の処理1件に対応する、段階2の検証を通る処理概要表(DFD を描く
+    グループは既定で無し)。`dfd_groups`を渡すと、そのグループの DFD が要るようになる。"""
+    return {
+        "dfd_groups": dfd_groups or [],
+        "summaries": [
+            {
+                "function_id": "F-01",
+                "input": "予約の内容",
+                "process": "重複を確かめて保存する",
+                "output": "予約",
+            }
+        ],
+    }

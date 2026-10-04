@@ -11,39 +11,67 @@ UML図の生成(app/services/uml_generation_service.py)と同じ形で、生成�
   直後でも「古い」と判定されるため(Phase 16 の修正)。
 - 15分を超えて生成中のまま止まった段階は、受け付け時と一覧の取得時に失敗へ戻す
   (app/services/generation_staleness.py)。
-- 生成できる段階は`STAGE_GENERATORS`に登録したものだけ(Phase 16 は段階1)。
+- 生成できる段階は`STAGE_GENERATORS`に登録したものだけ(Phase 16 は段階1、Phase 17 で段階2)。
+- 段階2は、段階の内容のほかに機能グループの DFD(`uml_diagrams`)とデータ項目(`data_items`)も
+  書く。段階の保存と同じトランザクションで書き、失敗したらまとめて取り消す。そのため生成の関数には
+  `StageGenerationContext`でセッションとプロジェクトを渡す(Phase 17)。
 """
 
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 import structlog
+from langchain_core.messages import BaseMessage
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.llm.gemini import get_gemini_llm
 from app.core.database import AsyncSessionLocal
+from app.detailed_design.data_flow import (
+    MAX_DFD_GROUPS,
+    DataFlowModel,
+    dfd_subject,
+    group_functions,
+    merge_summaries,
+)
+from app.detailed_design.data_flow_drafting import (
+    GroupDfdGenerationOutput,
+    ProcessSummaryGenerationOutput,
+    build_group_dfd_messages,
+    build_summary_messages,
+    to_dfd_output,
+    to_summary_drafts,
+)
 from app.detailed_design.drafting import (
     FunctionListGenerationOutput,
     build_function_list_messages,
     to_drafts,
 )
 from app.detailed_design.function_list import FunctionListModel, merge_draft
+from app.detailed_design.stages import Fingerprint
 from app.detailed_design.validation import StageSources
 from app.models.project import Project
 from app.repositories.design_stage import DesignStageRepository
 from app.repositories.project import ProjectRepository
+from app.repositories.uml_diagram import UmlDiagramRepository
 from app.schemas.design_stage import DesignStageRead
+from app.services.data_item_service import DataItemService
 from app.services.design_stage_service import DesignStageService
 from app.services.errors import (
     DesignStageGenerationInProgressError,
     DesignStageGenerationNotSupportedError,
+    DesignStageInvalidError,
     DesignStageLockedError,
 )
 from app.services.generation_staleness import is_stale
 from app.services.llm_retry import invoke_with_retry
+from app.uml.domain import NOTATION_TO_VIEW, DfdSemanticModel
 from app.uml.generation.failures import ReasonCode, classify_failure, unwrap_structured_result
+from app.uml.generation.mapper import required_data_items, to_dfd
+from app.uml.generation.prompts import ExistingDataItem
 
 logger = structlog.get_logger(__name__)
 
@@ -64,29 +92,139 @@ _MESSAGES: dict[ReasonCode, str] = {
     ),
 }
 
-StageGenerator = Callable[[Any, StageSources, Mapping[str, Any] | None], Awaitable[dict]]
+@dataclass(frozen=True)
+class StageGenerationContext:
+    """下書きの生成の関数に渡す入力。
+
+    - `sources`: 入力の文書の本文と、入力の段階の内容(承認済み)。
+    - `previous`: その段階の今の内容(作り直しのとき。初回は None)。
+    - `fingerprint`: 生成した時点の入力の版(段階2は DFD の`source_doc_versions`にも記録する)。
+    - `session`・`project_id`: 段階のほかに DB へ書く生成(段階2の DFD・データ項目)が使う。
+      commitは呼び出し元(execute)が段階の保存と一緒に1回だけ行う。
+    """
+
+    llm: Any
+    sources: StageSources
+    previous: Mapping[str, Any] | None
+    fingerprint: Fingerprint
+    session: AsyncSession
+    project_id: uuid.UUID
 
 
-async def generate_function_list(
-    llm, sources: StageSources, previous: Mapping[str, Any] | None
-) -> dict:
-    """段階1: 外部設計書から処理を下書きし、前の版と突き合わせて処理IDと機能グループを決める。"""
-    messages = build_function_list_messages(sources.documents.get("external_design", ""))
-    structured_llm = llm.with_structured_output(FunctionListGenerationOutput, include_raw=True)
+StageGenerator = Callable[[StageGenerationContext], Awaitable[dict]]
 
-    async def _call() -> FunctionListGenerationOutput:
+
+async def _invoke_structured[T: BaseModel](
+    llm, schema: type[T], messages: list[BaseMessage]
+) -> T:
+    """構造化出力を呼ぶ(解釈の失敗・クォータ超過は invoke_with_retry の規則で再試行する)。"""
+    structured_llm = llm.with_structured_output(schema, include_raw=True)
+
+    async def _call() -> T:
         result = await structured_llm.ainvoke(messages)
-        return unwrap_structured_result(result, FunctionListGenerationOutput)
+        return unwrap_structured_result(result, schema)
 
-    output = await invoke_with_retry(_call, messages=messages)
+    return await invoke_with_retry(_call, messages=messages)
+
+
+async def generate_function_list(context: StageGenerationContext) -> dict:
+    """段階1: 外部設計書から処理を下書きし、前の版と突き合わせて処理IDと機能グループを決める。"""
+    messages = build_function_list_messages(context.sources.documents.get("external_design", ""))
+    output = await _invoke_structured(context.llm, FunctionListGenerationOutput, messages)
+    previous = context.previous
     previous_model = FunctionListModel.model_validate(previous) if previous else None
     return merge_draft(to_drafts(output), previous_model).model_dump(mode="json")
+
+
+async def generate_data_flow(context: StageGenerationContext) -> dict:
+    """段階2: 全処理の処理概要表を下書きし、人が選んだ機能グループごとに DFD を下書きする。
+
+    DFD を描くグループ(`dfd_groups`)は人の選択なので、前の版から引き継ぐ。グループの DFD は
+    `uml_diagrams`の同じ行(subject=機能グループ名)を上書きし、承認はやり直しになる。"""
+    function_list = FunctionListModel.model_validate(context.sources.stages.get(1) or {})
+    previous = DataFlowModel.model_validate(context.previous) if context.previous else None
+    requirements = context.sources.documents.get("requirements", "")
+
+    summary = await _invoke_structured(
+        context.llm,
+        ProcessSummaryGenerationOutput,
+        build_summary_messages(function_list.functions, requirements),
+    )
+    model = merge_summaries(to_summary_drafts(summary), function_list, previous)
+
+    data_items = DataItemService(context.session)
+    for group in model.dfd_groups:
+        functions = group_functions(function_list, group)
+        existing = [
+            ExistingDataItem(name=item.name, field_names=[f["name"] for f in item.fields])
+            for item in await data_items.list_for_project(context.project_id)
+        ]
+        output = await _invoke_structured(
+            context.llm,
+            GroupDfdGenerationOutput,
+            build_group_dfd_messages(group, functions, model.summaries, requirements, existing),
+        )
+        converted = to_dfd_output(output, functions)
+        ids_by_name = await data_items.resolve_by_name(
+            context.project_id, required_data_items(converted)
+        )
+        await _save_group_dfd(context, group, to_dfd(converted, ids_by_name))
+    return model.model_dump(mode="json")
+
+
+async def _save_group_dfd(
+    context: StageGenerationContext, group: str, model: DfdSemanticModel
+) -> None:
+    """機能グループの DFD を、同じ subject の行に上書きする(無ければ作る)。commitしない。
+    配置は消して、画面で最初に開いたときに自動レイアウトさせる(UML図の再生成と同じ)。"""
+    diagrams = UmlDiagramRepository(context.session)
+    subject = dfd_subject(group)
+    diagram = await diagrams.get_by_subject(
+        project_id=context.project_id, notation="dfd", subject=subject
+    )
+    if diagram is None:
+        diagram = await diagrams.create(
+            project_id=context.project_id,
+            view=NOTATION_TO_VIEW["dfd"],
+            notation="dfd",
+            semantic_model={},
+            subject=subject,
+        )
+    diagram.semantic_model = model.model_dump(mode="json")
+    diagram.layout_model = None
+    diagram.status = "draft"
+    diagram.version += 1
+    diagram.source_doc_versions = dict(context.fingerprint)
+    diagram.generation_status = "completed"
+    diagram.generation_error = None
 
 
 # 段階番号 → 下書きの生成。登録の無い段階は生成できない(各段階の Phase で足す)。
 STAGE_GENERATORS: dict[int, StageGenerator] = {
     1: generate_function_list,
+    2: generate_data_flow,
 }
+
+
+def _has_draft(stage: int, model: Mapping[str, Any] | None) -> bool:
+    """作り直し(`regenerated`)か初回(`draft`)かの判定に使う、「下書きの内容がある」か。
+    段階2は、人がグループの選択だけを保存してから初めて生成するので、処理概要表の行で判定する。"""
+    if not model:
+        return False
+    if stage == 2:
+        return bool(model.get("summaries"))
+    return True
+
+
+def _check_request(stage: int, model: Mapping[str, Any] | None) -> None:
+    """段階ごとの、生成を受け付ける前の確認。段階2は DFD を描くグループの数(上限を超えたまま
+    生成すると、15分の回収のしきい値を超えるおそれがあるため)。"""
+    if stage == 2 and model:
+        groups = set(DataFlowModel.model_validate(model).dfd_groups)
+        if len(groups) > MAX_DFD_GROUPS:
+            raise DesignStageInvalidError(
+                f"DFD を描く機能グループは {MAX_DFD_GROUPS} つまでです(今は {len(groups)} つ)。"
+            )
 
 
 async def run_design_stage_generation(
@@ -114,7 +252,7 @@ class DesignStageGenerationService:
         `execute`する。未着手の段階は、ここで行を作る(内容は空、`draft`)。
 
         断る条件(この順): 詳細設計モードでない / 生成に対応していない段階 / 段階が開いていない /
-        その段階を生成中。"""
+        その段階を生成中 / 段階ごとの確認(段階2の DFD を描くグループの数)。"""
         await self.recover_stale(project.id)
         row, view, _ = await self._stages.stage_view(project, stage)
         if stage not in STAGE_GENERATORS:
@@ -129,6 +267,7 @@ class DesignStageGenerationService:
             raise DesignStageGenerationInProgressError(
                 "この段階の下書きを生成中です。完了してから再度お試しください。"
             )
+        _check_request(stage, row.model if row is not None else None)
         if row is None:
             row = await self._rows.create(project_id=project.id, stage=stage, model=None)
         row.generation_status = "generating"
@@ -150,12 +289,21 @@ class DesignStageGenerationService:
         if row is None or row.generation_status != "generating":
             return
         generator = STAGE_GENERATORS[stage]
-        regenerating = bool(row.model)
+        regenerating = _has_draft(stage, row.model)
         fingerprint = await self._stages.current_fingerprint(project, stage)
+        context = StageGenerationContext(
+            llm=llm or get_gemini_llm(),
+            sources=sources,
+            previous=row.model,
+            fingerprint=fingerprint,
+            session=self._session,
+            project_id=project_id,
+        )
         try:
-            model = await generator(llm or get_gemini_llm(), sources, row.model)
+            model = await generator(context)
         except Exception as exc:
-            # 途中の変更を残さず、読み直した行に失敗だけを記録する(rollbackで行は期限切れになる)
+            # 途中の変更(段階2の DFD・データ項目も)を残さず、読み直した行に失敗だけを記録する
+            # (rollbackで行は期限切れになる)
             await self._session.rollback()
             row = await self._rows.get(project_id=project_id, stage=stage)
             if row is None:

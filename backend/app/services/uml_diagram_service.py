@@ -5,9 +5,11 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import BadRequestError
+from app.detailed_design.data_flow import DATA_FLOW_STAGE
 from app.models.uml_diagram import UmlDiagram
 from app.repositories.data_item import DataItemRepository
 from app.repositories.uml_diagram import UmlDiagramRepository
+from app.services.design_stage_service import DesignStageService
 from app.services.errors import (
     LayoutNodeLimitExceededError,
     LayoutValidationFailedError,
@@ -121,6 +123,7 @@ class UmlDiagramService:
         # 承認済みの図を保存したら承認をやり直す(M7。座標だけの保存も含む)
         diagram.status = STATUS_AFTER_EDIT
         diagram.version += 1
+        await self._reopen_data_flow_stage(diagram)
         await self._session.flush()
         await self._session.commit()
         # updated_at は server-side の onupdate=func.now() で決まるため、UPDATE後は
@@ -175,6 +178,7 @@ class UmlDiagramService:
         diagram.layout_model = layout_model.model_dump(mode="json")
         # 配置が変わると出力の見た目も変わるため、保存と同じく承認をやり直す(M7)
         diagram.status = STATUS_AFTER_EDIT
+        await self._reopen_data_flow_stage(diagram)
         await self._session.flush()
         await self._session.commit()
         # updated_at は server-side の onupdate=func.now() で決まるため、UPDATE後は
@@ -286,6 +290,14 @@ class UmlDiagramService:
             return {}
         items = await self._data_items.list_for_project(diagram.project_id)
         return {item.id: item.name for item in items}
+
+    async def _reopen_data_flow_stage(self, diagram: UmlDiagram) -> None:
+        """詳細設計モードの DFD は段階2の内容の一部なので、図の承認がやり直しになる保存・配置では、
+        承認済みの段階2も差し戻す(段階2の行が無い簡易ドキュメントモードでは何もしない)。"""
+        if diagram.notation == "dfd":
+            await DesignStageService(self._session).mark_edited(
+                diagram.project_id, DATA_FLOW_STAGE
+            )
 
     async def _get_owned(self, *, project_id: uuid.UUID, diagram_id: uuid.UUID) -> UmlDiagram:
         diagram = await self._diagrams.get_by_id(diagram_id, project_id=project_id)

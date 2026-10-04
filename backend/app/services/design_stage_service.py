@@ -12,12 +12,19 @@ from app.detailed_design import (
     current_inputs,
     derive_states,
 )
-from app.detailed_design.validation import StageSources, has_errors, validate_stage
+from app.detailed_design.validation import (
+    DfdDiagramSummary,
+    StageSources,
+    has_errors,
+    validate_stage,
+)
 from app.models.design_stage import DesignStage
 from app.models.generated_document import GeneratedDocument
 from app.models.project import Project
+from app.models.uml_diagram import UmlDiagram
 from app.repositories.design_stage import DesignStageRepository
 from app.repositories.generated_document import GeneratedDocumentRepository
+from app.repositories.uml_diagram import UmlDiagramRepository
 from app.schemas.design_stage import DesignStageRead, StageIssueRead
 from app.services.errors import (
     DesignStageGenerationInProgressError,
@@ -47,21 +54,24 @@ class DesignStageService:
         self._session = session
         self._stages = DesignStageRepository(session)
         self._documents = GeneratedDocumentRepository(session)
+        self._diagrams = UmlDiagramRepository(session)
 
     async def list_stages(self, project: Project) -> list[DesignStageRead]:
         """段階1〜7の状態を返す(未着手の段階も含む)。"""
         _ensure_detailed(project)
         rows, views, documents = await self._load(project.id)
-        sources = _sources(documents)
+        sources = await self._sources(project.id, rows, views, documents)
         return [_to_read(views[stage], rows.get(stage), sources) for stage in STAGE_INPUTS]
 
     async def stage_view(
         self, project: Project, stage: int
     ) -> tuple[DesignStage | None, StageView, StageSources]:
-        """段階1つ分の行(未着手ならNone)・状態・入力の文書の本文を返す(下書きの生成が使う)。"""
+        """段階1つ分の行(未着手ならNone)・状態・入力(文書の本文・承認済みの段階の内容・DFD の
+        要約)を返す(下書きの生成が使う)。"""
         _ensure_detailed(project)
         rows, views, documents = await self._load(project.id)
-        return rows.get(stage), views[stage], _sources(documents)
+        sources = await self._sources(project.id, rows, views, documents)
+        return rows.get(stage), views[stage], sources
 
     async def current_fingerprint(self, project: Project, stage: int) -> Fingerprint:
         """段階が今入力にしているものの版(下書きの生成時に記録する。承認時と同じ規則)。"""
@@ -102,6 +112,23 @@ class DesignStageService:
         await self._session.refresh(row)
         return await self._read_one(project.id, stage)
 
+    async def mark_edited(self, project_id: uuid.UUID, stage: int) -> bool:
+        """段階の内容のうち、段階の外に正本を持つもの(段階2の DFD・データ辞書)が直されたとき、
+        承認済みの段階を人の編集と同じ扱いで差し戻す(`reviewing`へ戻し、versionを増やす)。
+        差し戻したらTrue。
+
+        段階の`model`の保存を経ずに内容が変わっても、承認をやり直させ、後ろの段階に「古い」を
+        伝えるため(後ろの段階は、承認した版の番号で陳腐化を判定する)。承認済みでない段階は何も
+        しない。行の無いプロジェクト(簡易ドキュメントモード)も何もしない。呼び出し元の保存と同じ
+        トランザクションで使うため、commitしない(Phase 17)。"""
+        row = await self._stages.get(project_id=project_id, stage=stage)
+        if row is None or row.status != "approved":
+            return False
+        row.status = STATUS_AFTER_EDIT
+        row.version += 1
+        logger.info("design_stage_reopened", project_id=str(project_id), stage=stage)
+        return True
+
     async def approve(
         self, project: Project, *, stage: int, expected_version: int
     ) -> DesignStageRead:
@@ -124,7 +151,8 @@ class DesignStageService:
             raise DesignStageNotApprovableError(f"Stage {stage} is already approved")
         if not row.model:
             raise DesignStageNotApprovableError(f"Stage {stage} has no content")
-        if has_errors(validate_stage(stage, row.model, _sources(documents))):
+        sources = await self._sources(project.id, rows, views, documents)
+        if has_errors(validate_stage(stage, row.model, sources)):
             raise DesignStageInvalidError(f"Stage {stage} has validation errors")
 
         row.status = "approved"
@@ -152,7 +180,36 @@ class DesignStageService:
 
     async def _read_one(self, project_id: uuid.UUID, stage: int) -> DesignStageRead:
         rows, views, documents = await self._load(project_id)
-        return _to_read(views[stage], rows.get(stage), _sources(documents))
+        sources = await self._sources(project_id, rows, views, documents)
+        return _to_read(views[stage], rows.get(stage), sources)
+
+    async def _sources(
+        self,
+        project_id: uuid.UUID,
+        rows: dict[int, DesignStage],
+        views: dict[int, StageView],
+        documents: dict[str, GeneratedDocument | None],
+    ) -> StageSources:
+        """段階ごとの検証・下書きの生成に渡す入力。
+
+        - 文書: 入力になる文書の表示中の版の本文。
+        - 段階: 承認済み(古くない)段階の内容。後ろの段階は、承認済みの前の段階だけを入力にする。
+        - DFD: 機能グループの DFD(段階2)の要約。詳細設計モードでは DFD はすべて段階2のもの。
+        """
+        diagrams = await self._diagrams.list_by_notation(project_id, "dfd")
+        return StageSources(
+            documents={
+                doc_type: document.content
+                for doc_type, document in documents.items()
+                if document is not None
+            },
+            stages={
+                stage: row.model
+                for stage, row in rows.items()
+                if views[stage].state == "approved" and row.model
+            },
+            dfd_diagrams={diagram.subject: _dfd_summary(diagram) for diagram in diagrams},
+        )
 
     async def _current_documents(
         self, project_id: uuid.UUID
@@ -172,14 +229,14 @@ def _doc_versions(documents: dict[str, GeneratedDocument | None]) -> dict[str, i
     }
 
 
-def _sources(documents: dict[str, GeneratedDocument | None]) -> StageSources:
-    """段階ごとの検証・下書きの生成に渡す、入力の文書の本文。"""
-    return StageSources(
-        documents={
-            doc_type: document.content
-            for doc_type, document in documents.items()
-            if document is not None
-        }
+def _dfd_summary(diagram: UmlDiagram) -> DfdDiagramSummary:
+    elements = (diagram.semantic_model or {}).get("elements", [])
+    return DfdDiagramSummary(
+        status=diagram.status,
+        generation_status=diagram.generation_status,
+        process_ids=tuple(
+            str(e.get("id")) for e in elements if e.get("element_type") == "process"
+        ),
     )
 
 

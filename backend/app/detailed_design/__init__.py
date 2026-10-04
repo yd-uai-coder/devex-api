@@ -7,6 +7,16 @@ from app.detailed_design.api_list import (
     parse_trigger,
     trigger_key,
 )
+from app.detailed_design.data_flow import (
+    DATA_FLOW_STAGE,
+    MAX_DFD_GROUPS,
+    DataFlowModel,
+    ProcessSummaryDraft,
+    ProcessSummaryRow,
+    dfd_subject,
+    group_functions,
+    merge_summaries,
+)
 from app.detailed_design.function_list import (
     FunctionDraft,
     FunctionListModel,
@@ -31,6 +41,7 @@ from app.detailed_design.stages import (
 )
 from app.detailed_design.validation import (
     STAGE_VALIDATORS,
+    DfdDiagramSummary,
     StageIssue,
     StageSources,
     has_errors,
@@ -38,14 +49,20 @@ from app.detailed_design.validation import (
 )
 
 __all__ = [
+    "DATA_FLOW_STAGE",
+    "MAX_DFD_GROUPS",
     "STAGES",
     "STAGE_INPUTS",
     "STAGE_VALIDATORS",
     "ApiEndpoint",
+    "DataFlowModel",
+    "DfdDiagramSummary",
     "Fingerprint",
     "FunctionDraft",
     "FunctionListModel",
     "FunctionRow",
+    "ProcessSummaryDraft",
+    "ProcessSummaryRow",
     "StageInputs",
     "StageIssue",
     "StageRecord",
@@ -56,12 +73,15 @@ __all__ = [
     "can_approve",
     "current_inputs",
     "derive_states",
+    "dfd_subject",
     "doc_key",
     "endpoint_key",
     "extract_api_endpoints",
+    "group_functions",
     "has_errors",
     "initial_group",
     "merge_draft",
+    "merge_summaries",
     "parse_trigger",
     "stage_key",
     "trigger_key",

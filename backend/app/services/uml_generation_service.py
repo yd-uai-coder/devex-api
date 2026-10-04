@@ -13,6 +13,7 @@ from app.repositories.data_item import DataItemRepository
 from app.repositories.generated_document import GeneratedDocumentRepository
 from app.repositories.uml_diagram import UmlDiagramRepository
 from app.repositories.uml_generation_run import UmlGenerationRunRepository
+from app.services.data_item_service import DataItemService
 from app.services.errors import (
     ErScopeRequiredError,
     TooManySubjectsError,
@@ -329,21 +330,11 @@ class UmlGenerationService:
     async def _resolve_data_items(
         self, project_id: uuid.UUID, output: DfdGenerationOutput
     ) -> dict[str, uuid.UUID]:
-        """DFDの生成結果が使うデータ項目を名前でデータ辞書に解決する。既存の項目はそのまま使い
-        (ユーザーが編集したフィールドを上書きしない)、無い項目だけを新規作成する。"""
-        existing = {
-            item.name: item.id for item in await self._data_items.list_for_project(project_id)
-        }
-        ids_by_name: dict[str, uuid.UUID] = {}
-        for name, fields in required_data_items(output).items():
-            if name in existing:
-                ids_by_name[name] = existing[name]
-            else:
-                created = await self._data_items.create(
-                    project_id=project_id, name=name, fields=[f.model_dump() for f in fields]
-                )
-                ids_by_name[name] = created.id
-        return ids_by_name
+        """DFDの生成結果が使うデータ項目を名前でデータ辞書に解決する(既存はそのまま、無い項目
+        だけを作る)。段階2の生成と共有するため、本体は DataItemService に移した(Phase 17)。"""
+        return await DataItemService(self._session).resolve_by_name(
+            project_id, required_data_items(output)
+        )
 
     async def _resolve_scopes(
         self,

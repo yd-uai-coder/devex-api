@@ -241,7 +241,8 @@ class DesignStageNotApprovableError(ConflictError):
 
 class DesignStageInvalidError(ConflictError):
     """段階ごとの検証(app/detailed_design/validation.py)でエラーがある段階を承認しようとした場合に
-    送出する。警告だけなら承認できる。指摘の一覧は段階の取得(`issues`)で確かめる。"""
+    送出する。警告だけなら承認できる。指摘の一覧は段階の取得(`issues`)で確かめる。
+    段階2で DFD を描くグループが上限を超えたまま生成を要求した場合にも送出する(Phase 17)。"""
 
     code: ClassVar[str | None] = "DESIGN_STAGE_INVALID"
 
@@ -255,7 +256,7 @@ class DesignStageGenerationInProgressError(ConflictError):
 
 class DesignStageGenerationNotSupportedError(ConflictError):
     """AIの下書きの生成にまだ対応していない段階の生成を要求した場合に送出する
-    (Phase 16 は段階1だけ)。"""
+    (Phase 17 の時点で段階1・2)。"""
 
     code: ClassVar[str | None] = "DESIGN_STAGE_GENERATION_NOT_SUPPORTED"
 

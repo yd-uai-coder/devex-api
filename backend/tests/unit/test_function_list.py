@@ -168,7 +168,7 @@ def test_validate_warns_duplicate_trigger_and_missing_api() -> None:
 
 
 def test_stages_without_validator_have_no_issues() -> None:
-    assert set(STAGE_VALIDATORS) == {1}
-    assert validate_stage(2, {"anything": 1}, StageSources()) == []
+    assert set(STAGE_VALIDATORS) == {1, 2}
+    assert validate_stage(3, {"anything": 1}, StageSources()) == []
     assert validate_stage(1, None, StageSources()) == []
     assert has_errors([StageIssue("warning", "W", "w")]) is False

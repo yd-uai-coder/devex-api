@@ -35,7 +35,7 @@ async def generate_design_stage(
     current_project: CurrentProjectDep,
     background_tasks: BackgroundTasks,
 ) -> DesignStageRead:
-    """段階のAIの下書きの生成を受け付け、バックグラウンドで実行する(Phase 16 は段階1だけ)。
+    """段階のAIの下書きの生成を受け付け、バックグラウンドで実行する(Phase 17 の時点で段階1・2)。
     段階は「生成中」になり、終わると`completed`/`failed`になる。background taskには値だけを渡す
     (doc生成・UML図の生成と同じ理由)。"""
     accepted = await DesignStageGenerationService(session).request_generation(
