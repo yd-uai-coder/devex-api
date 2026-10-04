@@ -2,19 +2,20 @@
 
 SUT: DesignStageGenerationService(request_generation / execute / recover_stale)、
      generate_function_list・generate_data_flow・generate_data_model・generate_structure・
-     STAGE_GENERATORS・
+     generate_procedures・STAGE_GENERATORS・
      StageGenerationContext(app/services/design_stage_generation_service.py)、
      DataItemService.resolve_by_name(app/services/data_item_service.py。段階2の生成から)、
      DesignStageService の入力(承認済みの段階の内容・DFD・ER・構成図の要約)と段階2〜4の承認
      (段階3は承認で下書きの印を外す)、段階3の`dfd_accesses`(app/schemas/design_stage.py)、
      generate_design_stage / list_design_stages(app/api/routes/design_stages.py)、
+     DesignStageGenerate(app/schemas/design_stage.py。段階5の生成の対象)、
      DesignStageService の生成中の保存の拒否、
      build_function_list_messages / to_drafts(app/detailed_design/drafting.py)、
      E2E用の偽LLMの段階1の出力(app/ai/llm/fake.py)
 ドライバ: 各テスト関数(ルート関数・サービスのメソッドを直接呼ぶ)
 スタブ: FakeLLM(tests/fixtures/fake_llm.py)── 構造化出力(Gemini)の代わり。段階2は1回の生成で
       処理概要表 → グループの DFD の順に、段階3は ER → CRUD 図の順に、段階4は構成図 → モジュール一覧
-      の順に呼ぶので、`structured_sequence`で順に返す。
+      の順に呼ぶので、`structured_sequence`で順に返す。段階5は対象の処理ごとに1回呼ぶ。
 DBはインメモリSQLite(db_session)で、スタブにはしない(段階の行の状態の移り変わりそのものが検証対象のため)。
 """
 
@@ -29,6 +30,7 @@ from tests.fixtures.detailed_design import (
     create_detailed_project,
     create_stage3_project,
     create_stage4_project,
+    create_stage5_project,
     data_flow_model,
     function_list_model,
 )
@@ -36,7 +38,12 @@ from tests.fixtures.fake_llm import FakeLLM
 
 from app.ai.llm.fake import E2eFakeLLM
 from app.api.routes.design_stages import generate_design_stage, list_design_stages
-from app.detailed_design import StageSources, structure_drafting, validate_stage
+from app.detailed_design import (
+    StageSources,
+    procedure_drafting,
+    structure_drafting,
+    validate_stage,
+)
 from app.detailed_design.data_flow_drafting import (
     GeneratedGroupProcess,
     GeneratedSummary,
@@ -56,6 +63,7 @@ from app.detailed_design.drafting import (
     build_function_list_messages,
     to_drafts,
 )
+from app.detailed_design.procedure_drafting import GeneratedStep, ProcedureGenerationOutput
 from app.detailed_design.structure_drafting import (
     GeneratedModuleRow,
     ModuleListGenerationOutput,
@@ -65,7 +73,7 @@ from app.repositories.data_item import DataItemRepository
 from app.repositories.design_stage import DesignStageRepository
 from app.repositories.generated_document import GeneratedDocumentRepository
 from app.repositories.uml_diagram import UmlDiagramRepository
-from app.schemas.design_stage import DfdAccessRead
+from app.schemas.design_stage import DesignStageGenerate, DfdAccessRead
 from app.services import design_stage_generation_service as generation_service
 from app.services import llm_retry
 from app.services.data_item_service import DataItemService
@@ -76,6 +84,7 @@ from app.services.design_stage_generation_service import (
     generate_data_flow,
     generate_data_model,
     generate_function_list,
+    generate_procedures,
     generate_structure,
     run_design_stage_generation,
 )
@@ -244,7 +253,7 @@ async def test_generation_rejects_unsupported_locked_and_running_stages(
     service = DesignStageGenerationService(db_session)
 
     with pytest.raises(DesignStageGenerationNotSupportedError):
-        await service.request_generation(project, stage=5)
+        await service.request_generation(project, stage=6)
     no_docs = await create_detailed_project(db_session, with_documents=False)
     with pytest.raises(DesignStageLockedError):
         await service.request_generation(no_docs, stage=1)
@@ -303,8 +312,12 @@ def test_messages_and_drafts() -> None:
         functions=[
             GeneratedFunction(name="  ", kind="API", trigger="GET /x", screens=[], summary=""),
             GeneratedFunction(
-                name="集計する", kind="バッチ", trigger="毎晩", screens=[" SCR-1 ", ""],
-                summary="s", group_hint="運用",
+                name="集計する",
+                kind="バッチ",
+                trigger="毎晩",
+                screens=[" SCR-1 ", ""],
+                summary="s",
+                group_hint="運用",
             ),
         ]
     )
@@ -766,3 +779,180 @@ async def test_stage4_failure_rolls_back_component(
     assert stage4.generation_status == "failed"
     assert stage4.model is None
     assert await UmlDiagramRepository(db_session).list_by_notation(project_id, "component") == []
+
+
+# --- 段階5 主要処理の手順(Phase 20) ---
+
+ROUTE = "app/api/routes/reservations.py"
+
+
+def _step(callee: str = "routes/reservations", *, action: str = "検証する") -> GeneratedStep:
+    return GeneratedStep(
+        caller="利用者",
+        callee=callee,
+        call="create_reservation",
+        data="予約リクエスト",
+        action=action,
+        result="予約",
+        db="reservations C",
+        branch="—",
+        is_branch=False,
+    )
+
+
+def _procedure_output(action: str = "検証する") -> ProcedureGenerationOutput:
+    return ProcedureGenerationOutput(reason="AIの理由", note="注記", steps=[_step(action=action)])
+
+
+async def _select(session: AsyncSession, project: Project, procedures: list[dict]) -> None:
+    """段階5の手順を書く処理を選んで保存する(画面の「選択を保存」と同じ)。"""
+    row = await DesignStageService(session).read(project.id, 5)
+    await DesignStageService(session).save(
+        project, stage=5, expected_version=row.version, model={"procedures": procedures}
+    )
+
+
+async def test_stage5_route_generates_pending_procedure_and_can_be_approved(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """統合スモーク(段階5): 本文なしで受け付け → 手順の無い処理を下書き → そのまま承認できる。
+    呼び出し先はモジュール一覧のパスにそろい、下書きには段階3・4の内容を渡す。"""
+    prompts: list[str] = []
+
+    def spy(*args, **kwargs):
+        messages = procedure_drafting.build_procedure_messages(*args, **kwargs)
+        prompts.append(str(messages[1].content))
+        return messages
+
+    monkeypatch.setattr(generation_service, "build_procedure_messages", spy)
+    project = await create_stage5_project(db_session)
+    project_id = project.id
+    await _select(db_session, project, [{"function_id": "F-01", "reason": "人の理由"}])
+    tasks = BackgroundTasks()
+    llm = FakeLLM(structured=_procedure_output())
+
+    accepted = await generate_design_stage(5, db_session, project, tasks)
+    await DesignStageGenerationService(db_session).execute(
+        project_id=project_id, user_id=project.user_id, stage=5, llm=llm
+    )
+    service = DesignStageService(db_session)
+    stage5 = await service.read(project_id, 5)
+
+    assert accepted.generation_status == "generating"
+    assert tasks.tasks[0].args[-1] is None  # 対象の指定なし → 実行時に手順の無い処理を選ぶ
+    assert STAGE_GENERATORS[5] is generate_procedures
+    assert llm.structured_output_calls == [ProcedureGenerationOutput]
+    [prompt] = prompts
+    assert "- reservations: C" in prompt
+    assert f"- {ROUTE}(層: api" in prompt
+    assert stage5.state == "draft"
+    assert stage5.model is not None
+    [procedure] = stage5.model["procedures"]
+    assert procedure["reason"] == "人の理由"
+    assert procedure["steps"][0]["callee"] == ROUTE
+    assert stage5.issues == []
+    approved = await service.approve(project, stage=5, expected_version=stage5.version or 0)
+    assert approved.state == "approved"
+
+
+async def test_stage5_regenerates_only_requested_procedure(db_session: AsyncSession) -> None:
+    project = await create_stage5_project(db_session)
+    project_id = project.id
+    human = {"function_id": "F-02", "reason": "人", "steps": [{"callee": "利用者"}]}
+    await _select(db_session, project, [{"function_id": "F-01"}, human])
+    service = DesignStageGenerationService(db_session)
+    # 手順の無い F-01 だけを下書き(F-02 は手順があるので対象外)
+    await service.request_generation(project, stage=5)
+    first = FakeLLM(structured=_procedure_output("1回目"))
+    await service.execute(project_id=project_id, user_id=project.user_id, stage=5, llm=first)
+    assert (await DesignStageService(db_session).read(project_id, 5)).state == "draft"
+
+    payload = DesignStageGenerate(function_ids=["F-01"])
+    tasks = BackgroundTasks()
+    await generate_design_stage(5, db_session, project, tasks, payload)
+    await service.execute(
+        project_id=project_id,
+        user_id=project.user_id,
+        stage=5,
+        function_ids=["F-01"],
+        llm=FakeLLM(structured=_procedure_output("2回目")),
+    )
+    stage5 = await DesignStageService(db_session).read(project_id, 5)
+
+    assert first.structured_output_calls == [ProcedureGenerationOutput]
+    assert tasks.tasks[0].args[-1] == ["F-01"]
+    assert stage5.state == "regenerated"
+    assert stage5.model is not None
+    f01, f02 = stage5.model["procedures"]
+    assert f01["steps"][0]["action"] == "2回目"
+    assert f02["steps"] == [{**f02["steps"][0], "callee": "利用者"}]
+    assert f02["reason"] == "人"
+
+
+async def test_stage5_rejects_missing_unselected_and_too_many_targets(
+    db_session: AsyncSession,
+) -> None:
+    project = await create_stage5_project(db_session)
+    service = DesignStageGenerationService(db_session)
+
+    with pytest.raises(DesignStageInvalidError, match="下書きを作る処理がありません"):
+        await service.request_generation(project, stage=5)
+    await _select(db_session, project, [{"function_id": f"F-0{n}"} for n in range(1, 7)])
+    with pytest.raises(DesignStageInvalidError, match="選ばれていない処理です: F-09"):
+        await service.request_generation(project, stage=5, function_ids=["F-01", "F-09"])
+    with pytest.raises(DesignStageInvalidError, match="5 つまで"):
+        await service.request_generation(project, stage=5)
+    with pytest.raises(DesignStageInvalidError, match="段階5だけ"):
+        await service.request_generation(project, stage=4, function_ids=["F-01"])
+    # 5つ以内に絞れば受け付ける
+    accepted = await service.request_generation(
+        project, stage=5, function_ids=["F-01", " F-01 ", "F-02"]
+    )
+    assert accepted.generation_status == "generating"
+
+
+async def test_stage5_failure_keeps_previous_procedures(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = await create_stage5_project(db_session)
+    project_id = project.id
+    human = [{"caller": "利用者", "callee": ROUTE, "call": "f", "action": "人の手直し"}]
+    await _select(db_session, project, [{"function_id": "F-01", "steps": human}])
+    monkeypatch.setattr(llm_retry, "_is_quota_error", lambda _exc: True)
+    service = DesignStageGenerationService(db_session)
+
+    await service.request_generation(project, stage=5, function_ids=["F-01"])
+    await service.execute(
+        project_id=project_id,
+        user_id=project.user_id,
+        stage=5,
+        function_ids=["F-01"],
+        llm=FakeLLM(structured_sequence=[RuntimeError("429")]),
+    )
+    stage5 = await DesignStageService(db_session).read(project_id, 5)
+
+    assert stage5.generation_status == "failed"
+    assert stage5.model is not None
+    assert stage5.model["procedures"][0]["steps"][0]["action"] == "人の手直し"
+
+
+async def test_generate_procedures_skips_function_removed_from_stage1(
+    db_session: AsyncSession,
+) -> None:
+    """受け付けの後に段階1から消えた処理は、LLM を呼ばずに飛ばす
+    (検証の UNKNOWN_FUNCTION で知らせる)。"""
+    llm = FakeLLM(structured=_procedure_output())
+    context = StageGenerationContext(
+        llm=llm,
+        sources=StageSources(stages={1: function_list_model()}),
+        previous={"procedures": [{"function_id": "F-09"}]},
+        fingerprint={},
+        session=db_session,
+        project_id=uuid.uuid4(),
+        targets=("F-09",),
+    )
+
+    model = await generate_procedures(context)
+
+    assert llm.structured_output_calls == []
+    assert model == {"procedures": [{"function_id": "F-09", "reason": "", "note": "", "steps": []}]}

@@ -3,7 +3,12 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, Path, status
 
 from app.api.deps import CurrentProjectDep, SessionDep
-from app.schemas.design_stage import DesignStageApprove, DesignStageRead, DesignStageSave
+from app.schemas.design_stage import (
+    DesignStageApprove,
+    DesignStageGenerate,
+    DesignStageRead,
+    DesignStageSave,
+)
 from app.services.design_stage_generation_service import (
     DesignStageGenerationService,
     run_design_stage_generation,
@@ -34,15 +39,21 @@ async def generate_design_stage(
     session: SessionDep,
     current_project: CurrentProjectDep,
     background_tasks: BackgroundTasks,
+    payload: DesignStageGenerate | None = None,
 ) -> DesignStageRead:
-    """段階のAIの下書きの生成を受け付け、バックグラウンドで実行する(Phase 17 の時点で段階1・2)。
+    """段階のAIの下書きの生成を受け付け、バックグラウンドで実行する(Phase 20 の時点で段階1〜5)。
     段階は「生成中」になり、終わると`completed`/`failed`になる。background taskには値だけを渡す
-    (doc生成・UML図の生成と同じ理由)。"""
+    (doc生成・UML図の生成と同じ理由)。段階5は、本文の`function_ids`で下書きを作る処理を選べる。"""
+    function_ids = payload.function_ids if payload is not None else None
     accepted = await DesignStageGenerationService(session).request_generation(
-        current_project, stage=stage
+        current_project, stage=stage, function_ids=function_ids
     )
     background_tasks.add_task(
-        run_design_stage_generation, current_project.id, current_project.user_id, stage
+        run_design_stage_generation,
+        current_project.id,
+        current_project.user_id,
+        stage,
+        function_ids,
     )
     return accepted
 

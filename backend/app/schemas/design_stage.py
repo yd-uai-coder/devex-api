@@ -61,3 +61,10 @@ class DesignStageApprove(BaseModel):
     """段階の承認リクエスト。`version`は画面が見ていた版(見ていない内容を承認しないため)。"""
 
     version: int
+
+
+class DesignStageGenerate(BaseModel):
+    """段階の下書きの生成リクエスト(本文は省略できる)。`function_ids`は段階5だけが使う、下書きを
+    作る処理の処理ID(省略すると、選んだ処理のうちまだ手順の無いもの。Phase 20)。"""
+
+    function_ids: list[str] | None = None

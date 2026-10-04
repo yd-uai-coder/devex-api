@@ -12,7 +12,7 @@ UML図の生成(app/services/uml_generation_service.py)と同じ形で、生成�
 - 15分を超えて生成中のまま止まった段階は、受け付け時と一覧の取得時に失敗へ戻す
   (app/services/generation_staleness.py)。
 - 生成できる段階は`STAGE_GENERATORS`に登録したものだけ(Phase 16 は段階1、Phase 17 で段階2、
-  Phase 18 で段階3、Phase 19 で段階4)。
+  Phase 18 で段階3、Phase 19 で段階4、Phase 20 で段階5)。
 - 段階2は、段階の内容のほかに機能グループの DFD(`uml_diagrams`)とデータ項目(`data_items`)も
   書く。段階の保存と同じトランザクションで書き、失敗したらまとめて取り消す。そのため生成の関数には
   `StageGenerationContext`でセッションとプロジェクトを渡す(Phase 17)。
@@ -20,6 +20,9 @@ UML図の生成(app/services/uml_generation_service.py)と同じ形で、生成�
   1つのトランザクションで書く(Phase 18)。
 - 段階4は、段階の内容(モジュール一覧)のほかに構成図(`uml_diagrams`、notation=component、
   subject='')も書く。段階3と同じく1つのトランザクションで書く(Phase 19)。
+- 段階5は、処理ごとに下書きを作る(1処理 LLM 1回)。対象は受け付けで決め(指定が無ければ、選んだ
+  処理のうちまだ手順の無いもの)、対象の処理の手順だけを置き換えて、他の処理の手直しは残す
+  (Phase 20)。
 """
 
 import uuid
@@ -66,8 +69,20 @@ from app.detailed_design.drafting import (
     to_drafts,
 )
 from app.detailed_design.function_list import FunctionListModel, merge_draft
+from app.detailed_design.procedure import (
+    MAX_PROCEDURE_TARGETS,
+    PROCEDURE_STAGE,
+    ProcedureModel,
+    generation_targets,
+    merge_procedure,
+)
+from app.detailed_design.procedure_drafting import (
+    ProcedureGenerationOutput,
+    build_procedure_messages,
+    to_procedure_draft,
+)
 from app.detailed_design.stages import Fingerprint
-from app.detailed_design.structure import STRUCTURE_SUBJECT, merge_modules
+from app.detailed_design.structure import STRUCTURE_SUBJECT, ModuleListModel, merge_modules
 from app.detailed_design.structure_drafting import (
     ModuleListGenerationOutput,
     build_component_messages,
@@ -124,6 +139,7 @@ class StageGenerationContext:
     - `fingerprint`: 生成した時点の入力の版(段階2は DFD の`source_doc_versions`にも記録する)。
     - `session`・`project_id`: 段階のほかに DB へ書く生成(段階2の DFD・データ項目)が使う。
       commitは呼び出し元(execute)が段階の保存と一緒に1回だけ行う。
+    - `targets`: 段階5で下書きを作る処理の処理ID(受け付けで決めた順。他の段階は空)。
     """
 
     llm: Any
@@ -132,6 +148,7 @@ class StageGenerationContext:
     fingerprint: Fingerprint
     session: AsyncSession
     project_id: uuid.UUID
+    targets: tuple[str, ...] = ()
 
 
 StageGenerator = Callable[[StageGenerationContext], Awaitable[dict]]
@@ -266,6 +283,39 @@ async def generate_structure(context: StageGenerationContext) -> dict:
     return model.model_dump(mode="json")
 
 
+async def generate_procedures(context: StageGenerationContext) -> dict:
+    """段階5: 対象の処理ごとに、手順を下書きする(1処理 LLM 1回)。
+
+    対象の処理の手順だけを置き換え、他の処理(人が手直しした手順)はそのまま残す。呼び出し先は
+    `merge_procedure`がモジュール一覧のパスにそろえる。"""
+    function_list = FunctionListModel.model_validate(context.sources.stages.get(1) or {})
+    data_flow = DataFlowModel.model_validate(context.sources.stages.get(2) or {})
+    crud = CrudModel.model_validate(context.sources.stages.get(3) or {})
+    modules = ModuleListModel.model_validate(context.sources.stages.get(4) or {}).modules
+    er = context.sources.er_diagram
+    tables = list(er.tables) if er is not None else []
+    accesses = selected_dfd_accesses(context.sources)
+    functions = {row.id: row for row in function_list.functions}
+    summaries = {row.function_id: row for row in data_flow.summaries}
+    paths = [row.path for row in modules]
+
+    model = ProcedureModel.model_validate(context.previous or {})
+    for function_id in context.targets:
+        function = functions.get(function_id)
+        if function is None:
+            # 受け付けの後に段階1が変わった処理(検証の UNKNOWN_FUNCTION で人に知らせる)
+            continue
+        output = await _invoke_structured(
+            context.llm,
+            ProcedureGenerationOutput,
+            build_procedure_messages(
+                function, summaries.get(function_id), accesses, crud.cells, tables, modules
+            ),
+        )
+        model = merge_procedure(model, function_id, to_procedure_draft(output), paths)
+    return model.model_dump(mode="json")
+
+
 async def _save_diagram(
     context: StageGenerationContext, notation: NotationType, subject: str, model: BaseModel
 ) -> None:
@@ -299,22 +349,58 @@ STAGE_GENERATORS: dict[int, StageGenerator] = {
     2: generate_data_flow,
     3: generate_data_model,
     4: generate_structure,
+    5: generate_procedures,
 }
 
 
-def _has_draft(stage: int, model: Mapping[str, Any] | None) -> bool:
+def _has_draft(
+    stage: int, model: Mapping[str, Any] | None, targets: tuple[str, ...] = ()
+) -> bool:
     """作り直し(`regenerated`)か初回(`draft`)かの判定に使う、「下書きの内容がある」か。
-    段階2は、人がグループの選択だけを保存してから初めて生成するので、処理概要表の行で判定する。"""
+    段階2は、人がグループの選択だけを保存してから初めて生成するので、処理概要表の行で判定する。
+    段階5は、対象の処理にもともと手順があったか(他の処理の手順は置き換えないので数えない)。"""
     if not model:
         return False
     if stage == 2:
         return bool(model.get("summaries"))
+    if stage == PROCEDURE_STAGE:
+        procedures = ProcedureModel.model_validate(model).procedures
+        return any(p.steps for p in procedures if p.function_id in targets)
     return True
 
 
-def _check_request(stage: int, model: Mapping[str, Any] | None) -> None:
+def _targets(
+    stage: int, model: Mapping[str, Any] | None, function_ids: list[str] | None
+) -> tuple[str, ...]:
+    """段階5で下書きを作る処理(他の段階は空)。"""
+    if stage != PROCEDURE_STAGE:
+        return ()
+    return tuple(generation_targets(ProcedureModel.model_validate(model or {}), function_ids))
+
+
+def _check_request(
+    stage: int, model: Mapping[str, Any] | None, function_ids: list[str] | None
+) -> None:
     """段階ごとの、生成を受け付ける前の確認。段階2は DFD を描くグループの数(上限を超えたまま
-    生成すると、15分の回収のしきい値を超えるおそれがあるため)。"""
+    生成すると、15分の回収のしきい値を超えるおそれがあるため)。段階5は下書きを作る処理(空・
+    選ばれていない処理・上限を超える数を断る)。処理の指定は段階5だけが受け付ける。"""
+    if function_ids is not None and stage != PROCEDURE_STAGE:
+        raise DesignStageInvalidError("処理を指定して生成できるのは段階5だけです。")
+    if stage == PROCEDURE_STAGE:
+        targets = _targets(stage, model, function_ids)
+        selected = {p.function_id for p in ProcedureModel.model_validate(model or {}).procedures}
+        if not targets:
+            raise DesignStageInvalidError(
+                "下書きを作る処理がありません(手順を書く処理を選んで保存してください)。"
+            )
+        unknown = [t for t in targets if t not in selected]
+        if unknown:
+            raise DesignStageInvalidError(f"選ばれていない処理です: {', '.join(unknown)}")
+        if len(targets) > MAX_PROCEDURE_TARGETS:
+            raise DesignStageInvalidError(
+                f"1回に下書きを作れる処理は {MAX_PROCEDURE_TARGETS} つまでです"
+                f"(今は {len(targets)} つ)。"
+            )
     if stage == 2 and model:
         groups = set(DataFlowModel.model_validate(model).dfd_groups)
         if len(groups) > MAX_DFD_GROUPS:
@@ -324,13 +410,22 @@ def _check_request(stage: int, model: Mapping[str, Any] | None) -> None:
 
 
 async def run_design_stage_generation(
-    project_id: uuid.UUID, user_id: uuid.UUID, stage: int, *, llm=None
+    project_id: uuid.UUID,
+    user_id: uuid.UUID,
+    stage: int,
+    function_ids: list[str] | None = None,
+    *,
+    llm=None,
 ) -> None:
     """`BackgroundTasks`から呼び出すエントリポイント。リクエストのセッションはbackground task
     実行前にクローズされるため、セッションを自前で開始・終了する(run_uml_generationと同じ形)。"""
     async with AsyncSessionLocal() as session:
         await DesignStageGenerationService(session).execute(
-            project_id=project_id, user_id=user_id, stage=stage, llm=llm
+            project_id=project_id,
+            user_id=user_id,
+            stage=stage,
+            function_ids=function_ids,
+            llm=llm,
         )
 
 
@@ -343,12 +438,14 @@ class DesignStageGenerationService:
         self._rows = DesignStageRepository(session)
         self._projects = ProjectRepository(session)
 
-    async def request_generation(self, project: Project, *, stage: int) -> DesignStageRead:
+    async def request_generation(
+        self, project: Project, *, stage: int, function_ids: list[str] | None = None
+    ) -> DesignStageRead:
         """生成を受け付け、段階を「生成中」にする。生成自体は呼び出し元がバックグラウンドで
         `execute`する。未着手の段階は、ここで行を作る(内容は空、`draft`)。
 
         断る条件(この順): 詳細設計モードでない / 生成に対応していない段階 / 段階が開いていない /
-        その段階を生成中 / 段階ごとの確認(段階2の DFD を描くグループの数)。"""
+        その段階を生成中 / 段階ごとの確認(段階2の DFD を描くグループの数、段階5の対象の処理)。"""
         await self.recover_stale(project.id)
         row, view, _ = await self._stages.stage_view(project, stage)
         if stage not in STAGE_GENERATORS:
@@ -363,7 +460,7 @@ class DesignStageGenerationService:
             raise DesignStageGenerationInProgressError(
                 "この段階の下書きを生成中です。完了してから再度お試しください。"
             )
-        _check_request(stage, row.model if row is not None else None)
+        _check_request(stage, row.model if row is not None else None, function_ids)
         if row is None:
             row = await self._rows.create(project_id=project.id, stage=stage, model=None)
         row.generation_status = "generating"
@@ -374,7 +471,13 @@ class DesignStageGenerationService:
         return await self._stages.read(project.id, stage)
 
     async def execute(
-        self, *, project_id: uuid.UUID, user_id: uuid.UUID, stage: int, llm=None
+        self,
+        *,
+        project_id: uuid.UUID,
+        user_id: uuid.UUID,
+        stage: int,
+        function_ids: list[str] | None = None,
+        llm=None,
     ) -> None:
         """下書きを生成して段階に保存する。失敗したら理由を残して`failed`にする。
         プロジェクトや「生成中」の段階が見つからなければ何もしない(回収された後など)。"""
@@ -385,7 +488,9 @@ class DesignStageGenerationService:
         if row is None or row.generation_status != "generating":
             return
         generator = STAGE_GENERATORS[stage]
-        regenerating = _has_draft(stage, row.model)
+        # 受け付けの後は生成中で保存できないので、受け付けと同じ対象になる
+        targets = _targets(stage, row.model, function_ids)
+        regenerating = _has_draft(stage, row.model, targets)
         fingerprint = await self._stages.current_fingerprint(project, stage)
         context = StageGenerationContext(
             llm=llm or get_gemini_llm(),
@@ -394,6 +499,7 @@ class DesignStageGenerationService:
             fingerprint=fingerprint,
             session=self._session,
             project_id=project_id,
+            targets=targets,
         )
         try:
             model = await generator(context)

@@ -32,6 +32,7 @@ from app.detailed_design.data_model_drafting import (
     GeneratedCrudCell,
 )
 from app.detailed_design.drafting import FunctionListGenerationOutput, GeneratedFunction
+from app.detailed_design.procedure_drafting import GeneratedStep, ProcedureGenerationOutput
 from app.detailed_design.structure_drafting import GeneratedModuleRow, ModuleListGenerationOutput
 from app.schemas.generation import HearingCompletionCheck
 from app.uml.generation.schemas import (
@@ -286,6 +287,59 @@ _UML_OUTPUTS[ModuleListGenerationOutput] = ModuleListGenerationOutput(
             all_functions=False,
         ),
     ]
+)
+
+# 詳細設計モードの段階5(主要処理の手順)の手順(Phase 20)。どの処理にも同じ手順を返す。
+# 呼び出し先は、上のモジュール一覧のパスにそろえる
+_UML_OUTPUTS[ProcedureGenerationOutput] = ProcedureGenerationOutput(
+    reason="[E2E Fake] 予約の重複を防ぐ確認がある",
+    note="[E2E Fake] 手順 2〜3 が1つのトランザクション",
+    steps=[
+        GeneratedStep(
+            caller="利用者",
+            callee="app/api/routes/reservations.py",
+            call="create_reservation",
+            data="予約リクエスト",
+            action="本文を型で検証する",
+            result="ReservationCreate",
+            db="—",
+            branch="1a へ",
+            is_branch=False,
+        ),
+        GeneratedStep(
+            caller="",
+            callee="",
+            call="",
+            data="",
+            action="本文の型が不正",
+            result="",
+            db="",
+            branch="422",
+            is_branch=True,
+        ),
+        GeneratedStep(
+            caller="app/api/routes/reservations.py",
+            callee="app/services/reservation.py",
+            call="ReservationService.create",
+            data="予約リクエスト",
+            action="重複を確かめて予約を保存する",
+            result="予約",
+            db="reservations C",
+            branch="—",
+            is_branch=False,
+        ),
+        GeneratedStep(
+            caller="app/api/routes/reservations.py",
+            callee="利用者",
+            call="",
+            data="予約",
+            action="応答に詰めて返す",
+            result="201 Created",
+            db="—",
+            branch="—",
+            is_branch=False,
+        ),
+    ],
 )
 
 _HEARING_REPLY = "[E2E Fake] 承知しました。次に、想定している主なユーザー層を教えてください。"
