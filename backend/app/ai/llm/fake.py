@@ -32,6 +32,7 @@ from app.detailed_design.data_model_drafting import (
     GeneratedCrudCell,
 )
 from app.detailed_design.drafting import FunctionListGenerationOutput, GeneratedFunction
+from app.detailed_design.structure_drafting import GeneratedModuleRow, ModuleListGenerationOutput
 from app.schemas.generation import HearingCompletionCheck
 from app.uml.generation.schemas import (
     ComponentGenerationOutput,
@@ -253,6 +254,37 @@ _UML_OUTPUTS[CrudGenerationOutput] = CrudGenerationOutput(
     cells=[
         GeneratedCrudCell(function_id="F-01", table="reservations", ops="C"),
         GeneratedCrudCell(function_id="F-02", table="reservations", ops="R"),
+    ]
+)
+
+# 詳細設計モードの段階4(ソフトウェア構造)のモジュール一覧(Phase 19)。構成図は上の
+# ComponentGenerationOutput(層 api・service)をそのまま使い、その層にそろえる
+_UML_OUTPUTS[ModuleListGenerationOutput] = ModuleListGenerationOutput(
+    modules=[
+        GeneratedModuleRow(
+            path="app/main.py",
+            layer="api",
+            responsibility="[E2E Fake] アプリの組み立て",
+            depends_on=["app/api/routes/reservations.py"],
+            functions=[],
+            all_functions=True,
+        ),
+        GeneratedModuleRow(
+            path="app/api/routes/reservations.py",
+            layer="api",
+            responsibility="[E2E Fake] 予約の API",
+            depends_on=["app/services/reservation.py"],
+            functions=["F-01", "F-02"],
+            all_functions=False,
+        ),
+        GeneratedModuleRow(
+            path="app/services/reservation.py",
+            layer="service",
+            responsibility="[E2E Fake] 予約の登録と一覧",
+            depends_on=["sqlalchemy"],
+            functions=["F-01", "F-02"],
+            all_functions=False,
+        ),
     ]
 )
 

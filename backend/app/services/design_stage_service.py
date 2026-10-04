@@ -7,10 +7,12 @@ from app.detailed_design import (
     DATA_MODEL_STAGE,
     ER_SUBJECT,
     STAGE_INPUTS,
+    STRUCTURE_SUBJECT,
     Fingerprint,
     StageRecord,
     StageView,
     can_approve,
+    component_layers,
     confirm_drafts,
     current_inputs,
     derive_states,
@@ -20,6 +22,7 @@ from app.detailed_design import (
     tables_without_primary_key,
 )
 from app.detailed_design.validation import (
+    ComponentDiagramSummary,
     DfdDiagramSummary,
     ErDiagramSummary,
     StageSources,
@@ -209,10 +212,14 @@ class DesignStageService:
         - DFD: 機能グループの DFD(段階2)の要約と、線から読み取った R/W(段階3)。詳細設計モードでは
           DFD はすべて段階2のもの。
         - ER: 段階3の ER(全体1枚)の要約。
+        - 構成図: 段階4の構成図(全体1枚)の要約。
         """
         diagrams = await self._diagrams.list_by_notation(project_id, "dfd")
         er = await self._diagrams.get_by_subject(
             project_id=project_id, notation="er", subject=ER_SUBJECT
+        )
+        component = await self._diagrams.get_by_subject(
+            project_id=project_id, notation="component", subject=STRUCTURE_SUBJECT
         )
         return StageSources(
             documents={
@@ -227,6 +234,7 @@ class DesignStageService:
             },
             dfd_diagrams={diagram.subject: _dfd_summary(diagram) for diagram in diagrams},
             er_diagram=_er_summary(er) if er is not None else None,
+            component_diagram=_component_summary(component) if component is not None else None,
         )
 
     async def _current_documents(
@@ -265,6 +273,14 @@ def _er_summary(diagram: UmlDiagram) -> ErDiagramSummary:
         generation_status=diagram.generation_status,
         tables=tuple(er_table_names(diagram.semantic_model)),
         tables_without_pk=tuple(tables_without_primary_key(diagram.semantic_model)),
+    )
+
+
+def _component_summary(diagram: UmlDiagram) -> ComponentDiagramSummary:
+    return ComponentDiagramSummary(
+        status=diagram.status,
+        generation_status=diagram.generation_status,
+        layers=tuple(component_layers(diagram.semantic_model)),
     )
 
 

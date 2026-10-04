@@ -5,11 +5,12 @@ app/services/design_stage_service.py)に加えて、段階ごとの検証で「�
 止めない(UML図の検証と同じ考え方。app/uml/validation/)。保存は検証の結果によらず通す(編集の
 途中の状態も保存できるようにするため)。
 
-段階ごとの検証は`STAGE_VALIDATORS`に登録する。今は段階1〜3で、段階4以降は各段階の Phase で
+段階ごとの検証は`STAGE_VALIDATORS`に登録する。今は段階1〜4で、段階5以降は各段階の Phase で
 足す(登録の無い段階は検証なし)。検証には段階の内容のほかに入力の文書の本文が要ることがあるので、
 `StageSources`で渡す(段階1は外部設計書のAPI一覧と照らして、下書きの漏れを警告する)。
 段階2は、入力の段階1の内容と、機能グループの DFD(`uml_diagrams`)の要約も使う(Phase 17)。
 段階3は、段階1・2の内容と、DFD の線から読み取った R/W と、ER の要約を使う(Phase 18)。
+段階4は、段階1の内容と、構成図の要約を使う(Phase 19)。
 """
 
 from collections import Counter
@@ -34,6 +35,7 @@ from app.detailed_design.data_model import (
     table_key,
 )
 from app.detailed_design.function_list import FunctionListModel, function_number
+from app.detailed_design.structure import ModuleListModel, module_ref_matches
 
 Severity = Literal["error", "warning"]
 
@@ -69,6 +71,15 @@ class ErDiagramSummary:
 
 
 @dataclass(frozen=True)
+class ComponentDiagramSummary:
+    """段階4の検証に使う、構成図(全体1枚)の要約(`uml_diagrams`の行から作る)。"""
+
+    status: str
+    generation_status: str
+    layers: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class StageSources:
     """検証・下書きの生成に使う入力。
 
@@ -76,12 +87,14 @@ class StageSources:
     - `stages`: 入力の段階の内容(段階番号 → 承認済みの段階の`model`)。
     - `dfd_diagrams`: 機能グループの DFD の要約(subject → 要約)。段階2・3が使う。
     - `er_diagram`: ER の要約(まだ無ければ None)。段階3が使う。
+    - `component_diagram`: 構成図の要約(まだ無ければ None)。段階4が使う。
     """
 
     documents: Mapping[str, str] = field(default_factory=dict)
     stages: Mapping[int, Mapping[str, Any]] = field(default_factory=dict)
     dfd_diagrams: Mapping[str, DfdDiagramSummary] = field(default_factory=dict)
     er_diagram: ErDiagramSummary | None = None
+    component_diagram: ComponentDiagramSummary | None = None
 
 
 StageValidator = Callable[[Mapping[str, Any], StageSources], list[StageIssue]]
@@ -346,6 +359,73 @@ def validate_data_model(model: Mapping[str, Any], sources: StageSources) -> list
     return issues
 
 
+def validate_structure(model: Mapping[str, Any], sources: StageSources) -> list[StageIssue]:
+    """段階4(ソフトウェア構造)の検証。
+
+    エラー: 形が不正 / モジュールが0件 / 構成図が無い・生成中・未承認 /
+    パスが空・重複 / 関わる処理の処理IDが機能一覧に無い。
+    警告: 責務が空 / 層が構成図のレーンに無い / どのモジュールにも現れない処理 /
+    依存先がパスの形(`/`を含む)なのに、当たるモジュールがモジュール一覧に無い(区切り単位の
+    部分一致。`module_ref_matches`)。
+    """
+    try:
+        parsed = ModuleListModel.model_validate(model)
+    except ValidationError as exc:
+        return [_error("INVALID_MODEL", f"モジュール一覧の形が正しくありません: {exc}")]
+    function_list = FunctionListModel.model_validate(sources.stages.get(1) or {})
+    function_ids = {row.id for row in function_list.functions}
+
+    issues: list[StageIssue] = []
+    if not parsed.modules:
+        issues.append(_error("EMPTY_MODULES", "モジュールが1件もありません。"))
+    component = sources.component_diagram
+    if component is None:
+        issues.append(_error("COMPONENT_MISSING", "構成図がまだありません。"))
+    elif component.generation_status == "generating":
+        issues.append(_error("COMPONENT_GENERATING", "構成図を生成中です。"))
+    elif component.status not in APPROVED_DIAGRAM_STATUSES:
+        issues.append(_error("COMPONENT_NOT_APPROVED", "構成図が承認されていません。"))
+
+    path_counts = Counter(row.path.strip() for row in parsed.modules)
+    paths = set(path_counts)
+    layers = set(component.layers) if component is not None else set()
+    covered: set[str] = set()
+    for index, row in enumerate(parsed.modules, start=1):
+        path = row.path.strip()
+        if not path:
+            issues.append(_error("EMPTY_PATH", f"{index}行目のモジュールのパスが空です。"))
+            continue
+        if not row.responsibility.strip():
+            issues.append(_warning("EMPTY_RESPONSIBILITY", f"{path} の責務が空です。", path))
+        if component is not None and row.layer.strip() not in layers:
+            message = f"{path} の層「{row.layer}」が、構成図の層にありません。"
+            issues.append(_warning("UNKNOWN_LAYER", message, path))
+        for function_id in row.functions:
+            if function_id not in function_ids:
+                message = f"{path} の関わる処理 {function_id} が、機能一覧にありません。"
+                issues.append(_error("UNKNOWN_FUNCTION", message, path))
+        if not row.all_functions:
+            # 横断のモジュール(全処理)はカバーに数えない(どの処理の担当かが分からないため)
+            covered.update(row.functions)
+        for dependency in row.depends_on:
+            # 依存先はディレクトリや短い書き方でもよい(区切り単位の部分一致。module_ref_matches)
+            if "/" in dependency and not any(module_ref_matches(dependency, p) for p in paths):
+                message = (
+                    f"{path} の依存先「{dependency}」に当たるモジュールが、"
+                    "モジュール一覧にありません。"
+                )
+                issues.append(_warning("UNKNOWN_DEPENDENCY", message, path))
+    for path, count in path_counts.items():
+        if path and count > 1:
+            # パスは段階5の関与表の列の鍵なので、重なるとどちらのモジュールかが決まらない
+            issues.append(_error("DUPLICATE_PATH", f"モジュール {path} が重複しています。", path))
+    for function in function_list.functions:
+        if function.id not in covered:
+            message = f"{function.id} に関わるモジュールがありません(全処理の行は数えません)。"
+            issues.append(_warning("UNCOVERED_FUNCTION", message, function.id))
+    return issues
+
+
 def _error(code: str, message: str, target: str | None = None) -> StageIssue:
     return StageIssue("error", code, message, target)
 
@@ -359,6 +439,7 @@ STAGE_VALIDATORS: dict[int, StageValidator] = {
     1: validate_function_list,
     2: validate_data_flow,
     3: validate_data_model,
+    4: validate_structure,
 }
 
 

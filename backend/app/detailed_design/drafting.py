@@ -11,6 +11,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from app.detailed_design.function_list import FunctionDraft
+from app.detailed_design.prompt_rules import NAMING_RULES
 
 
 class GeneratedFunction(BaseModel):
@@ -54,6 +55,7 @@ SYSTEM_PROMPT = (
     "入力欄の表示や画面遷移のような単純なものは加えない\n"
     "- screens には、外部設計書の画面一覧(2.2)の画面IDを書く\n"
     "- 処理IDは書かない(システムが振る)。並びは、利用者の操作の流れに沿った順にする"
+    + NAMING_RULES
 )
 
 

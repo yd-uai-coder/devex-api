@@ -91,6 +91,37 @@ def crud_model(*, ops: str = "C", draft: bool = False) -> dict:
     return {"cells": [{"function_id": "F-01", "table": "reservations", "ops": ops, "draft": draft}]}
 
 
+def component_model(*, layers: tuple[str, ...] = ("api", "service")) -> dict:
+    """構成図の意味モデル(層ごとにモジュール1つ、上の層が下の層に依存する)。段階4の検証・生成の
+    テストで使う。"""
+    elements = [
+        {"id": f"m-{layer}", "name": f"{layer}s", "kind": "module", "layer": layer}
+        for layer in layers
+    ]
+    relations = [
+        {"id": f"d{i}", "source_id": a["id"], "target_id": b["id"]}
+        for i, (a, b) in enumerate(zip(elements, elements[1:], strict=False), start=1)
+    ]
+    return {"notation": "component", "elements": elements, "relations": relations}
+
+
+def module_list_model(*, functions: list[str] | None = None, layer: str = "api") -> dict:
+    """`function_list_model()`の F-01 に関わる、段階4の検証を通るモジュール一覧(行1つ)。
+    `functions`に機能一覧に無い処理IDを渡すと、検証のエラー(UNKNOWN_FUNCTION)になる。"""
+    return {
+        "modules": [
+            {
+                "path": "app/api/routes/reservations.py",
+                "layer": layer,
+                "responsibility": "予約の API",
+                "depends_on": [],
+                "functions": ["F-01"] if functions is None else functions,
+                "all_functions": False,
+            }
+        ]
+    }
+
+
 def group_dfd_model(data_item_id: uuid.UUID) -> dict:
     """機能グループ reservations の DFD(利用者 → F-01 → reservations。F-01 が書き込む)。"""
     return {
@@ -129,4 +160,19 @@ async def create_stage3_project(session: AsyncSession) -> Project:
     model = data_flow_model(dfd_groups=["reservations"])
     await stages.save(project, stage=2, expected_version=None, model=model)
     await stages.approve(project, stage=2, expected_version=1)
+    return project
+
+
+async def create_stage4_project(session: AsyncSession) -> Project:
+    """段階1〜3を承認したプロジェクト(段階4が開いている)。段階3は ER(reservations。承認済み)と、
+    F-01 が reservations に書く CRUD 図を持つ。"""
+    project = await create_stage3_project(session)
+    diagram = await UmlDiagramRepository(session).create(
+        project_id=project.id, view="data", notation="er", semantic_model=er_model(), subject=""
+    )
+    diagram.status = "approved"
+    await session.commit()
+    stages = DesignStageService(session)
+    await stages.save(project, stage=3, expected_version=None, model=crud_model())
+    await stages.approve(project, stage=3, expected_version=1)
     return project

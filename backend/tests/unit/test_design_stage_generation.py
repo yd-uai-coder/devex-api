@@ -1,10 +1,11 @@
 """段階の下書きの生成(受け付け・実行・回収)と、生成・検証に関わる段階のAPIのテスト。
 
 SUT: DesignStageGenerationService(request_generation / execute / recover_stale)、
-     generate_function_list・generate_data_flow・generate_data_model・STAGE_GENERATORS・
+     generate_function_list・generate_data_flow・generate_data_model・generate_structure・
+     STAGE_GENERATORS・
      StageGenerationContext(app/services/design_stage_generation_service.py)、
      DataItemService.resolve_by_name(app/services/data_item_service.py。段階2の生成から)、
-     DesignStageService の入力(承認済みの段階の内容・DFD の要約・ER の要約)と段階2・3の承認
+     DesignStageService の入力(承認済みの段階の内容・DFD・ER・構成図の要約)と段階2〜4の承認
      (段階3は承認で下書きの印を外す)、段階3の`dfd_accesses`(app/schemas/design_stage.py)、
      generate_design_stage / list_design_stages(app/api/routes/design_stages.py)、
      DesignStageService の生成中の保存の拒否、
@@ -12,8 +13,8 @@ SUT: DesignStageGenerationService(request_generation / execute / recover_stale)�
      E2E用の偽LLMの段階1の出力(app/ai/llm/fake.py)
 ドライバ: 各テスト関数(ルート関数・サービスのメソッドを直接呼ぶ)
 スタブ: FakeLLM(tests/fixtures/fake_llm.py)── 構造化出力(Gemini)の代わり。段階2は1回の生成で
-      処理概要表 → グループの DFD の順に、段階3は ER → CRUD 図の順に呼ぶので、`structured_sequence`
-      で順に返す。
+      処理概要表 → グループの DFD の順に、段階3は ER → CRUD 図の順に、段階4は構成図 → モジュール一覧
+      の順に呼ぶので、`structured_sequence`で順に返す。
 DBはインメモリSQLite(db_session)で、スタブにはしない(段階の行の状態の移り変わりそのものが検証対象のため)。
 """
 
@@ -27,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tests.fixtures.detailed_design import (
     create_detailed_project,
     create_stage3_project,
+    create_stage4_project,
     data_flow_model,
     function_list_model,
 )
@@ -34,7 +36,7 @@ from tests.fixtures.fake_llm import FakeLLM
 
 from app.ai.llm.fake import E2eFakeLLM
 from app.api.routes.design_stages import generate_design_stage, list_design_stages
-from app.detailed_design import StageSources, validate_stage
+from app.detailed_design import StageSources, structure_drafting, validate_stage
 from app.detailed_design.data_flow_drafting import (
     GeneratedGroupProcess,
     GeneratedSummary,
@@ -54,12 +56,17 @@ from app.detailed_design.drafting import (
     build_function_list_messages,
     to_drafts,
 )
+from app.detailed_design.structure_drafting import (
+    GeneratedModuleRow,
+    ModuleListGenerationOutput,
+)
 from app.models.project import Project
 from app.repositories.data_item import DataItemRepository
 from app.repositories.design_stage import DesignStageRepository
 from app.repositories.generated_document import GeneratedDocumentRepository
 from app.repositories.uml_diagram import UmlDiagramRepository
 from app.schemas.design_stage import DfdAccessRead
+from app.services import design_stage_generation_service as generation_service
 from app.services import llm_retry
 from app.services.data_item_service import DataItemService
 from app.services.design_stage_generation_service import (
@@ -69,6 +76,7 @@ from app.services.design_stage_generation_service import (
     generate_data_flow,
     generate_data_model,
     generate_function_list,
+    generate_structure,
     run_design_stage_generation,
 )
 from app.services.design_stage_service import DesignStageService
@@ -79,7 +87,14 @@ from app.services.errors import (
     DesignStageLockedError,
 )
 from app.uml.domain import DataItemField
-from app.uml.generation.schemas import GeneratedDataItem, GeneratedFlow, GeneratedNode
+from app.uml.generation.schemas import (
+    ComponentGenerationOutput,
+    GeneratedDataItem,
+    GeneratedDependency,
+    GeneratedFlow,
+    GeneratedModule,
+    GeneratedNode,
+)
 
 EXTERNAL_DESIGN = (
     "# 2. 外部設計書\n\n## 2.6 API一覧\n| メソッド | パス | 概要 | 関連画面 |\n|---|---|---|---|\n"
@@ -229,7 +244,7 @@ async def test_generation_rejects_unsupported_locked_and_running_stages(
     service = DesignStageGenerationService(db_session)
 
     with pytest.raises(DesignStageGenerationNotSupportedError):
-        await service.request_generation(project, stage=4)
+        await service.request_generation(project, stage=5)
     no_docs = await create_detailed_project(db_session, with_documents=False)
     with pytest.raises(DesignStageLockedError):
         await service.request_generation(no_docs, stage=1)
@@ -608,3 +623,146 @@ async def test_stage3_failure_rolls_back_er(
     assert stage3.generation_status == "failed"
     assert stage3.model is None
     assert await UmlDiagramRepository(db_session).list_by_notation(project_id, "er") == []
+
+
+# ---- 段階4(ソフトウェア構造、Phase 19) ----
+
+
+def _component_output(layer: str = "api") -> ComponentGenerationOutput:
+    return ComponentGenerationOutput(
+        modules=[
+            GeneratedModule(id="m1", name="api/routes", description="HTTP の境界", layer=layer),
+            GeneratedModule(id="m2", name="services", description="ユースケース", layer="service"),
+        ],
+        dependencies=[GeneratedDependency(id="d1", source_id="m1", target_id="m2")],
+    )
+
+
+def _module_output(*functions: str) -> ModuleListGenerationOutput:
+    return ModuleListGenerationOutput(
+        modules=[
+            GeneratedModuleRow(
+                path="app/api/routes/reservations.py",
+                layer="api",
+                responsibility="予約の API",
+                depends_on=["app/services/reservation.py"],
+                functions=list(functions or ("F-01",)),
+                all_functions=False,
+            ),
+            GeneratedModuleRow(
+                path="app/services/reservation.py",
+                layer="service",
+                responsibility="予約の登録",
+                depends_on=[],
+                functions=["F-01"],
+                all_functions=False,
+            ),
+        ]
+    )
+
+
+async def _generate_stage4(session: AsyncSession, project: Project, llm) -> None:
+    service = DesignStageGenerationService(session)
+    await service.request_generation(project, stage=4)
+    await service.execute(project_id=project.id, user_id=project.user_id, stage=4, llm=llm)
+
+
+async def test_stage4_generation_writes_component_and_modules_and_can_be_approved(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """統合スモーク(段階4): 構成図とモジュール一覧を書き、構成図を承認すると段階4を承認できる。
+    モジュール一覧の下書きには、構成図・CRUD 図・ER のテーブルを渡す。"""
+    prompts: list[str] = []
+
+    def spy(*args, **kwargs):
+        messages = structure_drafting.build_module_messages(*args, **kwargs)
+        prompts.append(str(messages[1].content))
+        return messages
+
+    monkeypatch.setattr(generation_service, "build_module_messages", spy)
+    project = await create_stage4_project(db_session)
+    project_id = project.id
+    llm = FakeLLM(structured_sequence=[_component_output(), _module_output("F-01", "F-99")])
+
+    await _generate_stage4(db_session, project, llm)
+    service = DesignStageService(db_session)
+    stage4 = await service.read(project_id, 4)
+    component = await UmlDiagramRepository(db_session).get_by_subject(
+        project_id=project_id, notation="component", subject=""
+    )
+
+    assert STAGE_GENERATORS[4] is generate_structure
+    assert llm.structured_output_calls == [ComponentGenerationOutput, ModuleListGenerationOutput]
+    [module_prompt] = prompts
+    assert "- api/routes(層: api)" in module_prompt
+    assert "- F-01 × reservations: C" in module_prompt
+    assert "## テーブル\n- reservations" in module_prompt
+    assert stage4.state == "draft"
+    assert stage4.model is not None
+    # 機能一覧に無い F-99 は捨てる
+    assert [row["functions"] for row in stage4.model["modules"]] == [["F-01"], ["F-01"]]
+    assert component is not None
+    assert component.status == "draft"
+    assert component.view == "structure"
+    assert component.source_doc_versions == {
+        "stage:1": 1,
+        "stage:2": 1,
+        "stage:3": 1,
+        "doc:requirements": 1,
+    }
+    assert [issue.code for issue in stage4.issues] == ["COMPONENT_NOT_APPROVED"]
+
+    component.status = "approved"
+    await db_session.commit()
+    approved = await service.approve(project, stage=4, expected_version=stage4.version or 0)
+    assert approved.state == "approved"
+    assert approved.issues == []
+
+
+async def test_stage4_regeneration_overwrites_component_and_replaces_modules(
+    db_session: AsyncSession,
+) -> None:
+    project = await create_stage4_project(db_session)
+    project_id = project.id
+    await _generate_stage4(
+        db_session, project, FakeLLM(structured_sequence=[_component_output(), _module_output()])
+    )
+    repo = UmlDiagramRepository(db_session)
+    first = await repo.get_by_subject(project_id=project_id, notation="component", subject="")
+    assert first is not None
+    first.status = "approved"
+    first_version = first.version
+    await db_session.commit()
+
+    await _generate_stage4(
+        db_session,
+        project,
+        FakeLLM(structured_sequence=[_component_output("入口"), _module_output()]),
+    )
+    stage4 = await DesignStageService(db_session).read(project_id, 4)
+    diagrams = await repo.list_by_notation(project_id, "component")
+
+    assert stage4.state == "regenerated"
+    assert len(diagrams) == 1
+    assert (diagrams[0].status, diagrams[0].version) == ("draft", first_version + 1)
+    # 構成図の層が「入口」に変わったので、モジュール一覧の層 api は警告になる
+    assert "UNKNOWN_LAYER" in [issue.code for issue in stage4.issues]
+
+
+async def test_stage4_failure_rolls_back_component(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = await create_stage4_project(db_session)
+    project_id = project.id
+    monkeypatch.setattr(llm_retry, "_is_quota_error", lambda _exc: True)
+
+    await _generate_stage4(
+        db_session,
+        project,
+        FakeLLM(structured_sequence=[_component_output(), RuntimeError("429")]),
+    )
+    stage4 = await DesignStageService(db_session).read(project_id, 4)
+
+    assert stage4.generation_status == "failed"
+    assert stage4.model is None
+    assert await UmlDiagramRepository(db_session).list_by_notation(project_id, "component") == []
