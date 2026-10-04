@@ -5,13 +5,14 @@ app/services/design_stage_service.py)に加えて、段階ごとの検証で「�
 止めない(UML図の検証と同じ考え方。app/uml/validation/)。保存は検証の結果によらず通す(編集の
 途中の状態も保存できるようにするため)。
 
-段階ごとの検証は`STAGE_VALIDATORS`に登録する。今は段階1〜5で、段階6以降は各段階の Phase で
+段階ごとの検証は`STAGE_VALIDATORS`に登録する。今は段階1〜6で、段階7は Phase 22 で
 足す(登録の無い段階は検証なし)。検証には段階の内容のほかに入力の文書の本文が要ることがあるので、
 `StageSources`で渡す(段階1は外部設計書のAPI一覧と照らして、下書きの漏れを警告する)。
 段階2は、入力の段階1の内容と、機能グループの DFD(`uml_diagrams`)の要約も使う(Phase 17)。
 段階3は、段階1・2の内容と、DFD の線から読み取った R/W と、ER の要約を使う(Phase 18)。
 段階4は、段階1の内容と、構成図の要約を使う(Phase 19)。
 段階5は、段階1の内容と、段階4のモジュール一覧(手順の呼び出し先の鍵)を使う(Phase 20)。
+段階6は、段階5の手順(関数を呼ぶ手順との紐づけ)を使う(Phase 21)。
 """
 
 from collections import Counter
@@ -36,6 +37,13 @@ from app.detailed_design.data_model import (
     table_key,
 )
 from app.detailed_design.function_list import FunctionListModel, function_number
+from app.detailed_design.logic import (
+    LogicModel,
+    is_drafted,
+    logic_candidates,
+    logic_id,
+    logic_key,
+)
 from app.detailed_design.procedure import (
     ProcedureModel,
     is_external_actor,
@@ -493,6 +501,47 @@ def validate_procedures(model: Mapping[str, Any], sources: StageSources) -> list
     return issues
 
 
+def validate_logics(model: Mapping[str, Any], sources: StageSources) -> list[StageIssue]:
+    """段階6(処理ロジックの詳細)の検証。0件はエラーにしない(段階6を飛ばす操作。Phase 21)。
+
+    エラー: 形が不正 / モジュール・関数が空 / (モジュール, 関数)の重複 / 段階5のどの手順からも
+    呼ばれない(06 の「呼ばれる手順」が空になるため) / 下書きが無い(シグネチャと擬似フローが空)。
+    警告: 事前条件・事後条件が空。指摘の`target`は L-ID。
+    """
+    try:
+        parsed = LogicModel.model_validate(model)
+    except ValidationError as exc:
+        return [_error("INVALID_MODEL", f"処理ロジックの形が正しくありません: {exc}")]
+    procedures = ProcedureModel.model_validate(sources.stages.get(5) or {})
+    called = {logic_key(c.module, c.function) for c in logic_candidates(procedures)}
+
+    issues: list[StageIssue] = []
+    counts = Counter(logic_key(row.module, row.function) for row in parsed.logics)
+    for index, row in enumerate(parsed.logics):
+        target = logic_id(index)
+        label = f"{target}({row.module.strip()} の {row.function.strip()})"
+        if not row.module.strip() or not row.function.strip():
+            message = f"{target} のモジュールか関数が空です。"
+            issues.append(_error("EMPTY_LOGIC_KEY", message, target))
+            continue
+        key = logic_key(row.module, row.function)
+        if counts[key] > 1:
+            message = f"{label} が2回選ばれています。"
+            issues.append(_error("DUPLICATE_LOGIC", message, target))
+        if key not in called:
+            # 段階5の手順を直して呼ばれなくなった関数は、05 から辿れない(バッジが付かない)
+            message = f"{label} を呼ぶ手順が、段階5にありません。"
+            issues.append(_error("UNCALLED_LOGIC", message, target))
+        if not is_drafted(row):
+            message = f"{label} の詳細がありません(下書きを生成するか、記入してください)。"
+            issues.append(_error("EMPTY_LOGIC", message, target))
+            continue
+        if not row.pre.strip() or not row.post.strip():
+            message = f"{label} の事前条件か事後条件が空です。"
+            issues.append(_warning("EMPTY_CONDITION", message, target))
+    return issues
+
+
 def _error(code: str, message: str, target: str | None = None) -> StageIssue:
     return StageIssue("error", code, message, target)
 
@@ -508,6 +557,7 @@ STAGE_VALIDATORS: dict[int, StageValidator] = {
     3: validate_data_model,
     4: validate_structure,
     5: validate_procedures,
+    6: validate_logics,
 }
 
 

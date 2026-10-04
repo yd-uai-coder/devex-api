@@ -41,12 +41,18 @@ async def generate_design_stage(
     background_tasks: BackgroundTasks,
     payload: DesignStageGenerate | None = None,
 ) -> DesignStageRead:
-    """段階のAIの下書きの生成を受け付け、バックグラウンドで実行する(Phase 20 の時点で段階1〜5)。
+    """段階のAIの下書きの生成を受け付け、バックグラウンドで実行する(Phase 21 の時点で段階1〜6)。
     段階は「生成中」になり、終わると`completed`/`failed`になる。background taskには値だけを渡す
-    (doc生成・UML図の生成と同じ理由)。段階5は、本文の`function_ids`で下書きを作る処理を選べる。"""
+    (doc生成・UML図の生成と同じ理由)。段階5は、本文の`function_ids`で下書きを作る処理を選べる。
+    段階6は、本文の`logics`で下書きを作る関数を選べる。"""
     function_ids = payload.function_ids if payload is not None else None
+    logics = (
+        [(t.module, t.function) for t in payload.logics]
+        if payload is not None and payload.logics is not None
+        else None
+    )
     accepted = await DesignStageGenerationService(session).request_generation(
-        current_project, stage=stage, function_ids=function_ids
+        current_project, stage=stage, function_ids=function_ids, logics=logics
     )
     background_tasks.add_task(
         run_design_stage_generation,
@@ -54,6 +60,7 @@ async def generate_design_stage(
         current_project.user_id,
         stage,
         function_ids,
+        logics,
     )
     return accepted
 

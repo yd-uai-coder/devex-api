@@ -32,6 +32,7 @@ from app.detailed_design.data_model_drafting import (
     GeneratedCrudCell,
 )
 from app.detailed_design.drafting import FunctionListGenerationOutput, GeneratedFunction
+from app.detailed_design.logic_drafting import GeneratedPseudoStep, LogicGenerationOutput
 from app.detailed_design.procedure_drafting import GeneratedStep, ProcedureGenerationOutput
 from app.detailed_design.structure_drafting import GeneratedModuleRow, ModuleListGenerationOutput
 from app.schemas.generation import HearingCompletionCheck
@@ -339,6 +340,20 @@ _UML_OUTPUTS[ProcedureGenerationOutput] = ProcedureGenerationOutput(
             branch="—",
             is_branch=False,
         ),
+    ],
+)
+
+# 詳細設計モードの段階6(処理ロジックの詳細)の関数の詳細(Phase 21)。どの関数にも同じ詳細を返す
+_UML_OUTPUTS[LogicGenerationOutput] = LogicGenerationOutput(
+    signature="async def create(self, payload: ReservationCreate) -> Reservation",
+    args="payload: 予約リクエスト",
+    returns="保存済みの予約",
+    raises="ReservationConflictError(409)",
+    pre="[E2E Fake] 利用者は認証済み",
+    post="[E2E Fake] 予約が1件増える",
+    pseudo=[
+        GeneratedPseudoStep(text="期間が重なる予約を数える", sub=["重なりがあれば 409"]),
+        GeneratedPseudoStep(text="予約を保存して返す", sub=[]),
     ],
 )
 
