@@ -21,7 +21,7 @@ from app.detailed_design.document import (
 from app.detailed_design.stages import StageState
 
 
-def test_chapters_are_01_to_06_mapped_to_stages_1_to_6() -> None:
+def test_chapters_are_01_to_07_mapped_to_stages_1_to_7() -> None:
     assert [(c.stage, c.number) for c in CHAPTERS] == [
         (1, "01"),
         (2, "02"),
@@ -29,6 +29,7 @@ def test_chapters_are_01_to_06_mapped_to_stages_1_to_6() -> None:
         (4, "04"),
         (5, "05"),
         (6, "06"),
+        (7, "07"),
     ]
 
 
@@ -55,6 +56,7 @@ def test_chapter_statuses_treat_missing_stage_as_unapproved() -> None:
         4: "unapproved",
         5: "unapproved",
         6: "unapproved",
+        7: "unapproved",
     }
 
 

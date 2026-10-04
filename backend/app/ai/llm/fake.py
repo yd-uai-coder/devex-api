@@ -33,6 +33,14 @@ from app.detailed_design.data_model_drafting import (
 )
 from app.detailed_design.drafting import FunctionListGenerationOutput, GeneratedFunction
 from app.detailed_design.logic_drafting import GeneratedPseudoStep, LogicGenerationOutput
+from app.detailed_design.plan_drafting import (
+    CrossCuttingGenerationOutput,
+    GeneratedCrossCutting,
+    GeneratedMilestone,
+    GeneratedRisk,
+    GeneratedTask,
+    PlanGenerationOutput,
+)
 from app.detailed_design.procedure_drafting import GeneratedStep, ProcedureGenerationOutput
 from app.detailed_design.structure_drafting import GeneratedModuleRow, ModuleListGenerationOutput
 from app.schemas.generation import HearingCompletionCheck
@@ -355,6 +363,37 @@ _UML_OUTPUTS[LogicGenerationOutput] = LogicGenerationOutput(
         GeneratedPseudoStep(text="期間が重なる予約を数える", sub=["重なりがあれば 409"]),
         GeneratedPseudoStep(text="予約を保存して返す", sub=[]),
     ],
+)
+
+# 詳細設計モードの段階7(横断事項と実装計画)の下書き(Phase 23)。段階1の2処理(F-01・F-02)と、
+# 段階4のモジュール一覧のパスにそろえる
+_UML_OUTPUTS[CrossCuttingGenerationOutput] = CrossCuttingGenerationOutput(
+    crosscutting=[
+        GeneratedCrossCutting(
+            topic=topic, policy=f"[E2E Fake] {topic}の方針", modules=["app/main.py"]
+        )
+        for topic in ("例外と HTTP", "認証", "トランザクション", "ログ")
+    ]
+)
+_UML_OUTPUTS[PlanGenerationOutput] = PlanGenerationOutput(
+    milestones=[
+        GeneratedMilestone(
+            name="[E2E Fake] 予約の登録と一覧",
+            goal="予約を登録して一覧で確かめられる",
+            priority="Must",
+            function_ids=["F-01", "F-02"],
+            tasks=[
+                GeneratedTask(
+                    area="バックエンド",
+                    title="予約の API とサービスを作る",
+                    modules=["app/api/routes/reservations.py", "app/services/reservation.py"],
+                    function_ids=["F-01", "F-02"],
+                ),
+            ],
+        )
+    ],
+    environment="[E2E Fake] Python 3.13・PostgreSQL・GitHub Actions",
+    risks=[GeneratedRisk(risk="[E2E Fake] 予約の重複", mitigation="一意制約で防ぐ")],
 )
 
 _HEARING_REPLY = "[E2E Fake] 承知しました。次に、想定している主なユーザー層を教えてください。"

@@ -11,6 +11,8 @@ docs/external_design.md 2.7節「詳細設計書の出力」。HTML は読むた
 文字はすべて`html.escape`で書く。例外は図の SVG だけで、これはそのまま埋め込む。SVG は自前の
 出力エンジン(app/uml/export/svg.py)が書いたもので、要素の名前などの文字はエンジンの中で
 エスケープ済みのため(ここでもう一度エスケープすると、図ではなく SVG の文字列が表示される)。
+
+段階7の実装計画は、別の HTML(`to_plan_html`)にする(Phase 23)。CSS は詳細設計書と同じものを使う。
 """
 
 from collections.abc import Sequence
@@ -27,6 +29,7 @@ from app.detailed_design.document.views import (
     anchor,
     crud_matrix,
     data_item_usage,
+    function_plans,
     functions_by_id,
     involvement,
     linked_logic_ids,
@@ -35,12 +38,16 @@ from app.detailed_design.document.views import (
     main_step_count,
     procedure_steps,
 )
+from app.detailed_design.plan import PLAN_STAGE, Milestone, milestone_id
 from app.detailed_design.procedure import step_id
 
 UNAPPROVED_TEXT = (
     "未承認 ── 段階{stage}が承認されていません。承認すると、この章が組み立てられます。"
 )
 SKIPPED_TEXT = "省略 ── 段階6を飛ばしました。"
+PLAN_UNAPPROVED_TEXT = (
+    "未承認 ── 段階7が承認されていません。承認すると、実装計画が組み立てられます。"
+)
 
 STYLE = """
 :root { --paper:#f5f6f8; --sheet:#fff; --ink:#1d2433; --muted:#5b6475; --rule:#d6dbe4;
@@ -212,9 +219,9 @@ def figure(diagram: RenderedDiagram | None) -> str:
     return f'<div class="figure" role="img" aria-label="{e(diagram.title)}">{diagram.svg}</div>'
 
 
-def to_html(source: DocumentSource) -> str:
-    """詳細設計書の HTML の全文(01〜06章)。"""
-    toc = "".join(f'<a href="#ch{c.number}">{e(f"{c.number} {c.title}")}</a>' for c in CHAPTERS)
+def to_html(source: DocumentSource, chapters: Sequence[Chapter] = CHAPTERS) -> str:
+    """詳細設計書の HTML の全文(既定は01〜07章。`chapters`で章を絞れる)。"""
+    toc = "".join(f'<a href="#ch{c.number}">{e(f"{c.number} {c.title}")}</a>' for c in chapters)
     header = (
         '<header style="display:grid;gap:12px"><div class="muted">Devex ／ 詳細設計書</div>'
         f"<h1>{e(source.title)}</h1>"
@@ -222,12 +229,17 @@ def to_html(source: DocumentSource) -> str:
         "該当する処理・手順・関数へ移ります。</p>"
         f'<nav class="toc">{toc}</nav></header>'
     )
-    chapters = "".join(_chapter(source, c) for c in CHAPTERS)
+    body = "".join(_chapter(source, c) for c in chapters)
+    return _page(f"詳細設計書: {source.title}", header + body)
+
+
+def _page(title: str, content: str) -> str:
+    """自己完結の HTML の1ページ(詳細設計書と実装計画で共通)。"""
     return (
         '<!doctype html>\n<html lang="ja"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        f"<title>{e(f'詳細設計書: {source.title}')}</title><style>{STYLE}</style></head>"
-        f'<body><div class="wrap">{header}{chapters}</div><script>{SCRIPT}</script></body></html>\n'
+        f"<title>{e(title)}</title><style>{STYLE}</style></head>"
+        f'<body><div class="wrap">{content}</div><script>{SCRIPT}</script></body></html>\n'
     )
 
 
@@ -542,6 +554,16 @@ def _logics(source: DocumentSource) -> str:
     return "".join(parts)
 
 
+def _modules(paths: Sequence[str]) -> str:
+    return "<br>".join(mono(p) for p in paths)
+
+
+def _crosscutting(source: DocumentSource) -> str:
+    assert source.plan is not None
+    rows = [[e(r.topic), e(r.policy), _modules(r.modules)] for r in source.plan.crosscutting]
+    return table(["項目", "方針", "関わるファイル(例)"], rows, label="横断事項")
+
+
 _BODIES = {
     1: _functions,
     2: _data_flow,
@@ -549,4 +571,86 @@ _BODIES = {
     4: _structure,
     5: _procedures,
     6: _logics,
+    7: _crosscutting,
 }
+
+
+def _milestone(index: int, milestone: Milestone) -> str:
+    """マイルストーン1つの見出し(M-ID のアンカー)とタスクの表。"""
+    mid = milestone_id(index)
+    heading = f"{mid} {milestone.name}({milestone.priority})"
+    goal = f"<p>ゴール: {e(milestone.goal)}</p>" if milestone.goal else ""
+    rows = [
+        [e(t.area), e(t.title), _modules(t.modules), e(", ".join(t.function_ids))]
+        for t in milestone.tasks
+    ]
+    return f'<h3 id="{e(anchor(mid))}">{e(heading)}</h3>{goal}' + table(
+        ["区分", "タスク", "作成・変更するファイル(例)", "処理"], rows, label=f"{mid} のタスク"
+    )
+
+
+def to_plan_html(source: DocumentSource) -> str:
+    """実装計画の HTML の全文(段階7。未承認なら「未承認」とだけ書く)。M-ID はアンカーを持ち、
+    マイルストーン一覧と処理の割り当ての M-ID からマイルストーンのタスクへ移れる。"""
+    plan = source.plan
+    header = (
+        '<header style="display:grid;gap:12px"><div class="muted">Devex ／ 実装計画書</div>'
+        f"<h1>{e(source.title)}</h1>"
+        '<p class="muted">承認済みの段階7から組み立てた実装計画です。横断事項は詳細設計書の'
+        "07章にあります。</p></header>"
+    )
+    title = f"実装計画書: {source.title}"
+    if source.status(PLAN_STAGE) != "approved" or plan is None:
+        return _page(title, header + f'<p class="status">{e(PLAN_UNAPPROVED_TEXT)}</p>')
+
+    def section(number: str, heading: str, body: str) -> str:
+        return (
+            f'<section class="chapter" id="plan{number}"><div class="rail">'
+            f'<div class="no">{e(number)}</div></div>'
+            f'<div class="body"><h2>{e(heading)}</h2>{body}</div></section>'
+        )
+
+    overview = table(
+        ["M-ID", "名前", "優先度", "ゴール", "処理"],
+        [
+            [
+                badge(milestone_id(i)),
+                e(m.name),
+                e(m.priority),
+                e(m.goal),
+                e(", ".join(m.function_ids)),
+            ]
+            for i, m in enumerate(plan.milestones)
+        ],
+        label="マイルストーン一覧",
+    )
+    details = "".join(_milestone(i, m) for i, m in enumerate(plan.milestones))
+    assignment = table(
+        ["処理ID", "名称", "マイルストーン"],
+        [
+            [
+                e(row.function_id),
+                e(row.name),
+                "".join(badge(m) for m in row.milestones) or '<span class="status">未計画</span>',
+            ]
+            for row in function_plans(plan, source.function_list)
+        ],
+        label="処理の割り当て",
+    )
+    # 開発環境は複数行の文章なので、改行をそのまま見せる
+    environment = (
+        f'<p style="white-space:pre-wrap">{e(plan.environment)}</p>'
+        if plan.environment
+        else '<p class="muted">—</p>'
+    )
+    risks = table(
+        ["リスク", "対策"], [[e(r.risk), e(r.mitigation)] for r in plan.risks], label="想定リスク"
+    )
+    return _page(
+        title,
+        header
+        + section("1", "マイルストーン", overview + details)
+        + section("2", "処理の割り当て", assignment)
+        + section("3", "開発環境・事前準備", environment)
+        + section("4", "想定リスクと対策", risks),
+    )

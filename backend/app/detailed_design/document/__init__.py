@@ -8,8 +8,8 @@ DB の読み取り・図の描画・zip はサービス(app/services/detailed_de
 出力のサービスだけで、段階の検証・生成からは使わないため。
 """
 
-from app.detailed_design.document.html import to_html
-from app.detailed_design.document.markdown import to_markdown
+from app.detailed_design.document.html import to_html, to_plan_html
+from app.detailed_design.document.markdown import to_markdown, to_plan_markdown
 from app.detailed_design.document.source import (
     CHAPTERS,
     Chapter,
@@ -24,12 +24,14 @@ from app.detailed_design.document.source import (
 from app.detailed_design.document.views import (
     CrudMark,
     CrudMatrix,
+    FunctionPlan,
     Involvement,
     LogicView,
     StepView,
     anchor,
     crud_matrix,
     data_item_usage,
+    function_plans,
     involvement,
     linked_logic_ids,
     logic_ids,
@@ -45,6 +47,7 @@ __all__ = [
     "CrudMatrix",
     "DataItemEntry",
     "DocumentSource",
+    "FunctionPlan",
     "Involvement",
     "LogicView",
     "RenderedDiagram",
@@ -55,6 +58,7 @@ __all__ = [
     "crud_matrix",
     "data_item_usage",
     "document_source",
+    "function_plans",
     "involvement",
     "linked_logic_ids",
     "logic_ids",
@@ -62,4 +66,6 @@ __all__ = [
     "procedure_steps",
     "to_html",
     "to_markdown",
+    "to_plan_html",
+    "to_plan_markdown",
 ]

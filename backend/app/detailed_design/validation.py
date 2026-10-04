@@ -5,14 +5,16 @@ app/services/design_stage_service.py)に加えて、段階ごとの検証で「�
 止めない(UML図の検証と同じ考え方。app/uml/validation/)。保存は検証の結果によらず通す(編集の
 途中の状態も保存できるようにするため)。
 
-段階ごとの検証は`STAGE_VALIDATORS`に登録する。今は段階1〜6で、段階7は Phase 22 で
-足す(登録の無い段階は検証なし)。検証には段階の内容のほかに入力の文書の本文が要ることがあるので、
+段階ごとの検証は`STAGE_VALIDATORS`に登録する。段階1〜7のすべてを登録している(段階7は
+Phase 23。登録の無い段階は検証なし)。
+検証には段階の内容のほかに入力の文書の本文が要ることがあるので、
 `StageSources`で渡す(段階1は外部設計書のAPI一覧と照らして、下書きの漏れを警告する)。
 段階2は、入力の段階1の内容と、機能グループの DFD(`uml_diagrams`)の要約も使う(Phase 17)。
 段階3は、段階1・2の内容と、DFD の線から読み取った R/W と、ER の要約を使う(Phase 18)。
 段階4は、段階1の内容と、構成図の要約を使う(Phase 19)。
 段階5は、段階1の内容と、段階4のモジュール一覧(手順の呼び出し先の鍵)を使う(Phase 20)。
 段階6は、段階5の手順(関数を呼ぶ手順との紐づけ)を使う(Phase 21)。
+段階7は、段階1の処理ID(計画の漏れ)を使う(Phase 23)。ファイルの欄は例なので検証しない。
 """
 
 from collections import Counter
@@ -44,6 +46,7 @@ from app.detailed_design.logic import (
     logic_id,
     logic_key,
 )
+from app.detailed_design.plan import PlanModel, milestone_id, missing_topics, unplanned_functions
 from app.detailed_design.procedure import (
     ProcedureModel,
     is_external_actor,
@@ -542,6 +545,74 @@ def validate_logics(model: Mapping[str, Any], sources: StageSources) -> list[Sta
     return issues
 
 
+def validate_plan(model: Mapping[str, Any], sources: StageSources) -> list[StageIssue]:
+    """段階7(横断事項と実装計画)の検証。
+
+    エラー: 形が不正 / マイルストーンが0件 / マイルストーン名が空・重複 / タスク名が空 /
+    横断事項の項目が空 / 機能一覧に無い処理ID。
+    ファイルの欄(`modules`)は「作成・変更するファイルの例」なので検証しない(環境・設定の
+    ファイルはモジュール一覧に入らないため。Phase 23 の画面確認後)。
+    警告: どのマイルストーン・タスクにも無い処理 / タスクの無いマイルストーン /
+    横断事項の既定の項目(`CROSSCUTTING_TOPICS`)が無い・方針が空 / リスクが0件。
+    指摘の`target`は、マイルストーンは M-ID、横断事項は項目名、漏れた処理は処理ID。
+    """
+    try:
+        parsed = PlanModel.model_validate(model)
+    except ValidationError as exc:
+        return [_error("INVALID_MODEL", f"横断事項と実装計画の形が正しくありません: {exc}")]
+    function_list = FunctionListModel.model_validate(sources.stages.get(1) or {})
+    function_ids = [row.id for row in function_list.functions]
+    known_functions = set(function_ids)
+
+    issues: list[StageIssue] = []
+
+    def check_refs(label: str, target: str, functions: list[str]) -> None:
+        for function_id in functions:
+            if function_id.strip() not in known_functions:
+                message = f"{label} の処理 {function_id} が、機能一覧にありません。"
+                issues.append(_error("UNKNOWN_FUNCTION", message, target))
+
+    for index, row in enumerate(parsed.crosscutting, start=1):
+        topic = row.topic.strip()
+        if not topic:
+            message = f"横断事項の{index}行目の項目が空です。"
+            issues.append(_error("EMPTY_TOPIC", message))
+            continue
+        if not row.policy.strip():
+            issues.append(_warning("EMPTY_POLICY", f"横断事項「{topic}」の方針が空です。", topic))
+    for topic in missing_topics(parsed):
+        message = f"横断事項に「{topic}」がありません。"
+        issues.append(_warning("MISSING_TOPIC", message, topic))
+
+    if not parsed.milestones:
+        issues.append(_error("NO_MILESTONE", "マイルストーンが1件もありません。"))
+    names = Counter(m.name.strip() for m in parsed.milestones)
+    for index, milestone in enumerate(parsed.milestones):
+        target = milestone_id(index)
+        name = milestone.name.strip()
+        label = f"{target}({name})" if name else target
+        if not name:
+            issues.append(_error("EMPTY_MILESTONE_NAME", f"{target} の名前が空です。", target))
+        elif names[name] > 1:
+            message = f"マイルストーン「{name}」が重複しています。"
+            issues.append(_error("DUPLICATE_MILESTONE", message, target))
+        if not milestone.tasks:
+            issues.append(_warning("EMPTY_TASKS", f"{label} にタスクがありません。", target))
+        check_refs(label, target, milestone.function_ids)
+        for number, task in enumerate(milestone.tasks, start=1):
+            task_label = f"{label} のタスク{number}"
+            if not task.title.strip():
+                issues.append(_error("EMPTY_TASK", f"{task_label} の名前が空です。", target))
+            check_refs(task_label, target, task.function_ids)
+
+    for function_id in unplanned_functions(parsed, function_ids):
+        message = f"{function_id} が、どのマイルストーン・タスクにもありません。"
+        issues.append(_warning("UNPLANNED_FUNCTION", message, function_id))
+    if not parsed.risks:
+        issues.append(_warning("NO_RISKS", "想定リスクが1件もありません。"))
+    return issues
+
+
 def _error(code: str, message: str, target: str | None = None) -> StageIssue:
     return StageIssue("error", code, message, target)
 
@@ -558,6 +629,7 @@ STAGE_VALIDATORS: dict[int, StageValidator] = {
     4: validate_structure,
     5: validate_procedures,
     6: validate_logics,
+    7: validate_plan,
 }
 
 

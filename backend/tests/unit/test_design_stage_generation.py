@@ -252,13 +252,16 @@ async def test_failed_generation_records_reason(
 
 
 async def test_generation_rejects_unsupported_locked_and_running_stages(
-    db_session: AsyncSession,
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = await _project(db_session)
     service = DesignStageGenerationService(db_session)
 
-    with pytest.raises(DesignStageGenerationNotSupportedError):
-        await service.request_generation(project, stage=7)
+    # 段階1〜7のすべてに生成がある(Phase 23)ので、登録を外して「未対応」の断りを確かめる
+    with monkeypatch.context() as patch:
+        patch.delitem(STAGE_GENERATORS, 1)
+        with pytest.raises(DesignStageGenerationNotSupportedError):
+            await service.request_generation(project, stage=1)
     no_docs = await create_detailed_project(db_session, with_documents=False)
     with pytest.raises(DesignStageLockedError):
         await service.request_generation(no_docs, stage=1)

@@ -13,6 +13,10 @@ DB の読み取りと図の描画はサービス(app/services/detailed_design_ex
 - `skipped`: 段階6を0件で承認した(段階6を飛ばした)。06章は「省略」と書く。
 - `unapproved`: それ以外(未着手・下書き・レビュー中・古い)。章には「未承認」とだけ書く。
   承認していない内容は人が確定していないので、途中の内容を本文に出さない。
+
+07 横断事項は段階7(横断事項と実装計画)の model から組み立てる(Phase 23 の決定)。段階7の
+実装計画は詳細設計書とは別のファイル(implementation_plan.md・.html)にするが、入力は同じ
+`DocumentSource`を使う。
 """
 
 from collections.abc import Mapping
@@ -25,6 +29,7 @@ from app.detailed_design.data_flow import DataFlowModel
 from app.detailed_design.data_model import CrudModel
 from app.detailed_design.function_list import FunctionListModel
 from app.detailed_design.logic import LOGIC_STAGE, LogicModel
+from app.detailed_design.plan import PlanModel
 from app.detailed_design.procedure import ProcedureModel
 from app.detailed_design.stages import StageState
 from app.detailed_design.structure import ModuleListModel
@@ -35,7 +40,7 @@ ChapterStatus = Literal["approved", "skipped", "unapproved"]
 
 @dataclass(frozen=True)
 class Chapter:
-    """詳細設計書の章1つ。01〜06章は段階1〜6と1対1(07 横断事項は Phase 23 で決める)。"""
+    """詳細設計書の章1つ。章と段階は1対1(07 横断事項は段階7。Phase 23)。"""
 
     stage: int
     number: str
@@ -49,6 +54,7 @@ CHAPTERS: tuple[Chapter, ...] = (
     Chapter(4, "04", "ソフトウェア構造"),
     Chapter(5, "05", "主要処理の手順"),
     Chapter(6, "06", "処理ロジックの詳細"),
+    Chapter(7, "07", "横断事項"),
 )
 
 
@@ -84,6 +90,7 @@ class DocumentSource:
     modules: ModuleListModel | None = None
     procedures: ProcedureModel | None = None
     logics: LogicModel | None = None
+    plan: PlanModel | None = None
     dfd_diagrams: Mapping[str, RenderedDiagram] = field(default_factory=dict)
     dfd_models: tuple[Mapping[str, Any], ...] = ()
     data_items: tuple[DataItemEntry, ...] = ()
@@ -107,7 +114,7 @@ def chapter_status(stage: int, state: StageState, model: Mapping[str, Any] | Non
 def chapter_statuses(
     states: Mapping[int, StageState], models: Mapping[int, Mapping[str, Any]]
 ) -> dict[int, ChapterStatus]:
-    """01〜06章の状態を、段階の状態(`derive_states`の結果)と承認済みの段階の内容から決める。"""
+    """01〜07章の状態を、段階の状態(`derive_states`の結果)と承認済みの段階の内容から決める。"""
     return {
         chapter.stage: chapter_status(
             chapter.stage, states.get(chapter.stage, "not_started"), models.get(chapter.stage)
@@ -144,6 +151,7 @@ def document_source(
         modules=_parse(ModuleListModel, raw(4)),
         procedures=_parse(ProcedureModel, raw(5)),
         logics=_parse(LogicModel, raw(6)),
+        plan=_parse(PlanModel, raw(7)),
         dfd_diagrams=dfd_diagrams or {},
         dfd_models=dfd_models,
         data_items=data_items,

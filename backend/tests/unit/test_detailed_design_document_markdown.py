@@ -33,6 +33,7 @@ def test_markdown_has_all_chapters_in_order() -> None:
         "## 04 ソフトウェア構造",
         "## 05 主要処理の手順",
         "## 06 処理ロジックの詳細",
+        "## 07 横断事項",
     ]
     assert text.startswith("# 詳細設計書: 予約システム\n")
 

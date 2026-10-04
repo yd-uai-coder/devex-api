@@ -6,6 +6,10 @@ docs/external_design.md 2.7節「詳細設計書の出力」。md は差分を�
 
 図は、zip の中の SVG を相対パスの画像で載せる(`![題](diagrams/x.svg)`)。ステージ3の zip
 (内部設計書の md)と同じ形で、md のビューアで開くと図が見える。画像は章の間のリンクではない。
+
+段階7の実装計画は、詳細設計書とは別の md(`to_plan_markdown`)にする(Phase 23。簡易モードで
+実装計画書が別の文書なのとそろえる)。段階7の下書きの入力には、詳細設計書の md(`to_markdown`の
+01〜06章)を使う。
 """
 
 from collections.abc import Sequence
@@ -20,6 +24,7 @@ from app.detailed_design.document.views import (
     CrudMark,
     crud_matrix,
     data_item_usage,
+    function_plans,
     functions_by_id,
     involvement,
     linked_logic_ids,
@@ -28,9 +33,11 @@ from app.detailed_design.document.views import (
     main_step_count,
     procedure_steps,
 )
+from app.detailed_design.plan import PLAN_STAGE, milestone_id
 
 UNAPPROVED_TEXT = "未承認(段階{stage}が承認されていません。承認すると、この章が組み立てられます)"
 SKIPPED_TEXT = "省略(段階6を飛ばしました)"
+PLAN_UNAPPROVED_TEXT = "未承認(段階7が承認されていません。承認すると、実装計画が組み立てられます)"
 
 # CRUD 図の記号(md には色が無いので、決まり方を印で書き分ける)
 _MARK_SUFFIX = {"dfd": "", "dfd_write": "+", "human": "*"}
@@ -58,10 +65,11 @@ def image(diagram: RenderedDiagram) -> str:
     return f"![{diagram.title}]({diagram.path})"
 
 
-def to_markdown(source: DocumentSource) -> str:
-    """詳細設計書の md の全文(01〜06章)。"""
+def to_markdown(source: DocumentSource, chapters: Sequence[Chapter] = CHAPTERS) -> str:
+    """詳細設計書の md の全文(既定は01〜07章)。`chapters`で章を絞れる(段階7の下書きの入力は
+    01〜06章だけ。07 は段階7自身が作るため)。"""
     lines = [f"# 詳細設計書: {source.title}", ""]
-    for chapter in CHAPTERS:
+    for chapter in chapters:
         lines += [f"## {chapter.number} {chapter.title}", ""]
         lines += _chapter_body(source, chapter)
         lines.append("")
@@ -297,6 +305,14 @@ def _logics(source: DocumentSource) -> list[str]:
     return lines
 
 
+def _crosscutting(source: DocumentSource) -> list[str]:
+    assert source.plan is not None
+    return md_table(
+        ["項目", "方針", "関わるファイル(例)"],
+        [[row.topic, row.policy, ", ".join(row.modules)] for row in source.plan.crosscutting],
+    )
+
+
 _BODIES = {
     1: _functions,
     2: _data_flow,
@@ -304,4 +320,48 @@ _BODIES = {
     4: _structure,
     5: _procedures,
     6: _logics,
+    7: _crosscutting,
 }
+
+
+def to_plan_markdown(source: DocumentSource) -> str:
+    """実装計画の md の全文(段階7。未承認なら「未承認」とだけ書く)。
+
+    マイルストーン一覧 → マイルストーンごとのタスク → 処理の割り当て → 開発環境 → リスクの順。
+    横断事項は詳細設計書の07章に書くので、ここには書かない。"""
+    lines = [f"# 実装計画書: {source.title}", ""]
+    plan = source.plan
+    if source.status(PLAN_STAGE) != "approved" or plan is None:
+        lines.append(PLAN_UNAPPROVED_TEXT)
+        return "\n".join(lines) + "\n"
+    lines += ["## 1 マイルストーン", ""]
+    lines += md_table(
+        ["M-ID", "名前", "優先度", "ゴール", "処理"],
+        [
+            [milestone_id(i), m.name, m.priority, m.goal, ", ".join(m.function_ids)]
+            for i, m in enumerate(plan.milestones)
+        ],
+    )
+    for index, milestone in enumerate(plan.milestones):
+        lines += ["", f"### {milestone_id(index)} {milestone.name}({milestone.priority})", ""]
+        if milestone.goal:
+            lines += [f"ゴール: {milestone.goal}", ""]
+        lines += md_table(
+            ["区分", "タスク", "作成・変更するファイル(例)", "処理"],
+            [
+                [t.area, t.title, ", ".join(t.modules), ", ".join(t.function_ids)]
+                for t in milestone.tasks
+            ],
+        )
+    lines += ["", "## 2 処理の割り当て", ""]
+    lines += md_table(
+        ["処理ID", "名称", "マイルストーン"],
+        [
+            [row.function_id, row.name, ", ".join(row.milestones) or "未計画"]
+            for row in function_plans(plan, source.function_list)
+        ],
+    )
+    lines += ["", "## 3 開発環境・事前準備", "", plan.environment or "—", ""]
+    lines += ["## 4 想定リスクと対策", ""]
+    lines += md_table(["リスク", "対策"], [[r.risk, r.mitigation] for r in plan.risks])
+    return "\n".join(lines).rstrip() + "\n"

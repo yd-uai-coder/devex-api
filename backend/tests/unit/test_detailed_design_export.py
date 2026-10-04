@@ -72,6 +72,8 @@ async def test_bundle_contains_html_md_and_diagrams(db_session: AsyncSession) ->
         "diagrams/dfd_reservations.svg",
         "diagrams/er.drawio",
         "diagrams/er.svg",
+        "implementation_plan.html",
+        "implementation_plan.md",
     ]
     markdown = archive.read("detailed_design.md").decode()
     assert "未承認" not in markdown

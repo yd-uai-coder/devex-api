@@ -261,6 +261,46 @@ def logic_model(
     }
 
 
+def plan_model(
+    *,
+    function_ids: list[str] | None = None,
+    module: str = "app/api/routes/reservations.py",
+) -> dict:
+    """段階7の検証を通る横断事項と実装計画(既定の横断事項4項目・マイルストーン1つ・リスク1件)。
+    `function_list_model()`の F-01 と`module_list_model()`のパスを参照する。`function_ids`に
+    機能一覧に無い処理IDを渡すと、検証のエラーになる。`module`(ファイルの例)は検証しない。"""
+    return {
+        "crosscutting": [
+            {
+                "topic": "例外と HTTP",
+                "policy": "ドメイン例外を共通の形に変換する",
+                "modules": [module],
+            },
+            {"topic": "認証", "policy": "JWT で利用者を確かめる", "modules": []},
+            {"topic": "トランザクション", "policy": "commit はサービスだけ", "modules": []},
+            {"topic": "ログ", "policy": "JSON で出す", "modules": []},
+        ],
+        "milestones": [
+            {
+                "name": "予約の登録",
+                "goal": "予約を登録できる",
+                "priority": "Must",
+                "function_ids": ["F-01"] if function_ids is None else function_ids,
+                "tasks": [
+                    {
+                        "area": "バックエンド",
+                        "title": "予約の API を作る",
+                        "modules": [module],
+                        "function_ids": ["F-01"] if function_ids is None else function_ids,
+                    }
+                ],
+            }
+        ],
+        "environment": "Python 3.13 と PostgreSQL",
+        "risks": [{"risk": "予約の重複", "mitigation": "一意制約で防ぐ"}],
+    }
+
+
 async def create_stage6_project(session: AsyncSession) -> Project:
     """段階1〜5を承認したプロジェクト(段階6が開いている)。段階5は F-01 の手順(`procedure_model()`。
     手順 F-01#1 が app/api/routes/reservations.py の create_reservation を呼ぶ)を持つ。"""
@@ -272,9 +312,9 @@ async def create_stage6_project(session: AsyncSession) -> Project:
 
 
 def document_stage_models(*, dfd_groups: list[str] | None = None) -> dict[int, dict]:
-    """段階1〜6の、組み立ての入力になる内容(すべて検証を通る)。段階5の手順 F-01#1 が、段階6の
-    関数(app/api/routes/reservations.py の create_reservation)を呼ぶ。詳細設計書の組み立ての
-    テストで使う。"""
+    """段階1〜7の、組み立ての入力になる内容(すべて検証を通る)。段階5の手順 F-01#1 が、段階6の
+    関数(app/api/routes/reservations.py の create_reservation)を呼ぶ。段階7は`plan_model()`。
+    詳細設計書の組み立てのテストで使う。"""
     return {
         1: function_list_model(),
         2: data_flow_model(dfd_groups=dfd_groups),
@@ -282,6 +322,7 @@ def document_stage_models(*, dfd_groups: list[str] | None = None) -> dict[int, d
         4: module_list_model(),
         5: procedure_model(),
         6: logic_model(),
+        7: plan_model(),
     }
 
 
@@ -317,9 +358,9 @@ def sample_document_source(
     )
 
 
-async def create_document_project(session: AsyncSession) -> Project:
-    """段階1〜6を承認し、図(DFD・ER・構成図)に配置を持たせたプロジェクト(詳細設計書を組み立てると
-    全章がそろう)。図は段階のテスト用に配置なしで承認済みにしてあるので、出力できるよう配置を足す
+async def create_stage7_project(session: AsyncSession) -> Project:
+    """段階1〜6を承認し、図(DFD・ER・構成図)に配置を持たせたプロジェクト(段階7が開いている)。
+    図は段階のテスト用に配置なしで承認済みにしてあるので、出力できるよう配置を足す
     (図のサービスの自動レイアウトは承認を差し戻すため使わず、レイアウトエンジンを直接呼ぶ)。"""
     project = await create_stage6_project(session)
     stages = DesignStageService(session)
@@ -332,4 +373,14 @@ async def create_document_project(session: AsyncSession) -> Project:
         layout = compute_layout(str(diagram.id), model, edge_labels(model, names))
         diagram.layout_model = layout.model_dump(mode="json")
     await session.commit()
+    return project
+
+
+async def create_document_project(session: AsyncSession) -> Project:
+    """段階1〜7を承認したプロジェクト(詳細設計書を組み立てると全章がそろい、実装計画もある)。
+    段階7は`plan_model()`。"""
+    project = await create_stage7_project(session)
+    stages = DesignStageService(session)
+    await stages.save(project, stage=7, expected_version=None, model=plan_model())
+    await stages.approve(project, stage=7, expected_version=1)
     return project

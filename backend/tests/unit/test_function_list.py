@@ -168,7 +168,8 @@ def test_validate_warns_duplicate_trigger_and_missing_api() -> None:
 
 
 def test_stages_without_validator_have_no_issues() -> None:
-    assert set(STAGE_VALIDATORS) == {1, 2, 3, 4, 5, 6}
-    assert validate_stage(7, {"anything": 1}, StageSources()) == []
+    # Phase 23 で段階1〜7のすべてに検証がある。登録の無い番号は指摘なし
+    assert set(STAGE_VALIDATORS) == {1, 2, 3, 4, 5, 6, 7}
+    assert validate_stage(8, {"anything": 1}, StageSources()) == []
     assert validate_stage(1, None, StageSources()) == []
     assert has_errors([StageIssue("warning", "W", "w")]) is False
