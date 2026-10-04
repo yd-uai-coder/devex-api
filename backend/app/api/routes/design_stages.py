@@ -1,8 +1,10 @@
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Path, status
+from fastapi.responses import Response
 
 from app.api.deps import CurrentProjectDep, SessionDep
+from app.api.responses import content_disposition
 from app.schemas.design_stage import (
     DesignStageApprove,
     DesignStageGenerate,
@@ -14,6 +16,7 @@ from app.services.design_stage_generation_service import (
     run_design_stage_generation,
 )
 from app.services.design_stage_service import DesignStageService
+from app.services.detailed_design_export_service import DetailedDesignExportService
 
 # UMLと同じく、プロジェクト配下の独立したサブツリーとしてprefixにproject_idを含める
 router = APIRouter(prefix="/projects/{project_id}/design-stages", tags=["design-stages"])
@@ -29,6 +32,21 @@ async def list_design_stages(
     この一覧のポーリングで待つため、止まった生成(15分超)はここで回収してから返す。"""
     await DesignStageGenerationService(session).recover_stale(current_project.id)
     return await DesignStageService(session).list_stages(current_project)
+
+
+@router.get("/document")
+async def download_detailed_design(
+    session: SessionDep, current_project: CurrentProjectDep
+) -> Response:
+    """詳細設計書(HTML・md)と載せた図(SVG・draw.io)を zip でダウンロードする(Phase 22)。
+    いつでもダウンロードでき、承認していない段階の章は「未承認」になる。zip に入れた図は
+    `exported`になる。簡易ドキュメントモードのプロジェクトは409。"""
+    bundle = await DetailedDesignExportService(session).bundle(current_project)
+    return Response(
+        content=bundle.content,
+        media_type=bundle.media_type,
+        headers={"Content-Disposition": content_disposition(bundle.filename)},
+    )
 
 
 @router.post(

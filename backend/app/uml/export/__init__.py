@@ -13,6 +13,8 @@ from app.uml.export.files import (
     diagram_title,
     export_filename,
     render_content,
+    render_diagram,
+    unique_base,
 )
 from app.uml.export.render import RenderDiagram, build_render, orthogonal_fallback
 from app.uml.export.svg import to_svg
@@ -26,6 +28,8 @@ __all__ = [
     "export_filename",
     "orthogonal_fallback",
     "render_content",
+    "render_diagram",
     "to_drawio",
     "to_svg",
+    "unique_base",
 ]

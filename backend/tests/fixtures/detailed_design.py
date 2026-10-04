@@ -4,12 +4,22 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.detailed_design.document import (
+    DataItemEntry,
+    DocumentSource,
+    RenderedDiagram,
+    document_source,
+)
+from app.detailed_design.stages import StageState
 from app.models.project import Project
 from app.models.user import User
 from app.repositories.generated_document import GeneratedDocumentRepository
 from app.repositories.uml_diagram import UmlDiagramRepository
 from app.services.data_item_service import DataItemService
 from app.services.design_stage_service import DesignStageService
+from app.uml.domain import SemanticModelAdapter
+from app.uml.domain.er import ErSemanticModel
+from app.uml.layout import compute_layout, edge_labels
 
 
 async def create_detailed_project(
@@ -258,4 +268,68 @@ async def create_stage6_project(session: AsyncSession) -> Project:
     stages = DesignStageService(session)
     await stages.save(project, stage=5, expected_version=None, model=procedure_model())
     await stages.approve(project, stage=5, expected_version=1)
+    return project
+
+
+def document_stage_models(*, dfd_groups: list[str] | None = None) -> dict[int, dict]:
+    """段階1〜6の、組み立ての入力になる内容(すべて検証を通る)。段階5の手順 F-01#1 が、段階6の
+    関数(app/api/routes/reservations.py の create_reservation)を呼ぶ。詳細設計書の組み立ての
+    テストで使う。"""
+    return {
+        1: function_list_model(),
+        2: data_flow_model(dfd_groups=dfd_groups),
+        3: crud_model(),
+        4: module_list_model(),
+        5: procedure_model(),
+        6: logic_model(),
+    }
+
+
+ALL_APPROVED: dict[int, StageState] = dict.fromkeys(range(1, 8), "approved")
+DOCUMENT_DATA_ITEM_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
+
+
+def sample_document_source(
+    *, states: dict[int, StageState] | None = None, models: dict[int, dict] | None = None
+) -> DocumentSource:
+    """全章がそろう詳細設計書の入力(図は描画済みの小さな SVG)。md・HTML の組み立てのテストで
+    使う。`states`・`models`で、未承認の章や省略の段階6を作れる。"""
+    return document_source(
+        "予約システム",
+        ALL_APPROVED if states is None else states,
+        document_stage_models(dfd_groups=["reservations"]) if models is None else models,
+        dfd_diagrams={
+            "reservations": RenderedDiagram(
+                title="データフロー図: reservations",
+                path="diagrams/dfd_reservations.svg",
+                svg="<svg/>",
+            )
+        },
+        dfd_models=(group_dfd_model(DOCUMENT_DATA_ITEM_ID),),
+        data_items=(
+            DataItemEntry(id=str(DOCUMENT_DATA_ITEM_ID), name="予約", fields=("id", "starts_at")),
+        ),
+        er=ErSemanticModel.model_validate(er_model()),
+        er_diagram=RenderedDiagram(title="ER図(全体)", path="diagrams/er.svg", svg="<svg/>"),
+        component_diagram=RenderedDiagram(
+            title="コンポーネント図(全体)", path="diagrams/component.svg", svg="<svg/>"
+        ),
+    )
+
+
+async def create_document_project(session: AsyncSession) -> Project:
+    """段階1〜6を承認し、図(DFD・ER・構成図)に配置を持たせたプロジェクト(詳細設計書を組み立てると
+    全章がそろう)。図は段階のテスト用に配置なしで承認済みにしてあるので、出力できるよう配置を足す
+    (図のサービスの自動レイアウトは承認を差し戻すため使わず、レイアウトエンジンを直接呼ぶ)。"""
+    project = await create_stage6_project(session)
+    stages = DesignStageService(session)
+    await stages.save(project, stage=6, expected_version=None, model=logic_model())
+    await stages.approve(project, stage=6, expected_version=1)
+    items = await DataItemService(session).list_for_project(project.id)
+    names = {item.id: item.name for item in items}
+    for diagram in await UmlDiagramRepository(session).list_for_project(project.id):
+        model = SemanticModelAdapter.validate_python(diagram.semantic_model)
+        layout = compute_layout(str(diagram.id), model, edge_labels(model, names))
+        diagram.layout_model = layout.model_dump(mode="json")
+    await session.commit()
     return project

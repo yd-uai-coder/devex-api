@@ -34,12 +34,11 @@ from app.uml.domain import (
 )
 from app.uml.export import (
     ExportFormat,
-    build_render,
     diagram_title,
     export_filename,
-    render_content,
+    render_diagram,
+    unique_base,
 )
-from app.uml.layout import LayoutModel, edge_labels
 from app.uml.sync import (
     DataItemSummary,
     ImageLink,
@@ -180,7 +179,7 @@ class UmlSyncService:
             if not _is_approved(diagram) or str(diagram.id) not in anchored:
                 continue
             model = SemanticModelAdapter.validate_python(diagram.semantic_model)
-            base = _unique_base(
+            base = unique_base(
                 export_filename(model.notation, diagram.subject, "svg").removesuffix(".svg"),
                 used_bases,
             )
@@ -245,24 +244,12 @@ def _apply(content: str, diagram: UmlDiagram, data_items: dict[uuid.UUID, DataIt
 def _render(
     diagram: UmlDiagram, model: _AnyModel, names: dict[uuid.UUID, str], fmt: ExportFormat
 ) -> str:
-    """承認済みの図を、出力と同じ規則で描く(承認の条件で、全要素の配置があることは確かめ済み)。"""
-    layout = LayoutModel.model_validate(diagram.layout_model)
-    render = build_render(model, layout, edge_labels(model, names))
-    return render_content(
-        render,
+    """承認済みの図を、出力と同じ規則で描く(規則は`app.uml.export.render_diagram`。Phase 22)。"""
+    return render_diagram(
+        model,
+        diagram.layout_model,
+        names,
         fmt,
         diagram_id=str(diagram.id),
         title=diagram_title(model.notation, diagram.subject),
     )
-
-
-def _unique_base(base: str, used: set[str]) -> str:
-    """zipの中でファイル名が重ならないようにする。禁止文字を`_`に置き換えた結果、別の図と
-    同じ名前になることがあるため、2つ目以降に`_2`、`_3`…を付ける。"""
-    candidate = base
-    suffix = 2
-    while candidate in used:
-        candidate = f"{base}_{suffix}"
-        suffix += 1
-    used.add(candidate)
-    return candidate

@@ -85,6 +85,14 @@ class DesignStageService:
         sources = await self._sources(project.id, rows, views, documents)
         return rows.get(stage), views[stage], sources
 
+    async def overview(self, project: Project) -> tuple[dict[int, StageView], StageSources]:
+        """全段階の状態と、承認済みの段階の内容(`StageSources.stages`)を返す(詳細設計書の
+        組み立てが使う。Phase 22)。"""
+        _ensure_detailed(project)
+        rows, views, documents = await self._load(project.id)
+        sources = await self._sources(project.id, rows, views, documents)
+        return views, sources
+
     async def current_fingerprint(self, project: Project, stage: int) -> Fingerprint:
         """段階が今入力にしているものの版(下書きの生成時に記録する。承認時と同じ規則)。"""
         rows, views, documents = await self._load(project.id)

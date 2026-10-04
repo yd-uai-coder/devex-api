@@ -7,12 +7,20 @@ Phase 12-4では`app/services/uml_diagram_service.py`のモジュール関数だ
 """
 
 import re
-from typing import Literal
+import uuid
+from collections.abc import Mapping
+from typing import Any, Literal
 
-from app.uml.domain import NotationType
+from app.uml.domain import (
+    ComponentSemanticModel,
+    DfdSemanticModel,
+    ErSemanticModel,
+    NotationType,
+)
 from app.uml.export.drawio import to_drawio
-from app.uml.export.render import RenderDiagram
+from app.uml.export.render import RenderDiagram, build_render
 from app.uml.export.svg import to_svg
+from app.uml.layout import LayoutModel, edge_labels
 
 ExportFormat = Literal["drawio", "svg"]
 
@@ -49,3 +57,36 @@ def render_content(
     if fmt == "drawio":
         return to_drawio(diagram, diagram_id=diagram_id, title=title)
     return to_svg(diagram)
+
+
+def render_diagram(
+    model: ComponentSemanticModel | ErSemanticModel | DfdSemanticModel,
+    layout_model: Mapping[str, Any] | None,
+    data_item_names: Mapping[uuid.UUID, str],
+    fmt: ExportFormat,
+    *,
+    diagram_id: str,
+    title: str,
+) -> str:
+    """承認済みの図を、出力と同じ規則で描く(承認の条件で、全要素の配置があることは確かめ済み)。
+
+    Phase 13 では`app/services/uml_sync_service.py`の`_render`だった。Phase 22 で詳細設計書の
+    出力(`app/services/detailed_design_export_service.py`)も同じ規則で図を描くため、ここへ移した
+    (#17: 共有を選ぶ)。"""
+    layout = LayoutModel.model_validate(layout_model)
+    render = build_render(model, layout, edge_labels(model, data_item_names))
+    return render_content(render, fmt, diagram_id=diagram_id, title=title)
+
+
+def unique_base(base: str, used: set[str]) -> str:
+    """zipの中でファイル名が重ならないようにする。禁止文字を`_`に置き換えた結果、別の図と
+    同じ名前になることがあるため、2つ目以降に`_2`、`_3`…を付ける(`used`に足す)。
+
+    Phase 13 では`app/services/uml_sync_service.py`の`_unique_base`だった(Phase 22 で移した)。"""
+    candidate = base
+    suffix = 2
+    while candidate in used:
+        candidate = f"{base}_{suffix}"
+        suffix += 1
+    used.add(candidate)
+    return candidate
