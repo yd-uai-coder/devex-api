@@ -67,7 +67,7 @@ def test_merge_draft_numbers_new_rows_in_order() -> None:
         ("F-01", "auth", "auth"),
         ("F-02", "projects", "projects"),
         ("F-03", "運用", "運用"),
-        ("F-04", "UML図", "UML図"),  # 画面内の処理(Phase 16)も、機能グループは AI の提案
+        ("F-04", "UML図", "UML図"),  # 画面内の処理も、機能グループは AI の提案
     ]
     assert model.groups == ["auth", "projects", "運用", "UML図"]
     assert model.next_number == 5
@@ -168,7 +168,7 @@ def test_validate_warns_duplicate_trigger_and_missing_api() -> None:
 
 
 def test_stages_without_validator_have_no_issues() -> None:
-    # Phase 23 で段階1〜7のすべてに検証がある。登録の無い番号は指摘なし
+    # 段階1〜7のすべてに検証がある。登録の無い番号は指摘なし
     assert set(STAGE_VALIDATORS) == {1, 2, 3, 4, 5, 6, 7}
     assert validate_stage(8, {"anything": 1}, StageSources()) == []
     assert validate_stage(1, None, StageSources()) == []

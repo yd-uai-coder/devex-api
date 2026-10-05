@@ -35,7 +35,7 @@ class GeneratedDocument(Base):
 
     __tablename__ = "generated_documents"
     # 版の番号は(プロジェクト, 種別)の中で一意。生成の二重実行は409と画面のボタンの無効化で
-    # 塞ぐが、それをすり抜けた並行実行もDBで止める(Phase 15、気づき#4)
+    # 塞ぐが、それをすり抜けた並行実行もDBで止める
     __table_args__ = (
         UniqueConstraint(
             "project_id", "doc_type", "version", name="uq_generated_documents_project_type_version"

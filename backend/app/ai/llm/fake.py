@@ -1,4 +1,4 @@
-"""ブラウザ経由のE2Eテスト(Phase 4-4)専用の決定論的LLMスタブ。
+"""ブラウザ経由のE2Eテスト専用の決定論的LLMスタブ。
 
 `tests/fixtures/fake_llm.py`のFakeLLM(pytestが個々のテストでコンストラクタ引数として
 台本を注入する設計)とは別物。こちらは`docker compose`で起動する実プロセスに対して
@@ -46,32 +46,25 @@ from app.detailed_design.structure_drafting import GeneratedModuleRow, ModuleLis
 from app.schemas.generation import HearingCompletionCheck
 from app.uml.generation.schemas import (
     ComponentGenerationOutput,
-    DfdGenerationOutput,
-    ErGenerationOutput,
-    GeneratedColumn,
     GeneratedDataItem,
     GeneratedDataItemField,
     GeneratedDependency,
     GeneratedFlow,
     GeneratedModule,
     GeneratedNode,
-    GeneratedProcess,
-    GeneratedTable,
 )
 
 # ヒアリング完了(is_sufficient=True)と判定するまでに要するHumanMessage数(末尾の判定プロンプト
 # 自身を除く)。「初期ヒアリング入力(intake)1件+実際のチャット発話2件」で3件になる。
-# 当初は単純に「HumanMessageが2件以上」としていたが、実機検証で以下2件の不具合が見つかり
-# 修正した経緯がある(詳細はPhase-4-3.mdの「実機検証で発見した2件の不具合」参照)。
-# (1) chat_service.check_completionは末尾に_COMPLETION_CHECK_PROMPT自身のHumanMessageを
-#     追記するため、これも数えてしまうと実際のチャット発話が0件でも条件を満たしてしまう。
+# chat_service.check_completionは末尾に_COMPLETION_CHECK_PROMPT自身のHumanMessageを
+# 追記するため、これも数えてしまうと実際のチャット発話が0件でも条件を満たしてしまう。
 _TURNS_UNTIL_SUFFICIENT = 4
 
 # doc_generator_service.pyの各doc_type専用プロンプト(_DOC_TYPE_PROMPTS)は、他doc_typeへの
 # 入力参照を「以下の【要件定義書】および【外部設計書】に基づき...」のような角括弧表記で行うため、
 # 単純な「要件定義書」等の裸のラベル文字列でマッチさせると、internal_design/external_design/
 # implementation_plan向けのプロンプト(要件定義書という文字列を必ず含む)が誤って
-# requirementsと判定されてしまう(実機検証で発見、(2)の不具合)。各プロンプトが自分自身の
+# requirementsと判定されてしまう。各プロンプトが自分自身の
 # 出力フォーマットとして持つ「# N. ラベル」という見出し(cross-reference表記には現れない、
 # doc_type固有の文字列)をマッチ対象にすることでこれを避ける。
 _DOC_TYPE_MARKERS: dict[str, str] = {
@@ -87,8 +80,8 @@ _DOC_TYPE_LABELS: dict[str, str] = {
     "implementation_plan": "実装計画書",
 }
 
-# 内部設計書だけは、UML図の生成候補(3.2節のテーブル見出し・処理別データフローのDF見出し)を
-# E2Eでも列挙できるよう、内部設計書プロンプトが指示する固定形式の見出しを含めて返す(Phase 10)。
+# 内部設計書は、内部設計書プロンプトが指示する固定形式の見出し(3.2節のテーブル・処理別データフロー)
+# を含めて返す。
 _INTERNAL_DESIGN_REPLY = (
     "# 内部設計書(E2E Fake)\n\n"
     "## 3.1 技術スタック選定・アーキテクチャ方針\n- api / service / repository の3層構成\n\n"
@@ -103,7 +96,7 @@ _INTERNAL_DESIGN_REPLY = (
 )
 
 # 外部設計書は、詳細設計モードの段階1(機能一覧)がAPI一覧(2.6節)を読むため、外部設計書
-# プロンプトが指示する固定形式の表を含めて返す(Phase 16)。
+# プロンプトが指示する固定形式の表を含めて返す。
 _EXTERNAL_DESIGN_REPLY = (
     "# 外部設計書(E2E Fake)\n\n"
     "## 2.2 画面一覧・画面遷移フロー（概要）\n| 画面ID | 画面名 | 主要な役割 | 優先度 |\n"
@@ -113,7 +106,7 @@ _EXTERNAL_DESIGN_REPLY = (
     "| GET | /api/v1/reservations | 予約の一覧を返す | SCR-001 |\n"
 )
 
-# UML図の生成(Phase 10)で返す固定の構造化出力。記法ごとに、検証(M4)を通る最小の図にする。
+# 構造化出力で返す固定の出力(スキーマの型ごと)。構成図は段階4がそのまま使う。
 _UML_OUTPUTS: dict[type[BaseModel], BaseModel] = {
     ComponentGenerationOutput: ComponentGenerationOutput(
         modules=[
@@ -124,49 +117,9 @@ _UML_OUTPUTS: dict[type[BaseModel], BaseModel] = {
         ],
         dependencies=[GeneratedDependency(id="d1", source_id="m1", target_id="m2")],
     ),
-    ErGenerationOutput: ErGenerationOutput(
-        tables=[
-            GeneratedTable(
-                id="t1",
-                name="reservations",
-                columns=[
-                    GeneratedColumn(
-                        name="id",
-                        type="UUID",
-                        is_primary_key=True,
-                        is_foreign_key=False,
-                        nullable=False,
-                    )
-                ],
-            )
-        ],
-        relations=[],
-    ),
-    DfdGenerationOutput: DfdGenerationOutput(
-        data_items=[
-            GeneratedDataItem(
-                name="予約リクエスト",
-                fields=[GeneratedDataItemField(name="item_id", type="UUID")],
-            )
-        ],
-        processes=[
-            GeneratedProcess(
-                id="p1",
-                name="予約を登録する",
-                description="[E2E Fake] 検証して保存",
-                layer="service",
-            )
-        ],
-        external_entities=[GeneratedNode(id="e1", name="利用者")],
-        data_stores=[GeneratedNode(id="s1", name="reservations")],
-        flows=[
-            GeneratedFlow(id="f1", source_id="e1", target_id="p1", data_item_name="予約リクエスト"),
-            GeneratedFlow(id="f2", source_id="p1", target_id="s1", data_item_name="予約リクエスト"),
-        ],
-    ),
 }
 
-# 詳細設計モードの段階1(機能一覧)の下書き(Phase 16)。_EXTERNAL_DESIGN_REPLY の API 一覧と同じAPI
+# 詳細設計モードの段階1(機能一覧)の下書き。_EXTERNAL_DESIGN_REPLY の API 一覧と同じAPI
 _UML_OUTPUTS[FunctionListGenerationOutput] = FunctionListGenerationOutput(
     functions=[
         GeneratedFunction(
@@ -186,7 +139,7 @@ _UML_OUTPUTS[FunctionListGenerationOutput] = FunctionListGenerationOutput(
     ]
 )
 
-# 詳細設計モードの段階2(データフロー)の下書き(Phase 17)。段階1の下書きの2処理(F-01・F-02、
+# 詳細設計モードの段階2(データフロー)の下書き。段階1の下書きの2処理(F-01・F-02、
 # 機能グループ reservations)に対応する
 _UML_OUTPUTS[ProcessSummaryGenerationOutput] = ProcessSummaryGenerationOutput(
     rows=[
@@ -229,7 +182,7 @@ _UML_OUTPUTS[GroupDfdGenerationOutput] = GroupDfdGenerationOutput(
     ],
 )
 
-# 詳細設計モードの段階3(データモデル)の下書き(Phase 18)。段階2の下書きの DFD のデータストア
+# 詳細設計モードの段階3(データモデル)の下書き。段階2の下書きの DFD のデータストア
 # reservations(F-01 が書き、F-02 が読む)に対応する
 _UML_OUTPUTS[DataModelErOutput] = DataModelErOutput(
     tables=[
@@ -267,7 +220,7 @@ _UML_OUTPUTS[CrudGenerationOutput] = CrudGenerationOutput(
     ]
 )
 
-# 詳細設計モードの段階4(ソフトウェア構造)のモジュール一覧(Phase 19)。構成図は上の
+# 詳細設計モードの段階4(ソフトウェア構造)のモジュール一覧。構成図は上の
 # ComponentGenerationOutput(層 api・service)をそのまま使い、その層にそろえる
 _UML_OUTPUTS[ModuleListGenerationOutput] = ModuleListGenerationOutput(
     modules=[
@@ -298,7 +251,7 @@ _UML_OUTPUTS[ModuleListGenerationOutput] = ModuleListGenerationOutput(
     ]
 )
 
-# 詳細設計モードの段階5(主要処理の手順)の手順(Phase 20)。どの処理にも同じ手順を返す。
+# 詳細設計モードの段階5(主要処理の手順)の手順。どの処理にも同じ手順を返す。
 # 呼び出し先は、上のモジュール一覧のパスにそろえる
 _UML_OUTPUTS[ProcedureGenerationOutput] = ProcedureGenerationOutput(
     reason="[E2E Fake] 予約の重複を防ぐ確認がある",
@@ -351,7 +304,7 @@ _UML_OUTPUTS[ProcedureGenerationOutput] = ProcedureGenerationOutput(
     ],
 )
 
-# 詳細設計モードの段階6(処理ロジックの詳細)の関数の詳細(Phase 21)。どの関数にも同じ詳細を返す
+# 詳細設計モードの段階6(処理ロジックの詳細)の関数の詳細。どの関数にも同じ詳細を返す
 _UML_OUTPUTS[LogicGenerationOutput] = LogicGenerationOutput(
     signature="async def create(self, payload: ReservationCreate) -> Reservation",
     args="payload: 予約リクエスト",
@@ -365,7 +318,7 @@ _UML_OUTPUTS[LogicGenerationOutput] = LogicGenerationOutput(
     ],
 )
 
-# 詳細設計モードの段階7(横断事項と実装計画)の下書き(Phase 23)。段階1の2処理(F-01・F-02)と、
+# 詳細設計モードの段階7(横断事項と実装計画)の下書き。段階1の2処理(F-01・F-02)と、
 # 段階4のモジュール一覧のパスにそろえる
 _UML_OUTPUTS[CrossCuttingGenerationOutput] = CrossCuttingGenerationOutput(
     crosscutting=[
@@ -484,7 +437,7 @@ class E2eFakeLLM:
         if "レビュアー" in system_text:
             return _SELF_DIAGNOSIS_REPLY
         # ヒアリング対話(_HEARING_SYSTEM_PROMPT、_OPENING_TURN_PROMPT共通)への応答。
-        # 内容の質はE2Eの検証対象ではない(UI遷移・状態遷移の検証がPhase 4-4の狙い)ため、
+        # 内容の質はE2Eの検証対象ではない(UI遷移・状態遷移を検証する)ため、
         # 固定文言で十分とする。
         return _HEARING_REPLY
 

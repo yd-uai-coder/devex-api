@@ -2,10 +2,10 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-# UML設計図パイプラインが扱う図記法(Stage 3初期実装対象はcomponent/er/dfdの3種。
+# UML設計図パイプラインが扱う図記法(component/er/dfdの3種。
 NotationType = Literal["component", "er", "dfd"]
 
-# 設計ビュー(uml_diagrams.view)。docs/internal_design.md 3.3節③「図↔文書対応」(D5)の
+# 設計ビュー(uml_diagrams.view)。docs/internal_design.md 3.3節③「図↔文書対応」の
 # 対応表をそのまま定数化したもの。notationからviewを一意に導出できるため、
 # 呼び出し側(サービス層)にviewを個別入力させず、この対応表から自動的に決める。
 NOTATION_TO_VIEW: dict[NotationType, str] = {

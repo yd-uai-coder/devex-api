@@ -4,7 +4,7 @@
 #
 # backendコンテナにE2E_FAKE_LLM=trueだけを上書きし、それ以外(DB接続・ポート等)は
 # docker-compose.ymlのまま使う。devex-ui(別リポジトリ)のPlaywright E2Eテスト
-# (textbook/samples/frontend/playwright.config.ts)がこのコマンドをwebServerとして
+# (devex-ui の playwright.config.ts)がこのコマンドをwebServerとして
 # 起動する想定。GOOGLE_API_KEY未設定のままでも、実際のGemini APIを一切呼ばずに
 # 決定論的に動作する(app/ai/llm/fake.py参照)。
 #

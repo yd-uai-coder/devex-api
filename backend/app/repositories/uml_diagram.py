@@ -6,8 +6,9 @@ from app.repositories.base import CRUDRepository
 
 class UmlDiagramRepository(CRUDRepository[UmlDiagram]):
     """UmlDiagramモデルに対する永続化操作をまとめるリポジトリ。楽観ロックの版チェックや
-    AI生成の受け付け・上書きといったビジネスロジックはサービス層
-    (app/services/uml_diagram_service.py・uml_generation_service.py)が担い、ここでは純粋な永続化操作のみを提供する。"""
+    段階の生成による上書きといったビジネスロジックはサービス層
+    (app/services/uml_diagram_service.py・design_stage_generation_service.py)が担い、
+    ここでは純粋な永続化操作のみを提供する。"""
 
     model = UmlDiagram
 
@@ -57,11 +58,3 @@ class UmlDiagramRepository(CRUDRepository[UmlDiagram]):
     ) -> UmlDiagram | None:
         """(project_id, notation, subject)で図を1件取得する(再生成時の上書き対象の検索)。"""
         return await self.find_one(project_id=project_id, notation=notation, subject=subject)
-
-    async def list_generating(self, project_id: uuid.UUID) -> list[UmlDiagram]:
-        """指定プロジェクトのAI生成中の図を返す(止まった生成の回収用)。"""
-        return await self.list_all(project_id=project_id, generation_status="generating")
-
-    async def has_generating(self, project_id: uuid.UUID) -> bool:
-        """指定プロジェクトにAI生成中の図があるかどうか(生成はプロジェクトごとに1本に限る)。"""
-        return await self.count(project_id=project_id, generation_status="generating") > 0

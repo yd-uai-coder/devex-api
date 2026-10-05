@@ -356,7 +356,7 @@ def test_render_transcript_excludes_others_sender() -> None:
 
 
 def test_internal_design_prompt_asks_for_fixed_format_headings_for_uml_generation() -> None:
-    """Phase 10: UML図の生成候補を決定的に列挙できるよう、内部設計書プロンプトが
+    """内部設計書プロンプトが
     テーブル見出しと処理別データフロー(DF見出し)の固定形式を指示していること。"""
     from app.services.doc_generator_service import _DOC_TYPE_PROMPTS
 

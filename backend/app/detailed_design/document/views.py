@@ -7,11 +7,11 @@ md と HTML は同じ表を出すので、表の中身はここで1回だけ導�
 
 - 手順番号・手順ID は`number_steps`・`step_id`(段階5の画面と同じ規則)。
 - L-ID は段階6の並び順から`logic_id`。05↔06 の紐づけは、手順の(呼び出し先, 関数)と段階6の
-  (モジュール, 関数)の一致から`logic_key`で導く(Phase 20 の決定。デモの`logic`欄は使わない)。
+  (モジュール, 関数)の一致から`logic_key`で導く。
 - CRUD 図の記号は、DFD の線(`dfd_accesses`)から決まる部分と人が確定した部分を分けて見せる
-  (Phase 18 からの持ち越し。出力見本 appendix/detailed-design-devex の3分類)。
+  (3分類)。
 - 実装計画の「処理の割り当て」は、処理ごとに、その処理を書いたマイルストーンの M-ID を導く
-  (Phase 23。計画の漏れが表で見える)。
+  。
 """
 
 from collections.abc import Iterable, Mapping, Sequence
@@ -150,7 +150,7 @@ def involvement(procedures: ProcedureModel, modules: ModuleListModel | None) -> 
 
 def data_item_usage(dfd_models: Sequence[Mapping[str, Any]]) -> dict[str, list[str]]:
     """データ項目の id → それを受け渡す処理の処理ID(DFD の線の端の処理の箱。現れた順)。
-    DFD の処理の箱の id は段階1の処理ID(Phase 17 の決定)。"""
+    DFD の処理の箱の id は段階1の処理ID。"""
     usage: dict[str, list[str]] = {}
     for model in dfd_models:
         processes = {
@@ -224,7 +224,7 @@ def _mark(op: str, function_id: str, table: str, accesses: set[tuple[str, str, s
 
 
 # ---------------------------------------------------------------------------
-# 実装計画: 処理の割り当て(Phase 23)
+# 実装計画: 処理の割り当て
 # ---------------------------------------------------------------------------
 
 

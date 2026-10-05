@@ -108,8 +108,7 @@ def as_llm_error(exc: Exception) -> Exception:
 
 def _is_quota_error(exc: Exception) -> bool:
     """例外が外部APIのクォータ超過を示すものかどうかを判定する。Gemini APIの429と、Tavily(検索)の
-    利用上限超過の2つ(Tavilyは汎用チャットのワークフローが使う。Phase 15で汎用チャットの独自の
-    再試行をこの共通の部品へ寄せたときに足した)。"""
+    利用上限超過の2つ(Tavilyは汎用チャットのワークフローが使う)。"""
     try:
         from google.genai.errors import APIError as GoogleAPIError
     except ImportError:
@@ -135,7 +134,7 @@ def _is_quota_error(exc: Exception) -> bool:
 def _is_input_token_limit_error(exc: Exception) -> bool:
     """例外がGemini APIの「入力トークン数が上限を超えた」(400相当)を示すものかどうかを判定する。
     Gemini APIはこの場合に専用のエラーコードを持たず、400とメッセージで伝えるため、
-    メッセージに"token"を含む400をトークン上限超過とみなす(UML図のAI生成・Phase 10で追加)。"""
+    メッセージに"token"を含む400をトークン上限超過とみなす。"""
     try:
         from google.genai.errors import APIError as GoogleAPIError
     except ImportError:

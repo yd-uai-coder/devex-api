@@ -352,8 +352,7 @@ class DocGeneratorService:
         """指定ドキュメントを1件取得する(他プロジェクトのものは404扱い)。
         GeneratedDocumentRepositoryはProjectRepositoryのような所有権スコープの
         get_by_idを持たないため、その意味づけ(見つからなければNotFound)をここに集約する
-        (以前はルーター層に手書きされていた。ルーターがRepositoryを直接参照しない方針に
-        統一するため、サービス層へ移した)。"""
+        (ルーターがRepositoryを直接参照しないため)。"""
         document = await self._documents.get_by_id(doc_id)
         if document is None or document.project_id != project.id:
             raise DocumentNotFoundError(f"Document {doc_id} not found")
@@ -367,11 +366,7 @@ class DocGeneratorService:
         self, project_id: uuid.UUID, doc_type: str, version: int
     ) -> GeneratedDocument:
         """指定バージョンを表示中(is_current)に切り替える。バージョン番号は増やさず、新しい行も
-        作らない(既存版の内容も書き換えない)。指定バージョンが存在しなければDocumentNotFoundError。
-
-        既存版の内容を書き換える例外は1つだけ: 承認済みのUML図を内部設計書へ反映するとき
-        (`GeneratedDocumentRepository.update_content_in_place`、D1案A)。復元した版には、その版を
-        表示していた当時に反映した図のアンカーが残っている(陳腐化の判定はその`v=`で行う)。"""
+        作らない(既存版の内容も書き換えない)。指定バージョンが存在しなければDocumentNotFoundError。"""
         restored = await self._documents.set_current(
             project_id=project_id, doc_type=doc_type, version=version
         )

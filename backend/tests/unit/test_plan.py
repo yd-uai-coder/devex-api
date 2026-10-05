@@ -135,7 +135,7 @@ def test_validate_rejects_unknown_function():
 
 
 def test_validate_does_not_check_files():
-    # ファイルの欄は例なので、モジュール一覧に無い環境のファイルも指摘しない(Phase 23 の画面確認後)
+    # ファイルの欄は例なので、モジュール一覧に無い環境のファイルも指摘しない
     assert _codes(plan_model(module="Dockerfile")) == []
     assert _codes(plan_model(module="app/services/unknown.py")) == []
 

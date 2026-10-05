@@ -1,4 +1,4 @@
-"""設計書の生成の二重実行防止(気づき#4)・失敗時の rollback(#3)・止まった生成の回収(#5)のテスト。
+"""設計書の生成の二重実行防止・失敗時の rollback・止まった生成の回収のテスト。
 
 SUT: DocGeneratorService(request_generation / generate / recover_if_stale)と、それを呼ぶルート・
      ProjectService.get_detail

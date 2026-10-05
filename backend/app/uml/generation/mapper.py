@@ -18,17 +18,8 @@ from app.uml.domain import (
     DfdFlow,
     DfdProcess,
     DfdSemanticModel,
-    ErColumn,
-    ErElement,
-    ErRelation,
-    ErSemanticModel,
 )
-from app.uml.generation.schemas import (
-    ComponentGenerationOutput,
-    DfdGenerationOutput,
-    ErGenerationOutput,
-    GenerationOutput,
-)
+from app.uml.generation.schemas import ComponentGenerationOutput, DfdGenerationOutput
 
 
 def to_component(output: ComponentGenerationOutput) -> ComponentSemanticModel:
@@ -40,25 +31,6 @@ def to_component(output: ComponentGenerationOutput) -> ComponentSemanticModel:
         relations=[
             ComponentRelation(id=d.id, source_id=d.source_id, target_id=d.target_id)
             for d in output.dependencies
-        ],
-    )
-
-
-def to_er(output: ErGenerationOutput) -> ErSemanticModel:
-    return ErSemanticModel(
-        elements=[
-            ErElement(
-                id=t.id,
-                name=t.name,
-                columns=[ErColumn(**c.model_dump()) for c in t.columns],
-            )
-            for t in output.tables
-        ],
-        relations=[
-            ErRelation(
-                id=r.id, source_id=r.source_id, target_id=r.target_id, relation_type=r.relation_type
-            )
-            for r in output.relations
         ],
     )
 
@@ -99,15 +71,3 @@ def to_dfd(
             for f in output.flows
         ],
     )
-
-
-def to_semantic_model(
-    output: GenerationOutput,
-    data_item_ids_by_name: Mapping[str, uuid.UUID] | None = None,
-) -> ComponentSemanticModel | ErSemanticModel | DfdSemanticModel:
-    """出力スキーマの型に応じて、対応する記法の意味モデルへ変換する。"""
-    if isinstance(output, ComponentGenerationOutput):
-        return to_component(output)
-    if isinstance(output, ErGenerationOutput):
-        return to_er(output)
-    return to_dfd(output, data_item_ids_by_name or {})

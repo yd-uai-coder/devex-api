@@ -3,7 +3,7 @@
 出自: 別プロジェクトの自作図生成エンジンから移植。
 
 描画用の見た目属性(色・破線・矢印の向き等)は`app/uml/export/`
-(draw.io Generator/SVG出力、Phase 12)の関心事であり、レイアウト(座標計算)自体には
+(draw.io Generator/SVG出力)の関心事であり、レイアウト(座標計算)自体には
 不要なため移植しない。`kind`はノードのサイズ計算・ポート位置計算(`geometry.py`)に影響するため残す。
 """
 
@@ -174,12 +174,12 @@ class LayoutEdgeGeometry(BaseModel):
 
     `points`が空リストのときは「折れ点なし」を意味する。レビュー画面でユーザーが端点の
     ノードを手で動かした辺は、エンジンが計算した経路が合わなくなるため折れ点を捨て、
-    描画を React Flow の smoothstep / draw.io の `orthogonalEdgeStyle` に任せる(D2)。
+    描画を React Flow の smoothstep / draw.io の `orthogonalEdgeStyle` に任せる。
     """
 
     points: list[tuple[float, float]]
     # ラベル(ERの多重度・DFDのデータ項目名)の中心座標。ラベルの無い辺、配置を計算した後に
-    # 端点のノードを手で動かした辺(points=[])、Phase 12より前に計算した配置ではNone
+    # 端点のノードを手で動かした辺(points=[])、ラベル位置を持たない古い配置ではNone
     label_pos: tuple[float, float] | None = None
 
 

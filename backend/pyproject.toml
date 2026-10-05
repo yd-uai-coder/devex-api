@@ -89,9 +89,9 @@ typeCheckingMode = "standard"
 #   - tests/unit/test_ai_graph_nodes.py: 同上(ノードをテストから直接呼ぶため部分辞書を渡す)
 #   - app/repositories/conversation.py : owner スコープの get_by_id override(設計上の割り切り)
 #   - app/repositories/project.py      : 同上
-#   - app/repositories/data_item.py    : 同上(Phase 8、project_idスコープ)
-#   - app/repositories/uml_diagram.py  : 同上(Phase 8、project_idスコープ)
-#   - app/repositories/uml_generation_run.py : 同上(Phase 10、project_idスコープ)
+#   - app/repositories/data_item.py    : 同上
+#   - app/repositories/uml_diagram.py  : 同上
+#   - app/repositories/uml_generation_run.py : 同上
 #   - tests/unit/test_auth_service.py  : テスト用 FakeRedis の型付け未整備
 ignore = [
     "app/ai/graph/nodes.py",

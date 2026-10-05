@@ -27,7 +27,7 @@ from app.uml.domain.status import (
 
 # 意味モデルのdiscriminated union。`notation`フィールドの値で3notationのいずれかへ解決する。
 # app/schemas/uml_diagram.py(APIスキーマ)・app/uml/validation(検証)双方がこの型をそのまま再利用する
-# ── 既存コードベースのJSONB(project.intake等)は生dictだが、Phase 8のsemantic_modelは
+# ── 既存コードベースのJSONB(project.intake等)は生dictだが、semantic_modelは
 # ここで定義した型付きUnionをAPI境界・検証層で共通に使う(pyproject.tomlにjsonschema等の
 # 別ライブラリが無いため、Pydantic v2ネイティブの機構だけで構造検証を完結させる)。
 SemanticModel = Annotated[
@@ -40,8 +40,7 @@ SemanticModelAdapter: TypeAdapter[
 ] = TypeAdapter(SemanticModel)
 
 # notation別の空の意味モデルを組み立てるためのファクトリ。
-# AI生成(app/services/uml_generation_service.py)が、生成を受け付けた直後(生成中)の
-# 新規の図に、まだ中身の無い空モデルを持たせる際に使う。
+# 要素・関係が空の図を作るときに使う。
 _AnySemanticModel = ComponentSemanticModel | ErSemanticModel | DfdSemanticModel
 _EMPTY_MODEL_FACTORIES: dict[NotationType, type[_AnySemanticModel]] = {
     "component": ComponentSemanticModel,

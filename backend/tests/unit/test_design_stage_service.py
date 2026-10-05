@@ -153,7 +153,7 @@ def test_design_stage_routes_are_registered() -> None:
 
 
 async def test_approve_rejects_stage_with_validation_errors(db_session: AsyncSession) -> None:
-    """段階ごとの検証(Phase 16): エラーがあれば承認できず、読み取りに指摘が載る。"""
+    """段階ごとの検証: エラーがあれば承認できず、読み取りに指摘が載る。"""
     project = await create_detailed_project(db_session)
     service = DesignStageService(db_session)
     saved = await service.save(
@@ -170,7 +170,7 @@ async def test_approve_rejects_stage_with_validation_errors(db_session: AsyncSes
 
 
 async def test_generating_stage_cannot_be_saved_or_approved(db_session: AsyncSession) -> None:
-    """生成中の段階(Phase 16)は、AIの結果で人の編集を上書きしないよう保存・承認を断る。"""
+    """生成中の段階は、AIの結果で人の編集を上書きしないよう保存・承認を断る。"""
     project = await create_detailed_project(db_session)
     service = DesignStageService(db_session)
     await service.save(project, stage=1, expected_version=None, model=MODEL)

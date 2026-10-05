@@ -40,7 +40,7 @@ def test_to_drawio_writes_nodes_and_routed_edge() -> None:
 
 
 def test_to_drawio_leaves_moved_edges_to_orthogonal_edge_style() -> None:
-    """端点のノードを手で動かした辺(points=[])は、出入口も折れ点も書かない(D2)。"""
+    """端点のノードを手で動かした辺(points=[])は、出入口も折れ点も書かない。"""
     model = _model()
     layout = LayoutModel.model_validate(
         {

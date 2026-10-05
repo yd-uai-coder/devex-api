@@ -2,7 +2,7 @@
 
 ブラウザの E2E(devex-ui の `e2e/detailed-design-flow.spec.ts`)と同じ順に、偽LLM で段階1〜7を
 生成し、図を配置して承認し、段階を承認して、zip を作る。偽LLM の出力が本物の検証(段階の
-`validate_stage`・図の M4)を通ることを、ブラウザを使わずに固定する。E2E が落ちたとき、原因が
+`validate_stage`・図の構造検証)を通ることを、ブラウザを使わずに固定する。E2E が落ちたとき、原因が
 画面にあるのか偽LLM の出力にあるのかを、このテストで切り分けられる。
 
 SUT: E2eFakeLLM の構造化出力(app/ai/llm/fake.py)と、それを受ける生成・検証・承認・出力の経路

@@ -1,4 +1,4 @@
-"""ヒアリングチャットのSSEで、途中の失敗を`event: error`で伝えること(気づき#2)のテスト。
+"""ヒアリングチャットのSSEで、途中の失敗を`event: error`で伝えることのテスト。
 
 SUT: send_hearing_message(ルート)と llm_retry.as_llm_error
 ドライバ: 各テスト関数(StreamingResponseの本体を最後まで読む)

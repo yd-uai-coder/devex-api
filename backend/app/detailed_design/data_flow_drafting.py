@@ -8,7 +8,7 @@
 
 DFD の処理の箱は段階1の処理IDにする(詳細設計書の02章で、図の箱と01章の行が同じIDで対応する
 ように)。AIには`function_id`で処理を指させ、名前と ID はここで機能一覧から決める。そのうえで
-ステージ3の出力スキーマ`DfdGenerationOutput`の形に組み替えるので、データ項目の名前の解決と
+UML図の出力スキーマ`DfdGenerationOutput`の形に組み替えるので、データ項目の名前の解決と
 意味モデルへの変換は`app/uml/generation/mapper.py`をそのまま使える。
 """
 
@@ -159,7 +159,7 @@ def build_group_dfd_messages(
 def to_dfd_output(
     output: GroupDfdGenerationOutput, functions: Sequence[FunctionRow]
 ) -> DfdGenerationOutput:
-    """グループの DFD の出力を、ステージ3の`DfdGenerationOutput`に組み替える。
+    """グループの DFD の出力を、`DfdGenerationOutput`に組み替える。
 
     - 処理の箱の ID は処理ID、名前は「F-01 名称」にする(名前は機能一覧から取る)。
     - グループに無い処理ID・同じ処理IDの2つ目の箱は捨て、それを端に持つフローも捨てる

@@ -14,7 +14,7 @@ class DesignStageRepository(CRUDRepository[DesignStage]):
         self, *, project_id: uuid.UUID, stage: int, model: dict | None, status: str = "draft"
     ) -> DesignStage:
         """新しい段階の行を追加し、flushしてIDを確定させた状態で返す(versionは1)。
-        `model`がNoneの行は、AIの下書きの生成を受け付けたばかりの段階(Phase 16)。"""
+        `model`がNoneの行は、AIの下書きの生成を受け付けたばかりの段階。"""
         row = DesignStage(project_id=project_id, stage=stage, model=model, status=status)
         self._session.add(row)
         await self._session.flush()

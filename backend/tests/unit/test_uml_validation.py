@@ -120,7 +120,7 @@ def test_validate_dfd_rules_warns_about_unreferenced_data_item() -> None:
 
 
 def test_validate_dfd_rules_does_not_warn_when_other_dfd_references_item() -> None:
-    """Phase 10: DFDは処理ごとに1枚なので、未参照の判定はプロジェクト内の全DFDを横断する。"""
+    """DFDは処理ごとに1枚なので、未参照の判定はプロジェクト内の全DFDを横断する。"""
     data_item_id = uuid.uuid4()
     used_elsewhere_id = uuid.uuid4()
     elements, flows = _dfd_fixture(data_item_id)

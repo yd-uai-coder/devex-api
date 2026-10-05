@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, status
+from fastapi import APIRouter, status
 from fastapi.responses import Response
 
 from app.api.deps import CurrentProjectDep, SessionDep
@@ -10,23 +10,9 @@ from app.schemas.uml_diagram import (
     UmlDiagramApprove,
     UmlDiagramRead,
     UmlDiagramUpdate,
-    UmlEmbedRead,
-    UmlReflectRead,
-)
-from app.schemas.uml_generation import (
-    DfdSubjectRead,
-    UmlCandidatesRead,
-    UmlGenerateRequest,
-    UmlGenerationRunRead,
 )
 from app.services.data_item_service import DataItemService
 from app.services.uml_diagram_service import ExportFormat, UmlDiagramService
-from app.services.uml_generation_service import (
-    SubjectRequest,
-    UmlGenerationService,
-    run_uml_generation,
-)
-from app.services.uml_sync_service import UmlSyncService
 from app.uml.validation import ValidationResult
 
 # project_idをprefixに含める(既存のprojects.pyはエンドポイント側にproject_idを書く方式だが、
@@ -36,58 +22,14 @@ from app.uml.validation import ValidationResult
 router = APIRouter(prefix="/projects/{project_id}/uml", tags=["uml"])
 
 
-@router.post("/diagrams", response_model=UmlGenerationRunRead, status_code=status.HTTP_202_ACCEPTED)
-async def generate_diagrams(
-    payload: UmlGenerateRequest,
-    session: SessionDep,
-    current_project: CurrentProjectDep,
-    background_tasks: BackgroundTasks,
-) -> UmlGenerationRunRead:
-    """UML図のAI生成(M1)を受け付け、バックグラウンドで実行する。対象の図は`generating`になり、
-    完了すると`completed`/`failed`になる(FEは`GET /diagrams`をポーリングする)。同じ対象の図が
-    既にあれば上書きする。戻り値は生成履歴(実行中)で、止まった理由は`GET /generation-runs`で
-    確認できる。background taskにはproject_id・run_idの値だけを渡す
-    (doc生成の`POST /projects/{id}/generate`と同じ理由)。"""
-    run = await UmlGenerationService(session).request_generation(
-        project_id=current_project.id,
-        notation=payload.notation,
-        subjects=[SubjectRequest(subject=s.subject, tables=s.tables) for s in payload.subjects],
-    )
-    background_tasks.add_task(run_uml_generation, current_project.id, run.id)
-    return UmlGenerationRunRead.model_validate(run)
-
-
 @router.get("/diagrams", response_model=list[UmlDiagramRead])
 async def list_diagrams(
     session: SessionDep, current_project: CurrentProjectDep
 ) -> list[UmlDiagramRead]:
-    """プロジェクトのUML図一覧を取得する(更新日時の降順)。画面は生成の完了をこの一覧の
-    ポーリングで待つため、止まった生成(15分超)はここで回収してから返す。"""
-    await UmlGenerationService(session).recover_stale(current_project.id)
+    """プロジェクトのUML図一覧を取得する(更新日時の降順)。詳細設計モードの段階2〜4が、
+    段階の生成で作った図(DFD・ER・構成図)を探すのに使う。"""
     diagrams = await UmlDiagramService(session).list_for_project(current_project.id)
     return [UmlDiagramRead.model_validate(d) for d in diagrams]
-
-
-@router.get("/candidates", response_model=UmlCandidatesRead)
-async def list_generation_candidates(
-    session: SessionDep, current_project: CurrentProjectDep
-) -> UmlCandidatesRead:
-    """生成対象の候補(DFDの処理・ERのテーブル)を、内部設計書の見出しから列挙する。"""
-    candidates = await UmlGenerationService(session).list_candidates(current_project.id)
-    return UmlCandidatesRead(
-        internal_design_version=candidates.internal_design_version,
-        dfd_subjects=[DfdSubjectRead(code=s.code, title=s.title) for s in candidates.dfd_subjects],
-        er_tables=candidates.er_tables,
-    )
-
-
-@router.get("/generation-runs", response_model=list[UmlGenerationRunRead])
-async def list_generation_runs(
-    session: SessionDep, current_project: CurrentProjectDep
-) -> list[UmlGenerationRunRead]:
-    """UML図のAI生成の履歴を新しい順に取得する(止まった理由と再度の生成指示が必要な旨を含む)。"""
-    runs = await UmlGenerationService(session).list_runs(current_project.id)
-    return [UmlGenerationRunRead.model_validate(r) for r in runs]
 
 
 @router.get("/diagrams/{diagram_id}", response_model=UmlDiagramRead)
@@ -133,8 +75,8 @@ async def validate_diagram(
 async def compute_diagram_layout(
     diagram_id: uuid.UUID, session: SessionDep, current_project: CurrentProjectDep
 ) -> UmlDiagramRead:
-    """UML図の自動レイアウト(M6)を実行し、`layout_model`を保存して返す。
-    要素数上限超過・M4構造検証エラーの場合は400(実行前チェック、Phase 9)。"""
+    """UML図の自動レイアウトを実行し、`layout_model`を保存して返す。
+    要素数上限超過・構造検証エラーの場合は400(実行前チェック)。"""
     diagram = await UmlDiagramService(session).compute_layout(
         project_id=current_project.id, diagram_id=diagram_id
     )
@@ -148,7 +90,7 @@ async def approve_diagram(
     session: SessionDep,
     current_project: CurrentProjectDep,
 ) -> UmlDiagramRead:
-    """UML図を承認する(M7)。versionの不一致・承認できない状態は409、
+    """UML図を承認する。versionの不一致・承認できない状態は409、
     配置が無い・検証エラーがある場合は400。"""
     diagram = await UmlDiagramService(session).approve(
         project_id=current_project.id, diagram_id=diagram_id, expected_version=payload.version
@@ -176,7 +118,7 @@ async def _export(
 async def export_diagram_drawio(
     diagram_id: uuid.UUID, session: SessionDep, current_project: CurrentProjectDep
 ) -> Response:
-    """承認済みのUML図を.drawioとしてダウンロードする(M8)。承認されていなければ409。
+    """承認済みのUML図を.drawioとしてダウンロードする。承認されていなければ409。
     出力に成功すると状態が`exported`になる。"""
     return await _export(diagram_id, "drawio", session, current_project)
 
@@ -185,55 +127,8 @@ async def export_diagram_drawio(
 async def export_diagram_svg(
     diagram_id: uuid.UUID, session: SessionDep, current_project: CurrentProjectDep
 ) -> Response:
-    """承認済みのUML図をSVGとしてダウンロードする(M8。draw.ioと同じエンジンで書き出す)。"""
+    """承認済みのUML図をSVGとしてダウンロードする(draw.ioと同じエンジンで書き出す)。"""
     return await _export(diagram_id, "svg", session, current_project)
-
-
-@router.post("/reflect", response_model=UmlReflectRead)
-async def reflect_diagrams(
-    session: SessionDep, current_project: CurrentProjectDep
-) -> UmlReflectRead:
-    """承認済みの図すべてを、内部設計書の表示中の版へ反映し直す(M9a)。文書の再生成・復元で
-    アンカーが消えた場合に使う。版は増やさない(D1案A)。内部設計書が無ければ404。"""
-    reflected = await UmlSyncService(session).reflect_all(current_project.id)
-    return UmlReflectRead(reflected=reflected)
-
-
-@router.get("/embeds", response_model=list[UmlEmbedRead])
-async def list_embeds(
-    session: SessionDep, current_project: CurrentProjectDep
-) -> list[UmlEmbedRead]:
-    """文書のプレビューに差し込む図(承認済みの図のSVG)と、図と文書の食い違いを返す。
-    状態は変えない(プレビューで見ただけでは`exported`にしない)。"""
-    embeds = await UmlSyncService(session).list_embeds(current_project.id)
-    return [
-        UmlEmbedRead.model_validate(
-            {
-                "diagram_id": embed.diagram.id,
-                "notation": embed.diagram.notation,
-                "subject": embed.diagram.subject,
-                "title": embed.title,
-                "status": embed.diagram.status,
-                "version": embed.diagram.version,
-                "source_outdated": embed.sync_state.source_outdated,
-                "doc_state": embed.sync_state.doc_state,
-                "svg": embed.svg,
-            }
-        )
-        for embed in embeds
-    ]
-
-
-@router.get("/bundle")
-async def download_bundle(session: SessionDep, current_project: CurrentProjectDep) -> Response:
-    """内部設計書のmdと、反映済みの図(SVG・draw.io)をzipでダウンロードする(D8)。
-    zipに入れた図は`exported`になる。内部設計書が無ければ404。"""
-    bundle = await UmlSyncService(session).bundle(current_project.id)
-    return Response(
-        content=bundle.content,
-        media_type=bundle.media_type,
-        headers={"Content-Disposition": content_disposition(bundle.filename)},
-    )
 
 
 @router.get("/data-items", response_model=list[DataItemRead])

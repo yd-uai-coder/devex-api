@@ -3,7 +3,7 @@ from pydantic import BaseModel
 
 class ValidationIssue(BaseModel):
     """バリデーション結果1件分。`element_id`は問題箇所(要素または関係のid)。
-    診断8の方針どおり、機械的に検証できるLLM出力の誤りは検出するが、
+    機械的に検証できるLLM出力の誤りは検出するが、
     重大度(エラー/警告)は呼び出し側(app/uml/validation/__init__.pyのvalidate_diagram)が
     どちらのリストに積むかで表現する。"""
 
@@ -14,7 +14,7 @@ class ValidationIssue(BaseModel):
 
 class ValidationResult(BaseModel):
     """`POST .../uml/diagrams/{id}/validate`の応答本体。例外は投げず、常に200でこの形を返す
-    (承認可否の判定はPhase 12が`errors`の有無を見て行う。Phase 8時点では結果を返すだけ)。"""
+    (承認可否は、承認の処理が`errors`の有無を見て判定する)。"""
 
     errors: list[ValidationIssue] = []
     warnings: list[ValidationIssue] = []

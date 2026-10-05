@@ -22,11 +22,11 @@ class UmlDiagram(Base):
     (既存のproject.intake等と同じ「ORMは生dict、型検証はPydantic境界で行う」方針を踏襲)。
 
     `version`は楽観ロック用(app/repositories/generated_document.pyのversionとは意味が異なる
-    新規パターン。既存コードベースに前例が無いためPhase 8で新設する。PUT時にリクエストの
+    もの。PUT時にリクエストの
     versionとDB上のversionが一致しない場合はDiagramVersionConflictError(409)にする)。
 
-    親子/階層(parent_diagram_id・level)は持たない。DFDは「APIエンドポイント/バッチごとに1枚」の
-    フラットな構成に確定した(Phase 10)ため、「上位図と下位図の境界フローが一致する」規則は撤回した。
+    親子/階層(parent_diagram_id・level)は持たない。DFDは処理(機能グループ)ごとのフラットな構成で、
+    「上位図と下位図の境界フローが一致する」規則は持たない。
 
     `subject`は同じ記法の中で図を識別するキー(component: ''、ER: 全体なら''・部分図なら
     グループ名、DFD: 処理名)。`(project_id, notation, subject)`で一意にし、再生成は同じ行を

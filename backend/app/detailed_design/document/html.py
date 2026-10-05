@@ -12,7 +12,7 @@ docs/external_design.md 2.7節「詳細設計書の出力」。HTML は読むた
 出力エンジン(app/uml/export/svg.py)が書いたもので、要素の名前などの文字はエンジンの中で
 エスケープ済みのため(ここでもう一度エスケープすると、図ではなく SVG の文字列が表示される)。
 
-段階7の実装計画は、別の HTML(`to_plan_html`)にする(Phase 23)。CSS は詳細設計書と同じものを使う。
+段階7の実装計画は、別の HTML(`to_plan_html`)にする。CSS は詳細設計書と同じものを使う。
 """
 
 from collections.abc import Sequence

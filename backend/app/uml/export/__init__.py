@@ -1,4 +1,4 @@
-"""承認済みのUML図をdraw.io(.drawio)とSVGに書き出す(M8。決定的、AI非依存)。
+"""承認済みのUML図をdraw.io(.drawio)とSVGに書き出す(決定的、AI非依存)。
 
 `build_render`で意味モデル+配置+辺ラベルから描画用の中間表現を1回だけ組み立て、
 `to_svg`/`to_drawio`が同じ中間表現からそれぞれの形式に書き出す。I/Oを持たない純粋な

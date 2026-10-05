@@ -107,7 +107,7 @@ def test_system_prompts_name_default_topics_and_end_with_naming_rules():
     assert all(topic in CROSSCUTTING_SYSTEM_PROMPT for topic in CROSSCUTTING_TOPICS)
     assert CROSSCUTTING_SYSTEM_PROMPT.endswith(NAMING_RULES)
     assert PLAN_SYSTEM_PROMPT.endswith(NAMING_RULES)
-    # ファイルの欄は例で、環境・設定のファイルも書ける(Phase 23 の画面確認後)
+    # ファイルの欄は例で、環境・設定のファイルも書ける
     assert "Dockerfile" in PLAN_SYSTEM_PROMPT
 
 

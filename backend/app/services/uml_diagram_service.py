@@ -23,7 +23,6 @@ from app.services.errors import (
     UmlGenerationInProgressError,
     UmlLayoutRequiredError,
 )
-from app.services.uml_sync_service import UmlSyncService
 from app.uml.domain import (
     STATUS_AFTER_APPROVE,
     STATUS_AFTER_EDIT,
@@ -61,7 +60,8 @@ class ExportedFile:
 
 class UmlDiagramService:
     """UML設計図(component/er/dfd)に対するユースケース(一覧・取得・更新・検証・レイアウト・承認)を
-    担当するサービス。AI生成(M1)はapp/services/uml_generation_service.pyが担う
+    担当するサービス。詳細設計モードの段階2〜4の図(DFD・ER・構成図)の編集・承認・出力に使う。
+    図の AI 生成は段階の生成(app/services/design_stage_generation_service.py)が担う。
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -69,7 +69,6 @@ class UmlDiagramService:
         self._session = session
         self._diagrams = UmlDiagramRepository(session)
         self._data_items = DataItemRepository(session)
-        self._sync = UmlSyncService(session)
 
     async def list_for_project(self, project_id: uuid.UUID) -> list[UmlDiagram]:
         """指定プロジェクトのUML図一覧を取得する。"""
@@ -122,7 +121,7 @@ class UmlDiagramService:
             diagram.layout_model = reconcile_layout(base_layout, semantic_model).model_dump(
                 mode="json"
             )
-        # 承認済みの図を保存したら承認をやり直す(M7。座標だけの保存も含む)
+        # 承認済みの図を保存したら承認をやり直す(座標だけの保存も含む)
         diagram.status = STATUS_AFTER_EDIT
         diagram.version += 1
         await self._reopen_stage(diagram)
@@ -143,12 +142,12 @@ class UmlDiagramService:
         return await self._validate_model(diagram, model)
 
     async def compute_layout(self, *, project_id: uuid.UUID, diagram_id: uuid.UUID) -> UmlDiagram:
-        """UML図の自動レイアウト(M6)を実行し、`layout_model`を保存する。
+        """UML図の自動レイアウトを実行し、`layout_model`を保存する。
 
         レイアウトエンジン(`app.uml.layout`)を実行する前に2つの事前チェックを行う
-        (Phase-7-4.md「Phase 9への申し送り」#1・#2): (1) 要素数が`MAX_ELEMENTS`
+        : (1) 要素数が`MAX_ELEMENTS`
         (`app.uml.validation.structural`と共有する上限、目安30)を超える場合は
-        `LayoutNodeLimitExceededError`(診断3「上限超過の検証エラー化」)。(2) M4構造検証
+        `LayoutNodeLimitExceededError`。(2) 構造検証
         (ID重複・参照切れ等)を通らない場合は`LayoutValidationFailedError`
         ── 重複ID・未定義ノード参照は、レイアウトエンジン内でassertせず
         この事前検証に一本化する(レイアウトエンジン単体はもう防御しない)。
@@ -178,7 +177,7 @@ class UmlDiagramService:
             compute_layout_engine, str(diagram.id), model, label_texts
         )
         diagram.layout_model = layout_model.model_dump(mode="json")
-        # 配置が変わると出力の見た目も変わるため、保存と同じく承認をやり直す(M7)
+        # 配置が変わると出力の見た目も変わるため、保存と同じく承認をやり直す
         diagram.status = STATUS_AFTER_EDIT
         await self._reopen_stage(diagram)
         await self._session.flush()
@@ -191,7 +190,7 @@ class UmlDiagramService:
     async def approve(
         self, *, project_id: uuid.UUID, diagram_id: uuid.UUID, expected_version: int
     ) -> UmlDiagram:
-        """UML図を承認する(M7: draft / reviewing → approved)。
+        """UML図を承認する(draft / reviewing → approved)。
 
         `expected_version`は、利用者が画面で見ていた版。承認は「その内容」に対するものなので、
         見ていない版を承認しないよう、保存と同じく楽観ロックで確かめる。状態が変わっても
@@ -202,7 +201,7 @@ class UmlDiagramService:
         2. versionが一致する
         3. 承認できる状態(draft / reviewing)である
         4. 配置があり、全要素の配置を含む(出力は座標が無いと描けないため)
-        5. 検証(M4)にエラーが無い(警告は承認を妨げない)
+        5. 検証にエラーが無い(警告は承認を妨げない)
         """
         diagram = await self._get_owned(project_id=project_id, diagram_id=diagram_id)
         _ensure_not_generating(diagram)
@@ -220,8 +219,6 @@ class UmlDiagramService:
             )
 
         diagram.status = STATUS_AFTER_APPROVE
-        # 承認した内容を、同じトランザクションで内部設計書へ反映する(M9a。版は増やさない)
-        await self._sync.reflect(diagram)
         await self._session.flush()
         await self._session.commit()
         await self._session.refresh(diagram)
@@ -230,8 +227,8 @@ class UmlDiagramService:
     async def export(
         self, *, project_id: uuid.UUID, diagram_id: uuid.UUID, fmt: ExportFormat
     ) -> ExportedFile:
-        """承認済みの図をdraw.io/SVGに書き出す(M8)。出力に成功したら`approved`を`exported`に
-        する(M7。状態が変わっても`version`は増やさない)。
+        """承認済みの図をdraw.io/SVGに書き出す。出力に成功したら`approved`を`exported`に
+        する(状態が変わっても`version`は増やさない)。
 
         承認済み・出力済みの図だけを出力する(それ以外は409)。承認の条件で配置の有無は
         確かめているが、出力エンジン(`build_render`)も配置の無い要素を拒否する。
@@ -308,7 +305,7 @@ class UmlDiagramService:
         return diagram
 
 
-# 詳細設計モードで、図がどの段階の内容の一部か(図の編集でその段階を差し戻す。Phase 17〜19)
+# 詳細設計モードで、図がどの段階の内容の一部か(図の編集でその段階を差し戻す)
 _STAGE_OF_NOTATION: dict[str, int] = {
     "dfd": DATA_FLOW_STAGE,
     "er": DATA_MODEL_STAGE,

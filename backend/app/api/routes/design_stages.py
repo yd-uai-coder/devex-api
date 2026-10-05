@@ -38,8 +38,8 @@ async def list_design_stages(
 async def download_detailed_design(
     session: SessionDep, current_project: CurrentProjectDep
 ) -> Response:
-    """詳細設計書(HTML・md)と載せた図(SVG・draw.io)、実装計画(HTML・md。Phase 23)を zip で
-    ダウンロードする(Phase 22)。
+    """詳細設計書(HTML・md)と載せた図(SVG・draw.io)、実装計画(HTML・md)を zip で
+    ダウンロードする。
     いつでもダウンロードでき、承認していない段階の章は「未承認」になる。zip に入れた図は
     `exported`になる。簡易ドキュメントモードのプロジェクトは409。"""
     bundle = await DetailedDesignExportService(session).bundle(current_project)
@@ -60,7 +60,7 @@ async def generate_design_stage(
     background_tasks: BackgroundTasks,
     payload: DesignStageGenerate | None = None,
 ) -> DesignStageRead:
-    """段階のAIの下書きの生成を受け付け、バックグラウンドで実行する(Phase 23 で段階1〜7のすべて)。
+    """段階のAIの下書きの生成を受け付け、バックグラウンドで実行する。
     段階は「生成中」になり、終わると`completed`/`failed`になる。background taskには値だけを渡す
     (doc生成・UML図の生成と同じ理由)。段階5は、本文の`function_ids`で下書きを作る処理を選べる。
     段階6は、本文の`logics`で下書きを作る関数を選べる。"""

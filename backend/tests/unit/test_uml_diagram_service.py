@@ -184,7 +184,7 @@ async def test_compute_layout_raises_when_structural_validation_fails(
 
 
 async def test_update_and_layout_are_rejected_while_generating(db_session: AsyncSession) -> None:
-    """Phase 10: 生成中の図は生成結果で上書きされるため、更新・レイアウト実行を拒否する。"""
+    """生成中の図は生成結果で上書きされるため、更新・レイアウト実行を拒否する。"""
     project = await create_project(db_session)
     service = UmlDiagramService(db_session)
     diagram = await create_empty_diagram(db_session, project.id, "component")
@@ -203,7 +203,7 @@ async def test_update_and_layout_are_rejected_while_generating(db_session: Async
 async def test_validate_does_not_warn_for_data_item_used_by_another_dfd(
     db_session: AsyncSession,
 ) -> None:
-    """Phase 10: 未参照データ項目の判定は、プロジェクト内の全DFDを横断する。"""
+    """未参照データ項目の判定は、プロジェクト内の全DFDを横断する。"""
     project = await create_project(db_session)
     service = UmlDiagramService(db_session)
     data_item_service = DataItemService(db_session)
@@ -332,7 +332,7 @@ async def test_update_without_layout_keeps_saved_layout_but_drops_deleted_elemen
     assert updated.layout_model["edges"] == {}
 
 
-# ---- 状態遷移(M7)と承認
+# ---- 状態遷移と承認
 _TWO_MODULES = {
     "elements": [{"id": "c1", "name": "認証API"}, {"id": "c2", "name": "認証サービス"}],
     "relations": [{"id": "r1", "source_id": "c1", "target_id": "c2"}],
@@ -558,7 +558,7 @@ async def test_compute_layout_places_data_item_labels_for_dfd(db_session: AsyncS
     assert updated.layout_model["edges"]["f1"]["label_pos"] is not None
 
 
-# ---- 出力(M8)
+# ---- 出力
 async def test_export_drawio_marks_diagram_exported(db_session: AsyncSession) -> None:
     project = await create_project(db_session)
     service = UmlDiagramService(db_session)

@@ -1,4 +1,4 @@
-"""詳細設計モード(ステージ4)のドメインロジック(純粋関数)。"""
+"""詳細設計モードのドメインロジック(純粋関数)。"""
 
 from app.detailed_design.api_list import (
     ApiEndpoint,

@@ -1,32 +1,31 @@
 """詳細設計モードの段階のAIの下書きの生成(docs/external_design.md 2.7節「各段階の共通サイクル」)。
 
 受け付け(`request_generation`、リクエスト内)と実行(`execute`、バックグラウンド)を分ける。
-UML図の生成(app/services/uml_generation_service.py)と同じ形で、生成の経過は段階の行の
+文書の生成と同じ形で、生成の経過は段階の行の
 `generation_status`・`generation_error`に残し、画面は段階の一覧をポーリングして完了を待つ。
 
 - 生成中は、同じ段階の生成・保存・承認を409で断る(AIの結果で人の編集を上書きしないため)。
 - 下書きは`status='draft'`(初回)・`'regenerated'`(内容のある段階の作り直し)で保存し、
   `version`を1つ増やす(承認済みの段階を作り直すと承認はやり直しになる。UML図の再生成と同じ)。
   生成した時点の入力の版を`input_fingerprint`に記録する。前の承認の記録が残ると、作り直した
-  直後でも「古い」と判定されるため(Phase 16 の修正)。
+  直後でも「古い」と判定されるため。
 - 15分を超えて生成中のまま止まった段階は、受け付け時と一覧の取得時に失敗へ戻す
   (app/services/generation_staleness.py)。
-- 生成できる段階は`STAGE_GENERATORS`に登録したものだけ(Phase 16 は段階1、Phase 17 で段階2、
-  Phase 18 で段階3、Phase 19 で段階4、Phase 20 で段階5、Phase 21 で段階6、Phase 23 で段階7)。
+- 生成できる段階は`STAGE_GENERATORS`に登録したものだけ(段階1〜7)。
 - 段階2は、段階の内容のほかに機能グループの DFD(`uml_diagrams`)とデータ項目(`data_items`)も
   書く。段階の保存と同じトランザクションで書き、失敗したらまとめて取り消す。そのため生成の関数には
-  `StageGenerationContext`でセッションとプロジェクトを渡す(Phase 17)。
+  `StageGenerationContext`でセッションとプロジェクトを渡す。
 - 段階3は、段階の内容(CRUD 図)のほかに ER(`uml_diagrams`、subject='')も書く。段階2と同じく
-  1つのトランザクションで書く(Phase 18)。
+  1つのトランザクションで書く。
 - 段階4は、段階の内容(モジュール一覧)のほかに構成図(`uml_diagrams`、notation=component、
-  subject='')も書く。段階3と同じく1つのトランザクションで書く(Phase 19)。
+  subject='')も書く。段階3と同じく1つのトランザクションで書く。
 - 段階5は、処理ごとに下書きを作る(1処理 LLM 1回)。対象は受け付けで決め(指定が無ければ、選んだ
   処理のうちまだ手順の無いもの)、対象の処理の手順だけを置き換えて、他の処理の手直しは残す
-  (Phase 20)。
+  。
 - 段階6は、段階5と同じく関数ごとに下書きを作る(1関数 LLM 1回)。対象は(モジュール, 関数)の鍵
-  (`logic_key`)で受け渡す(Phase 21)。
+  (`logic_key`)で受け渡す。
 - 段階7は、横断事項と実装計画を順に下書きする(LLM 2回)。入力の詳細設計書は、出力と同じ組み立て
-  (`DetailedDesignExportService.collect`・`to_markdown`)で 01〜06章の md にする(Phase 23)。
+  (`DetailedDesignExportService.collect`・`to_markdown`)で 01〜06章の md にする。
 """
 
 import uuid

@@ -6,7 +6,7 @@ from app.uml.domain.base import UmlElement, UmlRelation
 
 
 class ComponentElement(UmlElement):
-    """コンポーネント図の要素(モジュール)。`layer`はPhase 9の自動レイアウト(レーン割り当て)が
+    """コンポーネント図の要素(モジュール)。`layer`は自動レイアウト(レーン割り当て)が
     使う属性で、AIが構造化出力時に埋める想定(未設定でも保存・検証は通す)。"""
 
     kind: Literal["module"] = "module"

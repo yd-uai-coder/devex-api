@@ -174,20 +174,3 @@ async def test_get_current_is_independent_per_doc_type(db_session: AsyncSession)
 
     assert requirements is not None and requirements.content == "r1"
     assert design is not None and design.content == "d1"  # 他doc_typeのcurrentは影響を受けない
-
-
-async def test_update_content_in_place_keeps_version_and_other_versions(
-    db_session: AsyncSession,
-) -> None:
-    project = await _create_project(db_session)
-    repo = GeneratedDocumentRepository(db_session)
-    await repo.create_version(project_id=project.id, doc_type="internal_design", content="v1")
-    current = await repo.create_version(
-        project_id=project.id, doc_type="internal_design", content="v2"
-    )
-
-    await repo.update_content_in_place(current, "v2 + 図")
-
-    versions = await repo.list_versions(project_id=project.id, doc_type="internal_design")
-    assert [(v.version, v.content) for v in versions] == [(2, "v2 + 図"), (1, "v1")]
-    assert versions[0].is_current

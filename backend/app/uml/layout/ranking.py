@@ -2,8 +2,7 @@
 
 移植元の図生成エンジンはlane/rowを人手で指定する前提で、自動割り当て機構を持たない。
 devexの図はAI/ユーザー生成の意味モデルから組み立てるため、
-lane(レーン)・row(行)をこちらで算出する必要がある
-(appendix/stage3-requirements-organization.md 診断3)。
+lane(レーン)・row(行)をこちらで算出する必要がある。
 
 - lane: 要素の`layer`属性(component/dfdの一部要素が持つ)。未設定の要素は共有の
   フォールバックレーンにまとめる。ER図は`layer`を持たないため常に単一レーン。
@@ -12,8 +11,7 @@ lane(レーン)・row(行)をこちらで算出する必要がある
   置くため、同じ`(lane, row)`のノードは完全に重なる)。同じレーンで行が衝突したら、
   そのレーンの次の空き行へ下げる(循環はDFSで検出したback edgeを除外して計算。
   トポロジカル順の層分けは標準ライブラリ`graphlib`に任せる)。ER図は多重度を表すだけで時系列を持たないため、
-  このアルゴリズムを使わず意味モデル内の定義順indexをそのまま使う
-  (このセッションでの決定。textbook/decision-digest.md参照)。
+  このアルゴリズムを使わず意味モデル内の定義順indexをそのまま使う。
 """
 
 from collections.abc import Sequence
@@ -105,7 +103,7 @@ def assign_lanes_and_rows(
 
     if notation == "er":
         # ER図の関係(多重度)は時系列を持たないため、最長経路法は使わず
-        # 単一レーン+定義順indexという機械的なフォールバックにする(このセッションでの決定)。
+        # 単一レーン+定義順indexという機械的なフォールバックにする。
         lane_of = dict.fromkeys(element_ids, 0)
         row_of = {el_id: i for i, el_id in enumerate(element_ids)}
         return [_FALLBACK_LANE_LABEL], lane_of, row_of

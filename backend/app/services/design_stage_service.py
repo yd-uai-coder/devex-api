@@ -59,7 +59,7 @@ class DesignStageService:
 
     承認の条件は、全段階に共通の3つ(段階が開いている(入力がそろっている)、versionが一致する、
     承認できる状態で内容が空でない)と、段階ごとの検証(app/detailed_design/validation.py)で
-    エラーが無いこと(Phase 16)。AIの下書きの生成はdesign_stage_generation_service.pyが担い、
+    エラーが無いこと。AIの下書きの生成はdesign_stage_generation_service.pyが担い、
     生成中の段階はここで保存・承認を断る。"""
 
     def __init__(self, session: AsyncSession) -> None:
@@ -87,7 +87,7 @@ class DesignStageService:
 
     async def overview(self, project: Project) -> tuple[dict[int, StageView], StageSources]:
         """全段階の状態と、承認済みの段階の内容(`StageSources.stages`)を返す(詳細設計書の
-        組み立てが使う。Phase 22)。"""
+        組み立てが使う)。"""
         _ensure_detailed(project)
         rows, views, documents = await self._load(project.id)
         sources = await self._sources(project.id, rows, views, documents)
@@ -140,7 +140,7 @@ class DesignStageService:
         段階の`model`の保存を経ずに内容が変わっても、承認をやり直させ、後ろの段階に「古い」を
         伝えるため(後ろの段階は、承認した版の番号で陳腐化を判定する)。承認済みでない段階は何も
         しない。行の無いプロジェクト(簡易ドキュメントモード)も何もしない。呼び出し元の保存と同じ
-        トランザクションで使うため、commitしない(Phase 17)。"""
+        トランザクションで使うため、commitしない。"""
         row = await self._stages.get(project_id=project_id, stage=stage)
         if row is None or row.status != "approved":
             return False
@@ -176,7 +176,7 @@ class DesignStageService:
             raise DesignStageInvalidError(f"Stage {stage} has validation errors")
 
         if stage == DATA_MODEL_STAGE:
-            # 承認 = 人の確定なので、CRUD 図に残っている AI の下書きの印を外す(Phase 18)
+            # 承認 = 人の確定なので、CRUD 図に残っている AI の下書きの印を外す
             row.model = confirm_drafts(row.model)
         row.status = "approved"
         row.approved_version = row.version

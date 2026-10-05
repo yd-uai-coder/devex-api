@@ -26,7 +26,7 @@ def upgrade() -> None:
     op.add_column('uml_diagrams', sa.Column('scope', _JSON, nullable=True))
     op.add_column('uml_diagrams', sa.Column('generation_status', sa.String(length=20), server_default='completed', nullable=False))
     op.add_column('uml_diagrams', sa.Column('generation_error', sa.Text(), nullable=True))
-    # Phase 8〜9のプレースホルダー(POST /diagrams)は同じ記法の空の図を何枚でも作れたため、
+    # それまでは同じ記法の空の図を何枚でも作れたため、
     # 一意制約を張る前に(project_id, notation)ごとに最新の1枚だけを残す(subjectは全て'')。
     op.execute(
         """

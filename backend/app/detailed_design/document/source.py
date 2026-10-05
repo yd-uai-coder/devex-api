@@ -7,14 +7,14 @@ docs/internal_design.md 3.3節「4. 詳細設計モード」の「詳細設計�
 DB の読み取りと図の描画はサービス(app/services/detailed_design_export_service.py)が行い、
 ここから先(導出・md・HTML)はすべて純粋関数にする。
 
-章の状態は3つに分ける(Phase 22 の決定):
+章の状態は3つに分ける:
 
 - `approved`: 段階が承認済み(古くない)。本文を組み立てる。
 - `skipped`: 段階6を0件で承認した(段階6を飛ばした)。06章は「省略」と書く。
 - `unapproved`: それ以外(未着手・下書き・レビュー中・古い)。章には「未承認」とだけ書く。
   承認していない内容は人が確定していないので、途中の内容を本文に出さない。
 
-07 横断事項は段階7(横断事項と実装計画)の model から組み立てる(Phase 23 の決定)。段階7の
+07 横断事項は段階7(横断事項と実装計画)の model から組み立てる。段階7の
 実装計画は詳細設計書とは別のファイル(implementation_plan.md・.html)にするが、入力は同じ
 `DocumentSource`を使う。
 """
@@ -40,7 +40,7 @@ ChapterStatus = Literal["approved", "skipped", "unapproved"]
 
 @dataclass(frozen=True)
 class Chapter:
-    """詳細設計書の章1つ。章と段階は1対1(07 横断事項は段階7。Phase 23)。"""
+    """詳細設計書の章1つ。章と段階は1対1(07 横断事項は段階7)。"""
 
     stage: int
     number: str

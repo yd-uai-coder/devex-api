@@ -132,7 +132,7 @@ def test_to_module_drafts_keeps_fields():
     assert draft.all_functions is True
 
 
-# --- 表記の規則(画面確認後の修正) ---
+# --- 表記の規則 ---
 
 
 def test_all_stage_prompts_end_with_naming_rules():

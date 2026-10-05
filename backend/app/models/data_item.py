@@ -14,13 +14,12 @@ if TYPE_CHECKING:
 
 
 class DataItem(Base):
-    """プロジェクト共通のデータ辞書1件分(M2b)を表すORMモデル。
+    """プロジェクト共通のデータ辞書1件分を表すORMモデル。
 
     `fields`は{name, type?, required?}の配列(app/uml/domain/data_item.pyのDataItemField相当)。
-    DFDの全フローはこのテーブルの行をidで参照し、自由記述ラベルを持たない(M2b)。
-    永続化実体を専用テーブルにするか project 単位のJSONBにするかはPhase 8の未決事項だったが、
-    項目単位のCRUD・一意性制約・参照検証(どこからも参照されないデータ項目が無いか)を
-    素直に書けることを優先し、専用テーブルとして確定した(textbook/decision-digest.md参照)。
+    DFDの全フローはこのテーブルの行をidで参照し、自由記述ラベルを持たない。
+    project 単位のJSONBではなく専用テーブルにしているのは、項目単位のCRUD・一意性制約・
+    参照検証(どこからも参照されないデータ項目が無いか)を素直に書けるため。
     """
 
     __tablename__ = "data_items"

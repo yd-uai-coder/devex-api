@@ -4,19 +4,19 @@
 devexにはレーンごとの幅の重み・ヒントに相当する入力が無いため、全レーンを均等幅として扱う。
 
 幅960px超過は入力次第で実行時に起こり得るため、`assert`ではなく
-`LayoutWidthExceededError`として送出する(Phase-7-4.md申し送り#1: 4xxへ変換可能な専用例外化)。
+`LayoutWidthExceededError`として送出する。
 """
 
 from app.services.errors import LayoutWidthExceededError
 from app.uml.layout.model import MARGIN, MAX_W, LayoutNode, LayoutState
 from app.uml.layout.text import tw, wrap
 
-TOP = 10  # レーン上端(レーン見出しの描画余白として、Phase 12のexportが使う)
+TOP = 10  # レーン上端(レーン見出しの描画余白として、exportが使う)
 HEAD_H = 34  # レーン見出しの高さ(同上)
 LINE_H = 20  # 1行の高さ
 PADX, PADY = 14, 9  # ノード内側の余白
 STUB = 14  # 辺から出て最初に直進する長さ
-HEX_INSET = 18  # 六角形(分岐、activity図向け。Phase 14で使う想定)の左右の尖り幅
+HEX_INSET = 18  # 六角形(分岐、activity図向け)の左右の尖り幅
 
 
 def compute_lane_geometry(state: LayoutState) -> None:

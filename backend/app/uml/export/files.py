@@ -1,9 +1,7 @@
 """出力する図の題名・ファイル名・中身(形式ごと)を決める純粋関数。
 
-Phase 12-4では`app/services/uml_diagram_service.py`のモジュール関数だった。Phase 13で
-`app/services/uml_sync_service.py`(文書への反映・埋め込み・zip)も同じ規則を使うため、
-ここへ移した(#17: 共有を選ぶ)。サービス同士をimportし合わせない ── 承認(uml_diagram_service)が
-反映(uml_sync_service)を呼ぶので、逆向きのimportがあると循環するため。
+図の出力(`app/services/uml_diagram_service.py`)と詳細設計書の出力
+(`app/services/detailed_design_export_service.py`)が同じ規則を使う。
 """
 
 import re
@@ -69,10 +67,7 @@ def render_diagram(
     title: str,
 ) -> str:
     """承認済みの図を、出力と同じ規則で描く(承認の条件で、全要素の配置があることは確かめ済み)。
-
-    Phase 13 では`app/services/uml_sync_service.py`の`_render`だった。Phase 22 で詳細設計書の
-    出力(`app/services/detailed_design_export_service.py`)も同じ規則で図を描くため、ここへ移した
-    (#17: 共有を選ぶ)。"""
+    詳細設計書の出力(`app/services/detailed_design_export_service.py`)が使う。"""
     layout = LayoutModel.model_validate(layout_model)
     render = build_render(model, layout, edge_labels(model, data_item_names))
     return render_content(render, fmt, diagram_id=diagram_id, title=title)
@@ -80,9 +75,7 @@ def render_diagram(
 
 def unique_base(base: str, used: set[str]) -> str:
     """zipの中でファイル名が重ならないようにする。禁止文字を`_`に置き換えた結果、別の図と
-    同じ名前になることがあるため、2つ目以降に`_2`、`_3`…を付ける(`used`に足す)。
-
-    Phase 13 では`app/services/uml_sync_service.py`の`_unique_base`だった(Phase 22 で移した)。"""
+    同じ名前になることがあるため、2つ目以降に`_2`、`_3`…を付ける(`used`に足す)。"""
     candidate = base
     suffix = 2
     while candidate in used:

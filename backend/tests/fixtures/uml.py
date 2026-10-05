@@ -1,8 +1,7 @@
-"""UML図の生成・検証まわりのテストで共有するフィクスチャ(Phase 10)。
+"""UML図の生成・検証まわりのテストで共有するフィクスチャ。
 
 - 固定形式の見出し(3.2のテーブル見出し・処理別データフローのDF見出し)を持つ内部設計書のサンプル
-- プロジェクト・空の図の作成ヘルパー(Phase 8のプレースホルダー`UmlDiagramService.create`は
-  Phase 10で廃止したため、既存テストの「空の図を1枚用意する」はリポジトリで直接作る)
+- プロジェクト・空の図の作成ヘルパー(空の図はリポジトリで直接作る)
 - 記法ごとのLLM出力スキーマのサンプル(FakeLLMの構造化出力として渡す)
 """
 
@@ -25,8 +24,6 @@ from app.uml.domain import (
 from app.uml.generation.schemas import (
     ComponentGenerationOutput,
     DfdGenerationOutput,
-    ErGenerationOutput,
-    GeneratedColumn,
     GeneratedDataItem,
     GeneratedDataItemField,
     GeneratedDependency,
@@ -34,8 +31,6 @@ from app.uml.generation.schemas import (
     GeneratedModule,
     GeneratedNode,
     GeneratedProcess,
-    GeneratedTable,
-    GeneratedTableRelation,
 )
 
 INTERNAL_DESIGN_MD = """# 3. 内部設計書
@@ -136,26 +131,6 @@ def component_output() -> ComponentGenerationOutput:
     )
 
 
-def er_output() -> ErGenerationOutput:
-    pk = GeneratedColumn(
-        name="id", type="UUID", is_primary_key=True, is_foreign_key=False, nullable=False
-    )
-    fk = GeneratedColumn(
-        name="user_id", type="UUID", is_primary_key=False, is_foreign_key=True, nullable=False
-    )
-    return ErGenerationOutput(
-        tables=[
-            GeneratedTable(id="t1", name="users", columns=[pk]),
-            GeneratedTable(id="t2", name="reservations", columns=[pk, fk]),
-        ],
-        relations=[
-            GeneratedTableRelation(
-                id="r1", source_id="t1", target_id="t2", relation_type="one_to_many"
-            )
-        ],
-    )
-
-
 def dfd_output(data_item_name: str = "予約リクエスト") -> DfdGenerationOutput:
     return DfdGenerationOutput(
         data_items=[
@@ -199,7 +174,7 @@ async def create_approved_diagram(
     subject: str = "",
 ) -> UmlDiagram:
     """意味モデルを保存 → 自動レイアウト → 承認まで済ませた図を返す(version=2、status=approved)。
-    内部設計書があれば、承認と同時に反映される(Phase 13-2)。"""
+    内部設計書があれば、承認と同時に反映される。"""
     service = UmlDiagramService(session)
     diagram = await create_empty_diagram(session, project_id, notation, subject)
     semantic_model = SemanticModelAdapter.validate_python(

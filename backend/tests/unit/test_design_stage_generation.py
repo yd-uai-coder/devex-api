@@ -205,7 +205,7 @@ async def test_regeneration_clears_outdated_and_later_input_change_marks_it_agai
     db_session: AsyncSession,
 ) -> None:
     """承認後に外部設計書が変わって「古い」になった段階を作り直すと、生成時の入力の版を記録し直すので
-    「再生成済」になる。その後に外部設計書が変わると、また「古い」になる(Phase 16 の修正)。"""
+    「再生成済」になる。その後に外部設計書が変わると、また「古い」になる。"""
     project = await _project(db_session)
     project_id = project.id
     llm = FakeLLM(structured=_output(("予約", "POST /api/v1/reservations")))
@@ -257,7 +257,7 @@ async def test_generation_rejects_unsupported_locked_and_running_stages(
     project = await _project(db_session)
     service = DesignStageGenerationService(db_session)
 
-    # 段階1〜7のすべてに生成がある(Phase 23)ので、登録を外して「未対応」の断りを確かめる
+    # 段階1〜7のすべてに生成があるので、登録を外して「未対応」の断りを確かめる
     with monkeypatch.context() as patch:
         patch.delitem(STAGE_GENERATORS, 1)
         with pytest.raises(DesignStageGenerationNotSupportedError):
@@ -349,7 +349,7 @@ async def test_e2e_fake_function_list_passes_validation(db_session: AsyncSession
     assert validate_stage(1, model, sources) == []
 
 
-# ---- 段階2(データフロー、Phase 17) ----
+# ---- 段階2(データフロー) ----
 
 
 def _summary_output() -> ProcessSummaryGenerationOutput:
@@ -524,7 +524,7 @@ async def test_resolve_by_name_reuses_existing_and_creates_missing(
     assert [(item.name, item.fields) for item in items] == [("予約", [{"name": "id"}])]
 
 
-# ---- 段階3(データモデル、Phase 18) ----
+# ---- 段階3(データモデル) ----
 
 
 def _er_output() -> DataModelErOutput:
@@ -646,7 +646,7 @@ async def test_stage3_failure_rolls_back_er(
     assert await UmlDiagramRepository(db_session).list_by_notation(project_id, "er") == []
 
 
-# ---- 段階4(ソフトウェア構造、Phase 19) ----
+# ---- 段階4(ソフトウェア構造) ----
 
 
 def _component_output(layer: str = "api") -> ComponentGenerationOutput:
@@ -789,7 +789,7 @@ async def test_stage4_failure_rolls_back_component(
     assert await UmlDiagramRepository(db_session).list_by_notation(project_id, "component") == []
 
 
-# --- 段階5 主要処理の手順(Phase 20) ---
+# --- 段階5 主要処理の手順 ---
 
 ROUTE = "app/api/routes/reservations.py"
 
@@ -966,7 +966,7 @@ async def test_generate_procedures_skips_function_removed_from_stage1(
     assert model == {"procedures": [{"function_id": "F-09", "reason": "", "note": "", "steps": []}]}
 
 
-# --- 段階6 処理ロジックの詳細(Phase 21) ---
+# --- 段階6 処理ロジックの詳細 ---
 
 
 def _logic_output(signature: str = "def create_reservation()") -> LogicGenerationOutput:
@@ -1090,7 +1090,7 @@ async def test_stage6_rejects_missing_unselected_too_many_and_other_stage(
 
 
 async def test_stage6_can_be_skipped_by_approving_zero_logics(db_session: AsyncSession) -> None:
-    """段階6を飛ばす = 0件を保存して承認する。段階7が開く(Phase 21 の決定)。"""
+    """段階6を飛ばす = 0件を保存して承認する。段階7が開く。"""
     project = await create_stage6_project(db_session)
     service = DesignStageService(db_session)
     await _select_logics(db_session, project, [])

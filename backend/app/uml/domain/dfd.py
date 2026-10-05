@@ -10,8 +10,8 @@ DfdElementType = Literal["process", "external_entity", "data_store"]
 
 class DfdProcess(UmlElement):
     """DFDの処理ノード。`description`に「入力→出力」の加工内容を1行で持たせる
-    (M2b: 処理ノードには入力→出力の対応と加工の1行説明を持たせる。入出力対応そのものは
-    このプロセスidを始点/終点に持つDfdFlowの集合から読み取れる)。`layer`はPhase 9の
+    (処理ノードには入力→出力の対応と加工の1行説明を持たせる。入出力対応そのものは
+    このプロセスidを始点/終点に持つDfdFlowの集合から読み取れる)。`layer`は自動レイアウトの
     レーン割り当て用(actor等)。"""
 
     element_type: Literal["process"] = "process"
@@ -38,7 +38,7 @@ type DfdElement = Annotated[
 
 class DfdFlow(UmlRelation):
     """DFDのデータフロー。`data_item_id`でデータ辞書(DataItem)を参照する
-    (M2b: 自由記述ラベルを禁止し、必ずDataItemへの参照にする)。"""
+    (自由記述ラベルを禁止し、必ずDataItemへの参照にする)。"""
 
     data_item_id: uuid.UUID
 

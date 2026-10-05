@@ -1,19 +1,18 @@
-"""詳細設計書(HTML+md+図)と実装計画を zip にまとめるユースケース(Phase 22・23)。
+"""詳細設計書(HTML+md+図)と実装計画を zip にまとめるユースケース。
 
 docs/internal_design.md 3.3節「4. 詳細設計モード」の「詳細設計書の組み立て」。
 
 - 入力: 段階1〜7の状態と承認済みの内容(`DesignStageService.overview`)、承認済みの章が使う図
   (段階2の DFD・段階3の ER・段階4の構成図)、データ辞書。
 - 組み立て: 純粋関数(`app.detailed_design.document`)が md と HTML を作る。図の描画は
-  ステージ3の zip と同じ規則(`app.uml.export.render_diagram`)。
-- zip に入れた図は`exported`にする(図のファイルを出力した記録。ステージ3の zip と同じ)。
-- 段階7の実装計画は、詳細設計書とは別のファイル(implementation_plan.md・.html)にする(Phase 23)。
+  図の出力と同じ規則(`app.uml.export.render_diagram`)。
+- zip に入れた図は`exported`にする(図のファイルを出力した記録)。
+- 段階7の実装計画は、詳細設計書とは別のファイル(implementation_plan.md・.html)にする。
 
-入力を集める部分(`collect`)は、段階7の下書きの生成も使う(Phase 23。#17: 消費者は段階7の
-生成)。生成では図を描かず(`render=False`)、図を`exported`にもしない。
+入力を集める部分(`collect`)は、段階7の下書きの生成も使う。生成では図を描かず(`render=False`)、図を`exported`にもしない。
 
 ダウンロードは、どの段階が承認済みでもいつでもできる。承認していない段階の章は「未承認」になる
-(Phase 22 の決定)。
+。
 """
 
 import uuid
@@ -42,7 +41,6 @@ from app.models.uml_diagram import UmlDiagram
 from app.repositories.data_item import DataItemRepository
 from app.repositories.uml_diagram import UmlDiagramRepository
 from app.services.design_stage_service import DesignStageService
-from app.services.uml_sync_service import BundleFile
 from app.uml.domain import (
     STATUS_AFTER_EXPORT,
     ErSemanticModel,
@@ -59,6 +57,15 @@ DOCUMENT_MARKDOWN_NAME = "detailed_design.md"
 DOCUMENT_DIAGRAM_DIR = "diagrams"
 PLAN_HTML_NAME = "implementation_plan.html"
 PLAN_MARKDOWN_NAME = "implementation_plan.md"
+
+
+@dataclass(frozen=True)
+class BundleFile:
+    """zipでまとめたダウンロード1件分(ルートがそのままレスポンスにする)。"""
+
+    filename: str
+    content: bytes
+    media_type: str
 
 
 @dataclass
@@ -205,5 +212,5 @@ class DetailedDesignExportService:
 
 
 def _is_approved(diagram: UmlDiagram) -> bool:
-    """載せられる図か(承認済み・出力済みで、AI生成中でない)。ステージ3の zip と同じ条件。"""
+    """載せられる図か(承認済み・出力済みで、AI生成中でない)。"""
     return diagram.generation_status != "generating" and can_export(parse_status(diagram.status))

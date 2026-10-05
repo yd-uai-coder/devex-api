@@ -97,7 +97,7 @@ class DataItemNameConflictError(ConflictError):
 
 # レイアウトエンジン
 class LayoutNodeLimitExceededError(BadRequestError):
-    """`/layout`実行前のノード数上限チェック(診断3の「上限超過の検証エラー化」)。
+    """`/layout`実行前のノード数上限チェック。
     要素数が多すぎる図は、レイアウトエンジンの計算量(O(n²)〜O(n!))が非現実的になるため、
     実行前に拒否する(`app/uml/validation/structural.py`のMAX_ELEMENTSを再利用)。"""
 
@@ -105,9 +105,9 @@ class LayoutNodeLimitExceededError(BadRequestError):
 
 
 class LayoutValidationFailedError(BadRequestError):
-    """レイアウト対象の意味モデルがM4構造検証(ID重複・参照切れ等)を通らない場合に送出する。
+    """レイアウト対象の意味モデルが構造検証(ID重複・参照切れ等)を通らない場合に送出する。
     重複ID・未定義ノード参照は、レイアウトエンジン内でassertせず、この事前検証
-    (`app.uml.validation.validate_diagram`)に一本化する(Phase-7-4.md申し送り#1)。"""
+    (`app.uml.validation.validate_diagram`)に一本化する。"""
 
     code: ClassVar[str | None] = "LAYOUT_VALIDATION_FAILED"
 
@@ -127,10 +127,6 @@ class LayoutRouteNotFoundError(BadRequestError):
 
 
 # UML図のAI生成
-class UmlSourceDocumentMissingError(ConflictError):
-    """UML図の生成元となる内部設計書(現行版)がまだ生成されていない場合に送出する。"""
-
-    code: ClassVar[str | None] = "UML_SOURCE_DOCUMENT_MISSING"
 
 
 class UmlGenerationInProgressError(ConflictError):
@@ -139,26 +135,6 @@ class UmlGenerationInProgressError(ConflictError):
     生成中の図の更新(PUT)・レイアウト実行も、生成結果で上書きされるため同じ例外で拒否する。"""
 
     code: ClassVar[str | None] = "UML_GENERATION_IN_PROGRESS"
-
-
-class UmlSubjectNotFoundError(BadRequestError):
-    """生成対象(subject)が内部設計書から列挙した候補に無い場合に送出する
-    (DFDの処理名、ER部分図のテーブル名、component/ER全体以外のsubject指定など)。"""
-
-    code: ClassVar[str | None] = "UML_SUBJECT_NOT_FOUND"
-
-
-class ErScopeRequiredError(BadRequestError):
-    """ER図の全体生成でテーブル数が上限(MAX_ELEMENTS)を超える場合、または部分図に
-    テーブルの選択が無い場合に送出する(部分図として、対象のテーブルを選んで生成し直す)。"""
-
-    code: ClassVar[str | None] = "ER_SCOPE_REQUIRED"
-
-
-class TooManySubjectsError(BadRequestError):
-    """1回の生成リクエストで指定した対象が上限(MAX_SUBJECTS_PER_REQUEST)を超える場合に送出する。"""
-
-    code: ClassVar[str | None] = "TOO_MANY_SUBJECTS"
 
 
 class LLMTokenLimitError(BadGatewayError):
@@ -176,7 +152,7 @@ class LLMInvalidOutputError(BadGatewayError):
     code: ClassVar[str | None] = "LLM_INVALID_OUTPUT"
 
 
-# 承認フロー(M7)
+# 承認フロー
 class UmlDiagramNotApprovableError(ConflictError):
     """承認できない状態(承認済み・出力済み)の図を承認しようとした場合に送出する。
     承認し直すには、いったん保存してレビュー中へ戻す必要がある。"""
@@ -185,7 +161,7 @@ class UmlDiagramNotApprovableError(ConflictError):
 
 
 class UmlApprovalValidationFailedError(BadRequestError):
-    """承認しようとした図の意味モデルが検証(M4)を通らない場合に送出する。
+    """承認しようとした図の意味モデルが検証を通らない場合に送出する。
     エラーの一覧は`POST .../validate`で取り直す(このエラーは件数と要約だけを返す)。"""
 
     code: ClassVar[str | None] = "UML_APPROVAL_VALIDATION_FAILED"
@@ -198,15 +174,15 @@ class UmlLayoutRequiredError(BadRequestError):
     code: ClassVar[str | None] = "UML_LAYOUT_REQUIRED"
 
 
-# draw.io/SVG出力(M8)
+# draw.io/SVG出力
 class UmlDiagramNotApprovedError(ConflictError):
     """承認されていない(下書き・レビュー中の)図を出力しようとした場合に送出する。
-    出力は承認済みの図だけに許す(ダウンロードは最終成果物。D6)。"""
+    出力は承認済みの図だけに許す(ダウンロードは最終成果物)。"""
 
     code: ClassVar[str | None] = "UML_DIAGRAM_NOT_APPROVED"
 
 
-# 詳細設計モード(ステージ4)
+# 詳細設計モード
 class DesignStagesNotAvailableError(ConflictError):
     """詳細設計モードでないプロジェクト(`projects.mode='simple'`)の段階を扱おうとした場合に送出する。
     モードは作成時に決まり、後から変えられない。"""
@@ -242,7 +218,7 @@ class DesignStageNotApprovableError(ConflictError):
 class DesignStageInvalidError(ConflictError):
     """段階ごとの検証(app/detailed_design/validation.py)でエラーがある段階を承認しようとした場合に
     送出する。警告だけなら承認できる。指摘の一覧は段階の取得(`issues`)で確かめる。
-    段階2で DFD を描くグループが上限を超えたまま生成を要求した場合にも送出する(Phase 17)。"""
+    段階2で DFD を描くグループが上限を超えたまま生成を要求した場合にも送出する。"""
 
     code: ClassVar[str | None] = "DESIGN_STAGE_INVALID"
 
@@ -256,7 +232,7 @@ class DesignStageGenerationInProgressError(ConflictError):
 
 class DesignStageGenerationNotSupportedError(ConflictError):
     """AIの下書きの生成にまだ対応していない段階の生成を要求した場合に送出する
-    (Phase 17 の時点で段階1・2)。"""
+    。"""
 
     code: ClassVar[str | None] = "DESIGN_STAGE_GENERATION_NOT_SUPPORTED"
 

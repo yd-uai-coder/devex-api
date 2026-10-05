@@ -41,7 +41,7 @@ async def _create_project(session: AsyncSession, *, mode: str) -> Project:
 async def test_create_project_route_passes_template_id_and_mode(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """気づき#1: ルートが template_id をサービスへ渡すこと。あわせて mode も渡す。"""
+    """ルートが template_id をサービスへ渡すこと。あわせて mode も渡す。"""
 
     async def _no_opening_reply(self: ChatService, project: Project) -> None:
         return None

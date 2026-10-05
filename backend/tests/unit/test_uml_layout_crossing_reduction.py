@@ -1,4 +1,4 @@
-"""交差削減の近似の評価と、時間の上限(Phase 15、気づき#10)のテスト。
+"""交差削減の近似の評価と、時間の上限のテスト。
 
 SUT: crossing_reduction(sketch_score / quick_route_score / optimize)
 ドライバ: 各テスト関数

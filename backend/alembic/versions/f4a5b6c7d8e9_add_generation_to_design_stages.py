@@ -19,7 +19,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    # 段階のAIの下書きの生成の状態(Phase 16)。既存の行は「まだ生成していない」(NULL)のままでよい
+    # 段階のAIの下書きの生成の状態。既存の行は「まだ生成していない」(NULL)のままでよい
     op.add_column('design_stages', sa.Column('generation_status', sa.String(length=20), nullable=True))
     op.add_column('design_stages', sa.Column('generation_error', sa.Text(), nullable=True))
     op.add_column(

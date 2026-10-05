@@ -85,7 +85,7 @@ def test_component_layers_in_first_appearance_order_without_blanks():
     assert component_layers(None) == []
 
 
-# --- path_variants / module_ref_matches(画面確認後の修正) ---
+# --- path_variants / module_ref_matches ---
 
 
 def test_path_variants_split_units_drop_extension_and_expand_braces():
@@ -118,7 +118,7 @@ def test_module_ref_matches_by_units(ref, path, expected):
 
 
 def test_directory_dependencies_are_not_warned():
-    """画面確認で報告された例: ディレクトリを依存先に書いても、配下のモジュールがあれば
+    """ディレクトリを依存先に書いても、配下のモジュールがあれば
     警告しない。"""
     model = module_list_model()
     model["modules"][0]["depends_on"] = ["app/services", "app/api/routes", "app/models"]

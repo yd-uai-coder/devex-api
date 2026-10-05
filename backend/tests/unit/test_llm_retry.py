@@ -150,7 +150,7 @@ async def test_logs_error_after_exhausting_retries() -> None:
 
 
 async def test_does_not_retry_token_limit_error() -> None:
-    """Phase 10: トークン上限超過は同じ入力で再試行しても変わらないため、1回で諦める。"""
+    """トークン上限超過は同じ入力で再試行しても変わらないため、1回で諦める。"""
     calls = {"n": 0}
 
     async def _call() -> str:
@@ -164,7 +164,7 @@ async def test_does_not_retry_token_limit_error() -> None:
 
 
 async def test_converts_input_token_limit_api_error_without_retrying() -> None:
-    """Phase 10: 入力トークン数の超過(Gemini APIの400)はLLMTokenLimitErrorにして1回で諦める。"""
+    """入力トークン数の超過(Gemini APIの400)はLLMTokenLimitErrorにして1回で諦める。"""
     from google.genai.errors import APIError
 
     calls = {"n": 0}

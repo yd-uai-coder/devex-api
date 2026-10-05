@@ -33,7 +33,7 @@ class DesignStage(Base):
     最後に承認したときの`version`、`input_fingerprint`は承認したときの入力の版
     (app/detailed_design/stages.py参照)。
 
-    `generation_*`はAIの下書きの生成の状態(Phase 16)。生成中は保存・承認できない(AIの結果で
+    `generation_*`はAIの下書きの生成の状態。生成中は保存・承認できない(AIの結果で
     人の編集を上書きしないため)。
     """
 
@@ -55,7 +55,7 @@ class DesignStage(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     approved_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     input_fingerprint: Mapped[dict | None] = mapped_column(PortableJSON, nullable=True)
-    # AIの下書きの生成の状態(Phase 16)。レビューの状態`status`とは別の軸(UML図と同じ)。
+    # AIの下書きの生成の状態。レビューの状態`status`とは別の軸(UML図と同じ)。
     # None = まだ生成していない / 'generating' / 'completed' / 'failed'
     generation_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
     generation_error: Mapped[str | None] = mapped_column(Text, nullable=True)

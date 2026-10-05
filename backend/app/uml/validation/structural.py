@@ -3,8 +3,8 @@ from collections.abc import Sequence
 from app.uml.domain.base import UmlElement, UmlRelation
 from app.uml.validation.base import ValidationIssue
 
-# 診断3(appendix/stage3-requirements-organization.md): ノード数上限の目安。
-# 大規模図はPhase 9のレイアウトエンジンが`asyncio.to_thread`実行前提のO(n^2)〜O(n!)アルゴリズムを
+# ノード数上限の目安。
+# 大規模図はレイアウトエンジンが`asyncio.to_thread`実行前提のO(n^2)〜O(n!)アルゴリズムを
 # 使うため、超過時は警告にとどめる(エラーにして保存自体を止めない)。
 MAX_ELEMENTS = 30
 
@@ -12,11 +12,11 @@ MAX_ELEMENTS = 30
 def validate_structure(
     elements: Sequence[UmlElement], relations: Sequence[UmlRelation]
 ) -> tuple[list[ValidationIssue], list[ValidationIssue]]:
-    """全notation共通の構造検証(M4): ID重複・参照切れ・ノード数上限。
+    """全notation共通の構造検証: ID重複・参照切れ・ノード数上限。
     「関係種別」「必須」「型」はPydanticの意味モデル(app/uml/domain)がparse時点で
     保証済みのため、ここでは扱わない(不正な型・欠落フィールドはそもそもSemanticModelAdapterの
     ValidationErrorとして弾かれ、この関数に到達する前に検出される)。「座標」はlayout_model
-    (Phase 9)側の関心事であり、semantic_modelには含まれないためここでは扱わない。
+    側の関心事であり、semantic_modelには含まれないためここでは扱わない。
     """
     errors: list[ValidationIssue] = []
     warnings: list[ValidationIssue] = []

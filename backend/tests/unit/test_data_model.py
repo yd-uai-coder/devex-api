@@ -203,7 +203,7 @@ def test_validate_requires_approved_er() -> None:
 
 
 def test_validate_rejects_duplicate_table_names() -> None:
-    """テーブル名は CRUD 図のセルを引く鍵なので、ER で名前が重なると承認できない(Phase 18)。"""
+    """テーブル名は CRUD 図のセルを引く鍵なので、ER で名前が重なると承認できない。"""
     er = _approved_er("reservations", "new_table", " New_Table")
     issues = validate_data_model(crud_model(), _sources(er=er))
     assert [(i.code, i.target) for i in issues if i.severity == "error"] == [

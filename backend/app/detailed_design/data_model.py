@@ -14,7 +14,7 @@ CRUD 図の R(読み)と W(書き)は、段階2の DFD の線の向きから決�
 DFD の処理の箱の id は段階1の処理ID、データストアの名前はテーブル名(英小文字の複数形)なので、
 名前で ER のテーブルと突き合わせる。W の C/U/D の区別と、DFD を描いていない処理の分は AI が
 下書きし、そのセルには`draft`の印を付ける。人が直したセルは印が外れ、段階3の承認で残りの印も
-外す(承認 = 人の確定。Phase 18 の決定)。
+外す(承認 = 人の確定)。
 """
 
 from collections.abc import Iterable, Mapping, Sequence
@@ -29,8 +29,8 @@ from app.uml.domain.er import ErSemanticModel
 # データモデルの段階の番号(ER を直したときに差し戻す段階。app/services から参照する)
 DATA_MODEL_STAGE = 3
 
-# 段階3の ER を`uml_diagrams`で識別するキー(subject)。全体1枚なので空文字列(ステージ3の
-# 全体の ER と同じ。詳細設計モードのプロジェクトには、部分図の ER は無い)
+# 段階3の ER を`uml_diagrams`で識別するキー(subject)。全体1枚なので空文字列
+# (部分図の ER は無い)
 ER_SUBJECT = ""
 
 # CRUD 図のセルに書ける操作。セルの文字列はこの順に並べる(「RC」ではなく「CR」)

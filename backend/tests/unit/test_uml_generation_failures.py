@@ -9,7 +9,6 @@ from app.services.errors import (
     LLMTokenLimitError,
 )
 from app.uml.generation import (
-    SKIPPED_MESSAGE,
     ComponentGenerationOutput,
     classify_failure,
     unwrap_structured_result,
@@ -69,8 +68,3 @@ def test_classify_failure_looks_through_retry_wrapper_for_invalid_output() -> No
 
     assert classify_failure(wrapped).reason_code == "INVALID_OUTPUT"
     assert classify_failure(GenerationFailedError("x")).reason_code == "GENERATION_FAILED"
-
-
-def test_skipped_message_tells_reason_and_retry() -> None:
-    assert "利用上限" in SKIPPED_MESSAGE
-    assert "再度生成を指示してください" in SKIPPED_MESSAGE

@@ -31,19 +31,12 @@ _MESSAGES: dict[ReasonCode, str] = {
     ),
     "INVALID_OUTPUT": "AIの出力を設計図として解釈できませんでした。再度生成を指示してください。",
     "GENERATION_FAILED": "設計図の生成に失敗しました。時間をおいて、再度生成を指示してください。",
-    # 例外の分類では出てこない。生成中のまま止まった図を回収したときに使う(STALE_MESSAGE)
+    # 例外の分類では出てこない(生成中のまま止まったものの回収用。詳細設計モードは段階の生成の
+    # サービスが自分の文言を持つ)
     "STALE_GENERATION": (
         "生成が時間内に終わらなかったため、中断しました。再度生成を指示してください。"
     ),
 }
-
-STALE_MESSAGE = _MESSAGES["STALE_GENERATION"]
-
-SKIPPED_MESSAGE = (
-    "先に生成した対象でAIの利用上限(無料枠のクォータ)に達したため、生成していません。"
-    "時間をおいて、再度生成を指示してください。"
-)
-
 
 @dataclass(frozen=True)
 class GenerationFailure:

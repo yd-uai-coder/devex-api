@@ -3,8 +3,7 @@
 SUT: DetailedDesignExportService.bundle(app/services/detailed_design_export_service.py)、
      download_detailed_design(app/api/routes/design_stages.py)、
      DesignStageService.overview(app/services/design_stage_service.py)、
-     render_diagram / unique_base(app/uml/export/files.py)、
-     _render(app/services/uml_sync_service.py。共通化の後もステージ3の zip が動くこと)
+     render_diagram / unique_base(app/uml/export/files.py)
 ドライバ: 各テスト関数
 スタブ: なし ── DB はテスト用のインメモリ SQLite(`db_session`)を使い、図はレイアウトエンジンで
 実際に配置する。組み立て(md・HTML)は純粋関数のテストで確かめたので、ここでは zip の構成・
@@ -25,7 +24,6 @@ from tests.fixtures.uml import create_approved_diagram, create_project_with_inte
 
 from app.api.responses import content_disposition
 from app.api.routes.design_stages import download_detailed_design
-from app.api.routes.uml import download_bundle
 from app.repositories.uml_diagram import UmlDiagramRepository
 from app.services.design_stage_service import DesignStageService
 from app.services.detailed_design_export_service import (
@@ -134,6 +132,3 @@ async def test_render_diagram_draws_svg_of_laid_out_diagram(db_session: AsyncSes
     svg = render_diagram(model, diagram.layout_model, {}, "svg", diagram_id="d", title="t")
 
     assert svg.startswith("<svg")
-    # 共通化の後も、ステージ3の zip は同じ関数で図を描く
-    response = await download_bundle(db_session, project)
-    assert "diagrams/component.svg" in _open(bytes(response.body)).namelist()

@@ -97,7 +97,7 @@ def test_can_approve_allows_reapproving_only_outdated_stages() -> None:
 
 
 def test_regenerated_stage_keeps_its_state_until_inputs_change() -> None:
-    """作り直した段階(Phase 16)は、生成時の入力の記録と一致すれば「再生成済」のまま、
+    """作り直した段階は、生成時の入力の記録と一致すれば「再生成済」のまま、
     食い違えば「古い」になる。"""
     record = StageRecord(
         status="regenerated",

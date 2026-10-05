@@ -97,7 +97,7 @@ async def test_get_by_subject_finds_diagram_by_notation_and_subject(
     assert missing is None
 
 
-async def test_has_generating_and_list_by_notation(db_session: AsyncSession) -> None:
+async def test_list_by_notation(db_session: AsyncSession) -> None:
     project = await _create_project(db_session)
     repo = UmlDiagramRepository(db_session)
     await repo.create(
@@ -106,16 +106,12 @@ async def test_has_generating_and_list_by_notation(db_session: AsyncSession) -> 
         notation="component",
         semantic_model={"notation": "component", "elements": [], "relations": []},
     )
-    assert not await repo.has_generating(project.id)
-
     await repo.create(
         project_id=project.id,
         view="dataflow",
         notation="dfd",
         semantic_model={"notation": "dfd", "elements": [], "relations": []},
         subject="GET /api/v1/reservations",
-        generation_status="generating",
     )
 
-    assert await repo.has_generating(project.id)
     assert [d.notation for d in await repo.list_by_notation(project.id, "dfd")] == ["dfd"]

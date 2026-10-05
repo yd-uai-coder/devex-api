@@ -13,8 +13,10 @@ if TYPE_CHECKING:
     from app.models.project import Project
 
 
+# 書き込む処理は無い。テーブルは既存のデータを残すため消さず、モデルもテーブルと
+# 食い違わないよう残している。
 class UmlGenerationRun(Base):
-    """UML図のAI生成リクエスト1回分の履歴(Phase 10)。
+    """UML図のAI生成リクエスト1回分の履歴。
 
     図ごとの`generation_status`/`generation_error`はポーリング用に「最新の状態」だけを持つ。
     一括生成の途中でクォータ超過・トークン上限で止まった場合に、どの対象が生成され、どれが

@@ -1,5 +1,5 @@
-"""DFD・データ辞書の編集による承認済みの段階2の差し戻し(Phase 17)と、ER の編集による承認済みの
-段階3の差し戻し(Phase 18)と、構成図の編集による承認済みの段階4の差し戻し(Phase 19)のテスト。
+"""DFD・データ辞書の編集による承認済みの段階2の差し戻しと、ER の編集による承認済みの
+段階3の差し戻しと、構成図の編集による承認済みの段階4の差し戻しのテスト。
 
 SUT: DesignStageService.mark_edited(app/services/design_stage_service.py)、
      UmlDiagramService.update / compute_layout(app/services/uml_diagram_service.py)、

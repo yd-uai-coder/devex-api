@@ -11,11 +11,10 @@ def validate_dfd_rules(
     data_item_ids: set[uuid.UUID],
     referenced_elsewhere: set[uuid.UUID] | frozenset[uuid.UUID] = frozenset(),
 ) -> tuple[list[ValidationIssue], list[ValidationIssue]]:
-    """診断8(appendix/stage3-requirements-organization.md)のDFD規則を検証する。
+    """DFD規則を検証する。
 
-    診断8の5点目「上位図と下位図の境界フローが一致する」は撤回した。Phase 10でDFDを
-    「APIエンドポイント/バッチごとに1枚」のフラットな構成に確定し、上位図・下位図という
-    階層自体を持たないため、判定の対象が存在しない。
+    「上位図と下位図の境界フローが一致する」は検証しない。DFDは処理(機能グループ)ごとの
+    フラットな構成で、上位図・下位図という階層自体を持たないため。
 
     `data_item_ids`はプロジェクトのデータ辞書全件のID。`referenced_elsewhere`は、同じ
     プロジェクトの他のDFDが参照しているデータ項目のID。処理ごとに1枚の構成では、ある図が

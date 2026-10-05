@@ -4,8 +4,8 @@ SUT: build_summary_messages / to_summary_drafts / build_group_dfd_messages / to_
      (app/detailed_design/data_flow_drafting.py)、E2E用の偽LLMの段階2の出力(app/ai/llm/fake.py)
 ドライバ: 各テスト関数
 スタブ不要 ── どれも純粋関数(副作用なし)で、LLM を呼ばないため。偽LLM(E2E)は SUT 側で、
-固定の構造化出力を返すだけ。組み替えた結果はステージ3の写像(mapper.to_dfd)と DFD 規則の検証に
-そのまま通す(ステージ3の資産を再利用できることを確かめるため)。
+固定の構造化出力を返すだけ。組み替えた結果は UML 図の写像(mapper.to_dfd)と DFD 規則の検証に
+そのまま通す(写像と検証をそのまま使えることを確かめるため)。
 """
 
 import uuid
@@ -37,7 +37,7 @@ FUNCTIONS = [
 
 
 def _to_model(output: GroupDfdGenerationOutput):
-    """ステージ3の写像まで通す(データ項目の UUID はサービス層の代わりにここで振る)。"""
+    """UML 図の写像まで通す(データ項目の UUID はサービス層の代わりにここで振る)。"""
     converted = to_dfd_output(output, FUNCTIONS)
     ids = {name: uuid.uuid4() for name in required_data_items(converted)}
     return to_dfd(converted, ids), set(ids.values())

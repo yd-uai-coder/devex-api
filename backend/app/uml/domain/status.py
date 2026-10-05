@@ -1,4 +1,4 @@
-"""UML図のレビュー状態(`uml_diagrams.status`)の遷移規則(M7)。
+"""UML図のレビュー状態(`uml_diagrams.status`)の遷移規則。
 
 状態は `draft → reviewing → approved → exported` と進む。遷移のきっかけはAPIの操作で、
 この表をサービス層に散らさず、純粋関数として1か所に置く(DBにもHTTPにも依存しない)。
@@ -8,7 +8,7 @@
 | 保存(PUT。座標だけの保存を含む)・自動レイアウト | どの状態からでも → reviewing |
 | 承認(POST approve) | draft / reviewing → approved(それ以外は拒否) |
 | 出力(GET export) | approved / exported → exported(それ以外は拒否) |
-| AIによる再生成 | どの状態からでも → draft(`uml_generation_service.py`) |
+| AIによる再生成 | どの状態からでも → draft(段階の生成 `design_stage_generation_service.py`) |
 
 - 承認を`draft`からも許すのは、AIの出力を手直しせずにそのまま承認するケースがあるため。
 - 承認済みの図を保存すると`reviewing`へ戻す(承認は「その内容」に対するものなので、

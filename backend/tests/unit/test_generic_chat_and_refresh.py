@@ -1,4 +1,4 @@
-"""汎用チャットの再試行の共通化(気づき#7)と、refresh の寿命の統一(#8)のテスト。
+"""汎用チャットの再試行の共通化と、refresh の寿命の統一のテスト。
 
 SUT: app.services.chat.ChatService.send_message / llm_retry._is_quota_error /
      auth._set_refresh_cookie

@@ -5,8 +5,8 @@
 - ER(テーブル定義を含む): 入力は、段階2の DFD のデータストア名・データ辞書・処理概要表(LLM 1回)。
 - CRUD 図: 入力は、機能一覧・処理概要表・先に作った ER のテーブル名・DFD の R/W(LLM 1回)。
 
-ER の出力スキーマは段階3専用にし、ステージ3の`GeneratedColumn`に制約・説明を足す(テーブル
-定義の正本を ER に置くため)。簡易ドキュメントモードの ER のプロンプト・スキーマは変えない。
+ER の出力スキーマは段階3専用にし、`GeneratedColumn`に制約・説明を足す(テーブル
+定義の正本を ER に置くため)。
 
 CRUD 図の DFD から決まる部分(R と、書き込みがあること)は、AI に「決まっているもの」として渡す。
 AI に決めさせるのは、書き込みの C/U/D の区別と、DFD を描いていない処理の分だけ。AI が決まった
@@ -29,7 +29,7 @@ from app.uml.validation.structural import MAX_ELEMENTS
 
 
 class DraftedColumn(GeneratedColumn):
-    """段階3の ER の列。ステージ3の列に、テーブル定義の制約・説明を足す。"""
+    """段階3の ER の列。`GeneratedColumn`に、テーブル定義の制約・説明を足す。"""
 
     constraints: str = Field(
         default="",
