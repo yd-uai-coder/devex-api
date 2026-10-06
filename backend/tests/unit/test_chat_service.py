@@ -13,10 +13,15 @@ from app.repositories.chat_history import ChatHistoryRepository
 from app.schemas.generation import HearingCompletionCheck
 from app.services.chat_service import (
     _COMPLETION_CHECK_PROMPT,
+    _HEARING_SYSTEM_PROMPT,
     _MIN_USER_TURNS_FOR_COMPLETION,
     ChatService,
     _build_messages,
 )
+from app.services.errors import GenerationFailedError
+
+# stream_replyは返信の前に完了判定を呼ぶ。返信の振る舞いを見るテストでは「足りない」を返させる
+_INSUFFICIENT = HearingCompletionCheck(is_sufficient=False, summary="現状整理", missing_points=[])
 
 
 async def _create_project(session: AsyncSession) -> Project:
@@ -49,23 +54,26 @@ async def test_stream_reply_logs_debug_with_latency_and_prompt_chars(
     """ストリーミングはinvoke_with_retryを経由しないため、DEBUGログをstream_reply内で
     個別に記録することを確認する(本文自体はログに含めない、内部設計書3.4節)。"""
     project = await _create_project(db_session)
-    fake_llm = FakeLLM(stream_chunks=["こんにちは"])
+    fake_llm = FakeLLM(structured=_INSUFFICIENT, stream_chunks=["こんにちは"])
     service = ChatService(db_session)
 
     with structlog.testing.capture_logs() as logs:
         async for _ in service.stream_reply(project, user_message="はじめまして", llm=fake_llm):
             pass
 
-    debug_logs = [log for log in logs if log["log_level"] == "debug"]
-    assert len(debug_logs) == 1
-    assert debug_logs[0]["event"] == "llm_call_succeeded"
-    assert "latency_ms" in debug_logs[0]
-    assert "はじめまして" not in str(debug_logs[0])
+    # 完了判定(invoke_with_retry経由。attemptを持つ)とは別に、返信のストリームのログが1件ある
+    stream_logs = [
+        log for log in logs if log["log_level"] == "debug" and "attempt" not in log
+    ]
+    assert len(stream_logs) == 1
+    assert stream_logs[0]["event"] == "llm_call_succeeded"
+    assert "latency_ms" in stream_logs[0]
+    assert "はじめまして" not in str(stream_logs[0])
 
 
 async def test_stream_reply_persists_user_and_ai_messages(db_session: AsyncSession) -> None:
     project = await _create_project(db_session)
-    fake_llm = FakeLLM(stream_chunks=["こん", "にちは"])
+    fake_llm = FakeLLM(structured=_INSUFFICIENT, stream_chunks=["こん", "にちは"])
     service = ChatService(db_session)
 
     chunks = [
@@ -84,12 +92,16 @@ async def test_stream_reply_persists_user_and_ai_messages(db_session: AsyncSessi
 class _RecordingLLM:
     """astream()に渡されたmessagesを記録するだけのスタブ(FakeLLMはmessagesを無視するため)。"""
 
-    def __init__(self) -> None:
+    def __init__(self, check: HearingCompletionCheck = _INSUFFICIENT) -> None:
         self.stream_messages: list[list] = []
+        self._check = check
 
     async def astream(self, messages):
         self.stream_messages.append(messages)
         yield AIMessageChunk(content="こんにちは")
+
+    def with_structured_output(self, _schema):
+        return FakeLLM(structured=self._check).with_structured_output(HearingCompletionCheck)
 
 
 async def test_stream_reply_does_not_send_completion_check_prompt(
@@ -119,7 +131,7 @@ async def test_stream_reply_transitions_completed_project_to_revising(
     project = Project(user_id=user.id, title="p", status="completed")
     db_session.add(project)
     await db_session.flush()
-    fake_llm = FakeLLM(stream_chunks=["承知しました"])
+    fake_llm = FakeLLM(structured=_INSUFFICIENT, stream_chunks=["承知しました"])
     service = ChatService(db_session)
 
     async for _ in service.stream_reply(project, user_message="ここを直したい", llm=fake_llm):
@@ -138,7 +150,7 @@ async def test_stream_reply_does_not_change_status_when_already_interviewing_or_
         project = Project(user_id=user.id, title="p", status=status)
         db_session.add(project)
         await db_session.flush()
-        fake_llm = FakeLLM(stream_chunks=["了解"])
+        fake_llm = FakeLLM(structured=_INSUFFICIENT, stream_chunks=["了解"])
         service = ChatService(db_session)
 
         async for _ in service.stream_reply(project, user_message="続き", llm=fake_llm):
@@ -155,6 +167,7 @@ async def test_stream_reply_extracts_text_from_thought_signature_content(
     ストリーミング・永続化されることを確認する。"""
     project = await _create_project(db_session)
     fake_llm = FakeLLM(
+        structured=_INSUFFICIENT,
         stream_chunks=[
             "通常の",
             [{"type": "text", "text": "テキスト", "extras": {"signature": "sig"}}],
@@ -179,6 +192,7 @@ async def test_stream_reply_skips_signature_only_chunks(db_session: AsyncSession
     """textを持たずsignatureのみのチャンク(空文字列に変換される)はyieldされないことを確認する。"""
     project = await _create_project(db_session)
     fake_llm = FakeLLM(
+        structured=_INSUFFICIENT,
         stream_chunks=[
             [{"type": "text", "text": "", "extras": {"signature": "sig"}}],
             "本文",
@@ -261,24 +275,108 @@ async def test_check_completion_keeps_llm_insufficient_verdict(db_session: Async
     assert result == expected
 
 
-async def test_get_hearing_completion_route_delegates_to_chat_service(
-    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """GET /projects/{id}/hearing-completion がChatService.check_completionへ
-    正しく委譲されることを確認する(ルート自体はllmを注入できないため、get_gemini_llmを
-    モンキーパッチしてFakeLLMに差し替える。test_ai_graph_nodes.pyと同じ手法)。"""
+async def test_get_hearing_completion_route_returns_stored_check(db_session: AsyncSession) -> None:
+    """GET /projects/{id}/hearing-completion は、チャットの送信時に保存した判定をそのまま返す
+    (LLMを呼ばないので、get_gemini_llmを差し替えなくてよい)。"""
     project = await _create_project(db_session)
-    await _add_user_turns(db_session, project, _MIN_USER_TURNS_FOR_COMPLETION)
     expected = HearingCompletionCheck(
         is_sufficient=True, summary="備品予約システムの要件が整理できました。", missing_points=[]
     )
-    monkeypatch.setattr(
-        "app.services.chat_service.get_gemini_llm", lambda: FakeLLM(structured=expected)
-    )
+    project.hearing_check = expected.model_dump()
 
     result = await get_hearing_completion(db_session, project)
 
     assert result == expected
+
+
+async def test_get_hearing_completion_route_is_insufficient_before_any_check(
+    db_session: AsyncSession,
+) -> None:
+    project = await _create_project(db_session)
+
+    result = await get_hearing_completion(db_session, project)
+
+    assert result.is_sufficient is False
+
+
+async def test_stream_reply_presents_summary_without_llm_reply_when_sufficient(
+    db_session: AsyncSession,
+) -> None:
+    """判定が十分なら、LLMで返信を作らず、判定のsummaryを決まった形で返して判定を保存する。"""
+    project = await _create_project(db_session)
+    await _add_user_turns(db_session, project, _MIN_USER_TURNS_FOR_COMPLETION - 1)
+    check = HearingCompletionCheck(is_sufficient=True, summary="備品予約の要件です。")
+    llm = _RecordingLLM(check)
+
+    chunks = [
+        chunk
+        async for chunk in ChatService(db_session).stream_reply(
+            project, user_message="以上です", llm=llm
+        )
+    ]
+
+    assert llm.stream_messages == []
+    assert len(chunks) == 1
+    assert "備品予約の要件です。" in chunks[0]
+    assert "この内容で設計書を生成する" in chunks[0]
+    assert project.hearing_check == check.model_dump()
+    history = await ChatHistoryRepository(db_session).list_for_project(project.id)
+    assert (history[-1].sender, history[-1].message) == ("ai", chunks[0])
+
+
+async def test_stream_reply_passes_missing_points_to_reply_when_insufficient(
+    db_session: AsyncSession,
+) -> None:
+    """足りなければ通常の返信を作り、判定の不足点をシステムプロンプトに足す
+    (発話の回数が足りないことを示す点は、対話の観点ではないので渡さない)。"""
+    project = await _create_project(db_session)
+    check = HearingCompletionCheck(
+        is_sufficient=True, summary="要約", missing_points=["想定ユーザー"]
+    )
+    llm = _RecordingLLM(check)
+
+    async for _ in ChatService(db_session).stream_reply(
+        project, user_message="はじめまして", llm=llm
+    ):
+        pass
+
+    system_prompt = llm.stream_messages[0][0].content
+    assert "[まだ確認できていない観点]\n- 想定ユーザー" in system_prompt
+    assert "対話がまだ十分に進んでいません" not in system_prompt
+    assert project.hearing_check is not None
+    assert project.hearing_check["is_sufficient"] is False
+
+
+async def test_stream_reply_continues_and_clears_check_when_check_fails(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """判定に失敗しても返信は続け、古い判定で生成ボタンが残らないよう保存済みの判定を消す。"""
+    project = await _create_project(db_session)
+    project.hearing_check = HearingCompletionCheck(is_sufficient=True, summary="古い").model_dump()
+
+    async def _failing_check(self, project, *, llm=None):  # noqa: ANN001
+        raise GenerationFailedError("失敗")
+
+    monkeypatch.setattr(ChatService, "check_completion", _failing_check)
+    fake_llm = FakeLLM(stream_chunks=["続けます"])
+
+    chunks = [
+        chunk
+        async for chunk in ChatService(db_session).stream_reply(
+            project, user_message="はじめまして", llm=fake_llm
+        )
+    ]
+
+    assert chunks == ["続けます"]
+    assert project.hearing_check is None
+
+
+def test_hearing_prompt_leaves_summary_and_documents_to_the_system() -> None:
+    """ヒアリングのAIは、確定の確認・まとめ・設計書の本文をチャットに書かない(判定とまとめは
+    システムが行い、生成は画面のボタンで行う)。"""
+    assert "まとめ(サマリ)" in _HEARING_SYSTEM_PROMPT
+    assert "設計書(要件定義書など)の本文" in _HEARING_SYSTEM_PROMPT
+    assert "画面のボタン" in _HEARING_SYSTEM_PROMPT
 
 
 async def test_create_project_route_generates_opening_ai_reply(
@@ -299,6 +397,7 @@ async def test_create_project_route_generates_opening_ai_reply(
     project_read = await create_project(
         session=db_session,
         current_user=user,
+        name="トレンド調査",
         system_overview="トレンド情報を調べたい",
         goals_raw="効率的に把握したい",
         files=[],
@@ -332,6 +431,7 @@ async def test_create_project_route_succeeds_even_if_opening_reply_fails(
     project_read = await create_project(
         session=db_session,
         current_user=user,
+        name="トレンド調査",
         system_overview="トレンド情報を調べたい",
         goals_raw="効率的に把握したい",
         files=[],

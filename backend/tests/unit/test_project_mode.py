@@ -55,6 +55,7 @@ async def test_create_project_route_passes_template_id_and_mode(
     result = await create_project(
         db_session,
         user,
+        name="備品予約",
         system_overview="備品予約",
         goals_raw="重複を防ぐ",
         template_id=template.id,
@@ -73,6 +74,7 @@ async def test_service_create_defaults_mode_to_simple(db_session: AsyncSession) 
     user = await _create_user(db_session)
 
     project = await ProjectService(db_session).create(
+        name="備品予約",
         user_id=user.id, intake={"system_overview": "s"}, files=[]
     )
 

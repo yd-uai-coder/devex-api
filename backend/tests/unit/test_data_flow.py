@@ -69,7 +69,8 @@ def test_merge_then_validate_without_errors() -> None:
 
     assert STAGE_VALIDATORS[2] is validate_data_flow
     assert has_errors(issues) is False
-    assert fixture_issues == []
+    # fixture は DFD を描くグループを選んでいないので、その警告だけが出る
+    assert [issue.code for issue in fixture_issues] == ["NO_DFD_GROUPS"]
 
 
 def test_merge_summaries_orders_by_function_list_and_keeps_previous() -> None:
@@ -156,6 +157,15 @@ def test_validate_dfd_state_and_processes() -> None:
         "DFD_MISSING_PROCESS",
     ]
     assert _codes(model, approved) == []
+
+
+def test_validate_warns_when_no_dfd_group_is_selected() -> None:
+    summaries = [_row("F-01"), _row("F-02"), _row("F-03")]
+
+    issues = validate_data_flow({"dfd_groups": [], "summaries": summaries}, _sources())
+
+    assert [issue.code for issue in issues] == ["NO_DFD_GROUPS"]
+    assert has_errors(issues) is False
 
 
 def test_validate_invalid_model() -> None:

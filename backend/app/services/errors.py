@@ -60,6 +60,11 @@ class FileTooLargeError(BadRequestError):
 
     code: ClassVar[str | None] = "FILE_TOO_LARGE"
 
+class InvalidProjectNameError(BadRequestError):
+    """プロジェクト名が空、または上限(40文字)を超えている場合に送出する。"""
+
+    code: ClassVar[str | None] = "INVALID_PROJECT_NAME"
+
 class LLMQuotaExceededError(TooManyRequestsError):
     """外部LLMプロバイダー(Gemini Flash-Lite無料枠)のトークン上限超過等で
     呼び出しが失敗した場合に送出する。

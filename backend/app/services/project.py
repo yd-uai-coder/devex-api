@@ -13,6 +13,7 @@ from app.schemas.project import IntakeFileRead, ProjectDetail, ProjectMode
 from app.services.doc_generator_service import DocGeneratorService
 from app.services.errors import (
     FileTooLargeError,
+    InvalidProjectNameError,
     PromptTemplateNotFoundError,
     TooManyFilesError,
     UnsupportedFileTypeError,
@@ -25,6 +26,8 @@ logger = structlog.get_logger(__name__)
 MAX_FILES_PER_PROJECT = 3
 # 1ファイルあたりのサイズ上限(バイト)
 MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024
+# プロジェクト名の文字数の上限(画面の見出しや設計書の表題に使うため短くする)
+PROJECT_NAME_MAX_LENGTH = 40
 
 
 @dataclass
@@ -50,12 +53,18 @@ class ProjectService:
     async def create(
         self, *,
         user_id: uuid.UUID,
+        name: str,
         intake: dict,
         files: list[UploadedFileInput],
         template_id: uuid.UUID | None = None,
         mode: ProjectMode = "simple",
     ) -> Project:
         """プロジェクトを作成し、初期ヒアリング入力と添付ファイルの内容をchat_historiesへ記録する。"""
+        title = name.strip()
+        if not title or len(title) > PROJECT_NAME_MAX_LENGTH:
+            raise InvalidProjectNameError(
+                f"プロジェクト名は1〜{PROJECT_NAME_MAX_LENGTH}文字で入力してください"
+            )
         if len(files) > MAX_FILES_PER_PROJECT:
             raise TooManyFilesError(f"添付ファイルは最大{MAX_FILES_PER_PROJECT}件までです")
         for file in files:
@@ -64,7 +73,6 @@ class ProjectService:
         if template_id is not None and await self._prompt_templates.get_by_id(template_id) is None:
             raise PromptTemplateNotFoundError(f"Prompt template {template_id} not found")
 
-        title = (intake.get("system_overview") or "").strip()[:255] or "無題のプロジェクト"
         project = await self._projects.create(
             user_id=user_id, title=title, intake=intake, template_id=template_id, mode=mode
         )
