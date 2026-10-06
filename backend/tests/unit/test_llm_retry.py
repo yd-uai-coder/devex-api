@@ -5,7 +5,7 @@ import structlog.testing
 from langchain_core.messages import HumanMessage
 
 from app.services import llm_retry
-from app.services.errors import GenerationFailedError, LLMQuotaExceededError
+from app.services.errors import GenerationFailedError, LLMQuotaExceededError, LLMTokenLimitError
 from app.services.llm_retry import invoke_with_retry, prompt_char_count
 
 
@@ -147,3 +147,35 @@ async def test_logs_error_after_exhausting_retries() -> None:
     error_logs = [log for log in logs if log["log_level"] == "error"]
     assert len(error_logs) == 1
     assert error_logs[0]["event"] == "llm_generation_failed_after_retries"
+
+
+async def test_does_not_retry_token_limit_error() -> None:
+    """トークン上限超過は同じ入力で再試行しても変わらないため、1回で諦める。"""
+    calls = {"n": 0}
+
+    async def _call() -> str:
+        calls["n"] += 1
+        raise LLMTokenLimitError("出力がMAX_TOKENSで打ち切られた")
+
+    with pytest.raises(LLMTokenLimitError):
+        await invoke_with_retry(_call)
+
+    assert calls["n"] == 1
+
+
+async def test_converts_input_token_limit_api_error_without_retrying() -> None:
+    """入力トークン数の超過(Gemini APIの400)はLLMTokenLimitErrorにして1回で諦める。"""
+    from google.genai.errors import APIError
+
+    calls = {"n": 0}
+
+    async def _call() -> str:
+        calls["n"] += 1
+        raise APIError(
+            400, {"error": {"message": "The input token count exceeds the maximum"}}
+        )
+
+    with pytest.raises(LLMTokenLimitError):
+        await invoke_with_retry(_call)
+
+    assert calls["n"] == 1

@@ -1,0 +1,348 @@
+import asyncio
+import uuid
+from dataclasses import dataclass
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.errors import BadRequestError
+from app.detailed_design.data_flow import DATA_FLOW_STAGE
+from app.detailed_design.data_model import DATA_MODEL_STAGE
+from app.detailed_design.structure import STRUCTURE_STAGE
+from app.models.uml_diagram import UmlDiagram
+from app.repositories.data_item import DataItemRepository
+from app.repositories.uml_diagram import UmlDiagramRepository
+from app.services.design_stage_service import DesignStageService
+from app.services.errors import (
+    LayoutNodeLimitExceededError,
+    LayoutValidationFailedError,
+    UmlApprovalValidationFailedError,
+    UmlDiagramNotApprovableError,
+    UmlDiagramNotApprovedError,
+    UmlDiagramNotFoundError,
+    UmlDiagramVersionConflictError,
+    UmlGenerationInProgressError,
+    UmlLayoutRequiredError,
+)
+from app.uml.domain import (
+    STATUS_AFTER_APPROVE,
+    STATUS_AFTER_EDIT,
+    STATUS_AFTER_EXPORT,
+    ComponentSemanticModel,
+    DfdSemanticModel,
+    ErSemanticModel,
+    SemanticModelAdapter,
+    can_approve,
+    can_export,
+    parse_status,
+)
+from app.uml.export import (
+    MEDIA_TYPES,
+    ExportFormat,
+    build_render,
+    diagram_title,
+    export_filename,
+    render_content,
+)
+from app.uml.layout import LayoutModel, edge_labels, reconcile_layout
+from app.uml.layout import compute_layout as compute_layout_engine
+from app.uml.validation import ValidationResult, validate_diagram
+from app.uml.validation.structural import MAX_ELEMENTS
+
+
+@dataclass(frozen=True)
+class ExportedFile:
+    """出力したファイル1つ分(ルートがそのままダウンロードのレスポンスにする)。"""
+
+    filename: str
+    content: str
+    media_type: str
+
+
+class UmlDiagramService:
+    """UML設計図(component/er/dfd)に対するユースケース(一覧・取得・更新・検証・レイアウト・承認)を
+    担当するサービス。詳細設計モードの段階2〜4の図(DFD・ER・構成図)の編集・承認・出力に使う。
+    図の AI 生成は段階の生成(app/services/design_stage_generation_service.py)が担う。
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        # session: DB操作用の非同期セッション
+        self._session = session
+        self._diagrams = UmlDiagramRepository(session)
+        self._data_items = DataItemRepository(session)
+
+    async def list_for_project(self, project_id: uuid.UUID) -> list[UmlDiagram]:
+        """指定プロジェクトのUML図一覧を取得する。"""
+        return await self._diagrams.list_for_project(project_id)
+
+    async def get(self, *, project_id: uuid.UUID, diagram_id: uuid.UUID) -> UmlDiagram:
+        """UML図を1件取得する(他プロジェクトのものは404扱い)。"""
+        return await self._get_owned(project_id=project_id, diagram_id=diagram_id)
+
+    async def update(
+        self,
+        *,
+        project_id: uuid.UUID,
+        diagram_id: uuid.UUID,
+        expected_version: int,
+        semantic_model: ComponentSemanticModel | ErSemanticModel | DfdSemanticModel,
+        layout_model: LayoutModel | None = None,
+    ) -> UmlDiagram:
+        """UML図の意味モデル全体を更新する(楽観ロック)。
+
+        `layout_model`を渡した場合は、レビュー画面で手動移動した配置として意味モデルと同じ
+        versionで保存する。省略した場合は保存済みの配置を保つ。どちらの場合も、新しい意味モデルに
+        存在しない要素・関係のジオメトリは`reconcile_layout`で落とす(要素の削除を1回の保存で
+        反映するため)。
+
+        `expected_version`がDB上の現在のversionと一致しない場合、他の更新と競合している
+        とみなしUmlDiagramVersionConflictError(409)にする(devex-api既存コードベースに前例の
+        無い新規パターン。generated_documents.versionは追記のたびに増える版数であり、
+        書き込み競合検知の仕組みではない)。
+        """
+        diagram = await self._get_owned(project_id=project_id, diagram_id=diagram_id)
+        _ensure_not_generating(diagram)
+        if semantic_model.notation != diagram.notation:
+            raise BadRequestError(
+                f"notation は変更できません(現在: {diagram.notation}, "
+                f"指定値: {semantic_model.notation})"
+            )
+        _ensure_version(diagram, expected_version)
+        diagram.semantic_model = semantic_model.model_dump(mode="json")
+        base_layout = (
+            layout_model
+            if layout_model is not None
+            else (
+                LayoutModel.model_validate(diagram.layout_model)
+                if diagram.layout_model is not None
+                else None
+            )
+        )
+        if base_layout is not None:
+            diagram.layout_model = reconcile_layout(base_layout, semantic_model).model_dump(
+                mode="json"
+            )
+        # 承認済みの図を保存したら承認をやり直す(座標だけの保存も含む)
+        diagram.status = STATUS_AFTER_EDIT
+        diagram.version += 1
+        await self._reopen_stage(diagram)
+        await self._session.flush()
+        await self._session.commit()
+        # updated_at は server-side の onupdate=func.now() で決まるため、UPDATE後は
+        # DBが計算した値を明示的に取り直す(取らないと後続のPydantic変換時に
+        # 「コミット後に未ロードの属性へ同期アクセスした」MissingGreenletで落ちる)。
+        await self._session.refresh(diagram)
+        return diagram
+
+    async def validate(self, *, project_id: uuid.UUID, diagram_id: uuid.UUID) -> ValidationResult:
+        """UML図を検証する。DBのsemantic_model(生dict)を型付きモデルへ復元してから
+        app.uml.validation.validate_diagramへ渡す。DFDの場合はプロジェクトのデータ辞書全件の
+        idと、他のDFDが参照しているデータ項目のidも渡す(未参照データ項目の判定を全DFDで横断する)。"""
+        diagram = await self._get_owned(project_id=project_id, diagram_id=diagram_id)
+        model = SemanticModelAdapter.validate_python(diagram.semantic_model)
+        return await self._validate_model(diagram, model)
+
+    async def compute_layout(self, *, project_id: uuid.UUID, diagram_id: uuid.UUID) -> UmlDiagram:
+        """UML図の自動レイアウトを実行し、`layout_model`を保存する。
+
+        レイアウトエンジン(`app.uml.layout`)を実行する前に2つの事前チェックを行う
+        : (1) 要素数が`MAX_ELEMENTS`
+        (`app.uml.validation.structural`と共有する上限、目安30)を超える場合は
+        `LayoutNodeLimitExceededError`。(2) 構造検証
+        (ID重複・参照切れ等)を通らない場合は`LayoutValidationFailedError`
+        ── 重複ID・未定義ノード参照は、レイアウトエンジン内でassertせず
+        この事前検証に一本化する(レイアウトエンジン単体はもう防御しない)。
+
+        レイアウト計算自体はCPU負荷が高い(経路探索・交差削減の山登りでO(n²)〜O(n!))ため、
+        `asyncio.to_thread`でイベントループをブロックしないようにする
+        (devex-api既存コードベースに前例の無い新規パターン)。
+        """
+        diagram = await self._get_owned(project_id=project_id, diagram_id=diagram_id)
+        _ensure_not_generating(diagram)
+        model = SemanticModelAdapter.validate_python(diagram.semantic_model)
+
+        if len(model.elements) > MAX_ELEMENTS:
+            raise LayoutNodeLimitExceededError(
+                f"要素数が上限({MAX_ELEMENTS})を超えています: {len(model.elements)}件"
+            )
+
+        validation_result = await self._validate_model(diagram, model)
+        if not validation_result.is_valid:
+            messages = "; ".join(issue.message for issue in validation_result.errors)
+            raise LayoutValidationFailedError(
+                f"意味モデルの検証エラーのためレイアウトを計算できません: {messages}"
+            )
+
+        label_texts = edge_labels(model, await self._data_item_names(diagram, model))
+        layout_model = await asyncio.to_thread(
+            compute_layout_engine, str(diagram.id), model, label_texts
+        )
+        diagram.layout_model = layout_model.model_dump(mode="json")
+        # 配置が変わると出力の見た目も変わるため、保存と同じく承認をやり直す
+        diagram.status = STATUS_AFTER_EDIT
+        await self._reopen_stage(diagram)
+        await self._session.flush()
+        await self._session.commit()
+        # updated_at は server-side の onupdate=func.now() で決まるため、UPDATE後は
+        # DBが計算した値を明示的に取り直す(update()と同じ理由)。
+        await self._session.refresh(diagram)
+        return diagram
+
+    async def approve(
+        self, *, project_id: uuid.UUID, diagram_id: uuid.UUID, expected_version: int
+    ) -> UmlDiagram:
+        """UML図を承認する(draft / reviewing → approved)。
+
+        `expected_version`は、利用者が画面で見ていた版。承認は「その内容」に対するものなので、
+        見ていない版を承認しないよう、保存と同じく楽観ロックで確かめる。状態が変わっても
+        `version`は増やさない(`version`は内容の楽観ロック専用。app/uml/domain/status.py参照)。
+
+        承認の条件(この順に確かめる):
+        1. 生成中でない
+        2. versionが一致する
+        3. 承認できる状態(draft / reviewing)である
+        4. 配置があり、全要素の配置を含む(出力は座標が無いと描けないため)
+        5. 検証にエラーが無い(警告は承認を妨げない)
+        """
+        diagram = await self._get_owned(project_id=project_id, diagram_id=diagram_id)
+        _ensure_not_generating(diagram)
+        _ensure_version(diagram, expected_version)
+        if not can_approve(parse_status(diagram.status)):
+            raise UmlDiagramNotApprovableError(
+                f"Diagram {diagram_id} is already {diagram.status}; save it to review again"
+            )
+        model = SemanticModelAdapter.validate_python(diagram.semantic_model)
+        _ensure_layout_covers(diagram, model)
+        validation_result = await self._validate_model(diagram, model)
+        if not validation_result.is_valid:
+            raise UmlApprovalValidationFailedError(
+                f"検証エラーが{len(validation_result.errors)}件あるため承認できません"
+            )
+
+        diagram.status = STATUS_AFTER_APPROVE
+        await self._session.flush()
+        await self._session.commit()
+        await self._session.refresh(diagram)
+        return diagram
+
+    async def export(
+        self, *, project_id: uuid.UUID, diagram_id: uuid.UUID, fmt: ExportFormat
+    ) -> ExportedFile:
+        """承認済みの図をdraw.io/SVGに書き出す。出力に成功したら`approved`を`exported`に
+        する(状態が変わっても`version`は増やさない)。
+
+        承認済み・出力済みの図だけを出力する(それ以外は409)。承認の条件で配置の有無は
+        確かめているが、出力エンジン(`build_render`)も配置の無い要素を拒否する。
+        """
+        diagram = await self._get_owned(project_id=project_id, diagram_id=diagram_id)
+        if not can_export(parse_status(diagram.status)):
+            raise UmlDiagramNotApprovedError(
+                f"Diagram {diagram_id} is {diagram.status}; approve it before exporting"
+            )
+        model = SemanticModelAdapter.validate_python(diagram.semantic_model)
+        _ensure_layout_covers(diagram, model)
+        layout = LayoutModel.model_validate(diagram.layout_model)
+        render = build_render(
+            model, layout, edge_labels(model, await self._data_item_names(diagram, model))
+        )
+        title = diagram_title(model.notation, diagram.subject)
+        content = render_content(render, fmt, diagram_id=str(diagram.id), title=title)
+
+        diagram.status = STATUS_AFTER_EXPORT
+        await self._session.flush()
+        await self._session.commit()
+        return ExportedFile(
+            filename=export_filename(model.notation, diagram.subject, fmt),
+            content=content,
+            media_type=MEDIA_TYPES[fmt],
+        )
+
+    async def _validate_model(
+        self,
+        diagram: UmlDiagram,
+        model: ComponentSemanticModel | ErSemanticModel | DfdSemanticModel,
+    ) -> ValidationResult:
+        """DFDなら、データ辞書全件のidと、同じプロジェクトの他のDFDが参照しているデータ項目のidを
+        集めてから検証する(component/erはそのまま検証する)。"""
+        if not isinstance(model, DfdSemanticModel):
+            return validate_diagram(model)
+        data_items = await self._data_items.list_for_project(diagram.project_id)
+        referenced_elsewhere: set[uuid.UUID] = set()
+        for other in await self._diagrams.list_by_notation(diagram.project_id, "dfd"):
+            if other.id == diagram.id:
+                continue
+            other_model = SemanticModelAdapter.validate_python(other.semantic_model)
+            if isinstance(other_model, DfdSemanticModel):
+                referenced_elsewhere |= {flow.data_item_id for flow in other_model.relations}
+        return validate_diagram(
+            model,
+            data_item_ids={item.id for item in data_items},
+            referenced_elsewhere=referenced_elsewhere,
+        )
+
+    async def _data_item_names(
+        self,
+        diagram: UmlDiagram,
+        model: ComponentSemanticModel | ErSemanticModel | DfdSemanticModel,
+    ) -> dict[uuid.UUID, str]:
+        """DFDの辺ラベル用に、データ項目id → 名前を引く(DFD以外はデータ辞書を読まない)。"""
+        if not isinstance(model, DfdSemanticModel):
+            return {}
+        items = await self._data_items.list_for_project(diagram.project_id)
+        return {item.id: item.name for item in items}
+
+    async def _reopen_stage(self, diagram: UmlDiagram) -> None:
+        """詳細設計モードの DFD は段階2の、ER は段階3の、構成図(component)は段階4の内容の一部
+        なので、図の承認がやり直しになる保存・配置では、承認済みのその段階も差し戻す(段階の行が
+        無い簡易ドキュメントモードでは何もしない)。"""
+        stage = _STAGE_OF_NOTATION.get(diagram.notation)
+        if stage is not None:
+            await DesignStageService(self._session).mark_edited(diagram.project_id, stage)
+
+    async def _get_owned(self, *, project_id: uuid.UUID, diagram_id: uuid.UUID) -> UmlDiagram:
+        diagram = await self._diagrams.get_by_id(diagram_id, project_id=project_id)
+        if diagram is None:
+            raise UmlDiagramNotFoundError(f"Diagram {diagram_id} not found")
+        return diagram
+
+
+# 詳細設計モードで、図がどの段階の内容の一部か(図の編集でその段階を差し戻す)
+_STAGE_OF_NOTATION: dict[str, int] = {
+    "dfd": DATA_FLOW_STAGE,
+    "er": DATA_MODEL_STAGE,
+    "component": STRUCTURE_STAGE,
+}
+
+
+def _ensure_version(diagram: UmlDiagram, expected_version: int) -> None:
+    """楽観ロック。`expected_version`がDB上の現在のversionと一致しなければ409にする。"""
+    if diagram.version != expected_version:
+        raise UmlDiagramVersionConflictError(
+            f"Diagram {diagram.id} has been updated by someone else "
+            f"(expected version {expected_version}, current version {diagram.version})"
+        )
+
+
+def _ensure_layout_covers(
+    diagram: UmlDiagram,
+    model: ComponentSemanticModel | ErSemanticModel | DfdSemanticModel,
+) -> None:
+    """配置があり、意味モデルの全要素の座標を含むことを確かめる(承認・出力の前提)。"""
+    if diagram.layout_model is None:
+        raise UmlLayoutRequiredError(
+            "配置がありません。自動レイアウトを実行してから承認してください"
+        )
+    layout = LayoutModel.model_validate(diagram.layout_model)
+    missing = [el.id for el in model.elements if el.id not in layout.nodes]
+    if missing:
+        raise UmlLayoutRequiredError(
+            f"配置の無い要素があります({', '.join(missing)})。"
+            "保存するか、自動レイアウトを実行してください"
+        )
+
+
+def _ensure_not_generating(diagram: UmlDiagram) -> None:
+    """AI生成中の図は、生成結果で上書きされるため更新・レイアウト実行を受け付けない。"""
+    if diagram.generation_status == "generating":
+        raise UmlGenerationInProgressError(
+            f"Diagram {diagram.id} is being generated; retry after the generation finishes"
+        )

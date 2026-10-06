@@ -45,5 +45,9 @@ jobs:
             set -e
             cd "${{ secrets.VPS_DEVEX_API_PATH }}"
             git pull origin main
-            docker compose -f docker-compose.prod.yml up -d --build
-            docker compose -f docker-compose.prod.yml exec -T backend uv run alembic upgrade head
+            # マイグレーションを、新しいコードの起動より前に流す。新しいイメージを作り、
+            # 使い捨てのコンテナでマイグレーションしてから入れ替える。マイグレーションが失敗すると
+            # set -e でここで止まり、古いコードのコンテナが古いスキーマのまま動き続ける。
+            docker compose -f docker-compose.prod.yml build backend
+            docker compose -f docker-compose.prod.yml run --rm -T backend uv run alembic upgrade head
+            docker compose -f docker-compose.prod.yml up -d

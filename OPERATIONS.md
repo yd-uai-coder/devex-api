@@ -2,8 +2,6 @@
 
 このドキュメントは、`devex-api`(FastAPI + PostgreSQL + Redis)をConoHa VPS(生VPS。マネージドPaaSではなく自前でDocker運用)へ、`devex-ui`(Next.js)をVercelへデプロイ・運用するための手順書。個人開発規模を想定しており、エンタープライズ級の監視基盤等は求めない。
 
-作成の背景・検証内容は [`textbook/Phase-5/Phase-5-introduction.md`](../textbook/Phase-5/Phase-5-introduction.md) を参照。
-
 ## 全体構成
 
 VPS上には複数プロジェクトが同居する前提のため、ポート80/443は**共有のTraefik**(devex-apiのリポジトリに属さない、VPS共通のリバースプロキシ)のみが公開する。各プロジェクトの`backend`等はTraefikと同じDockerネットワーク(`edge`)経由でのみ到達し、自身ではポートを公開しない。
@@ -88,7 +86,7 @@ Traefikはdocker-composeの`nginx`+`certbot`をまとめて置き換える(TLS�
 - `devex-api/.env`(root。`docker-compose.prod.yml`が`env_file`経由で読む)は**VPS上にのみ実体を置き、gitにコミットしない**(`.gitignore`で既に除外済み)。`.env.example`を土台に値を埋める。
 - 本番相当にする際に特に注意する項目:
   - `ENVIRONMENT=production` / `DEBUG=false` ── `docker-compose.prod.yml`の`backend`サービスが`environment:`で強制上書きするため、`.env`側の値に関わらず必ずこの値になる。ただし`JWT_SECRET_KEY`が32文字未満、または`change-me`で始まる場合は`app/core/config.py`の起動時バリデーションで拒否される(`ENVIRONMENT=production`時のみ)。
-  - `GOOGLE_API_KEY` ── 実際のGemini APIキー。Phase 5-2で確認済みの通り、`GEMINI_MODEL`は`gemini-3.5-flash-lite`を使うこと(`gemini-2.5-flash-lite`は新規利用不可、404 NOT_FOUND)。
+  - `GOOGLE_API_KEY` ── 実際のGemini APIキー。`GEMINI_MODEL`は`gemini-3.5-flash-lite`を使うこと(`gemini-2.5-flash-lite`は新規利用不可、404 NOT_FOUND)。
   - `CORS_ORIGINS` ── **Vercelの本番URL(例: `https://devex-ui.vercel.app`、カスタムドメインを設定した場合はそちらも)を含める**。未設定時のデフォルトは`["http://localhost:3000"]`のみで、Vercel上のdevex-uiからのAPI呼び出しがすべてCORSエラーになるため、初回デプロイ前に必ず設定する。
   - `E2E_FAKE_LLM` ── `.env`に**書かない、または`false`のままにする**(起動時バリデーションが`ENVIRONMENT=production`かつ`E2E_FAKE_LLM=true`を拒否する)。
 
@@ -98,8 +96,10 @@ Traefikはdocker-composeの`nginx`+`certbot`をまとめて置き換える(TLS�
 cd devex-api
 # .env を用意済みであることを前提とする(上記2.参照)
 # edge ネットワーク(1節でTraefikが作成済み)が無いと backend の起動に失敗する点に注意
-docker compose -f docker-compose.prod.yml up -d --build
-docker compose -f docker-compose.prod.yml exec backend uv run alembic upgrade head
+# マイグレーションを、backend の起動より前に流す(9節の自動デプロイと同じ順)
+docker compose -f docker-compose.prod.yml build backend
+docker compose -f docker-compose.prod.yml run --rm backend uv run alembic upgrade head
+docker compose -f docker-compose.prod.yml up -d
 docker compose -f docker-compose.prod.yml ps   # backend/postgres/redis が healthy になることを確認
 curl -sI https://your-domain.example.com/      # Traefikが自動取得した証明書でHTTPS応答することを確認
 ```
@@ -183,7 +183,7 @@ docker compose -f docker-compose.prod.yml logs -f backend   # アプリログの
 docker compose -f /opt/traefik/docker-compose.yml logs -f traefik   # リバースプロキシ側のログ確認
 ```
 
-`backend`は`backend/Dockerfile`にHEALTHCHECK命令を組み込み済みのため、コンテナ単体でも`docker compose ps`のSTATUS列に`(healthy)`/`(unhealthy)`が表示される(Phase 5-1で追加)。
+`backend`は`backend/Dockerfile`にHEALTHCHECK命令を組み込み済みのため、コンテナ単体でも`docker compose ps`のSTATUS列に`(healthy)`/`(unhealthy)`が表示される。
 
 ## 8. devex-ui(Vercel)デプロイ手順
 
@@ -225,4 +225,35 @@ GitHubリポジトリの Settings → Secrets and variables → Actions → New 
 | `VPS_SSH_KEY` | 上記ユーザーで`git pull`・`docker compose`が実行できる秘密鍵(PEM形式)の中身。対応する公開鍵をVPSの`~/.ssh/authorized_keys`に登録しておく |
 | `VPS_DEVEX_API_PATH` | VPS上で`devex-api`リポジトリをcloneした絶対パス(例: `/home/deploy/devex-api`) |
 
-設定後は、`main`ブランチへのpush(マージ含む)のたびに、lint・testが通れば自動的にVPSへ`git pull`+コンテナ再ビルド+マイグレーション適用が行われる。手動デプロイ(3節)は初回セットアップ時、または自動デプロイが使えない状況(SSH鍵の再発行中等)の代替手段として引き続き使える。
+設定後は、`main`ブランチへのpush(マージ含む)のたびに、lint・testが通れば自動的にVPSへ`git pull`+イメージの再ビルド+マイグレーション適用+コンテナの入れ替えが行われる。
+
+**順序**: `build backend` → 使い捨てのコンテナ(`run --rm`)で`alembic upgrade head` → `up -d`。マイグレーションが失敗すると`set -e`でそこで止まり、古いコードのコンテナが古いスキーマのまま動き続ける(新しいコードが古いスキーマで動く状態を作らないため)。手動デプロイ(3節)は初回セットアップ時、または自動デプロイが使えない状況(SSH鍵の再発行中等)の代替手段として引き続き使える。
+
+## 10. 詳細設計モードを含む版への更新
+
+本番が`a7176af`(詳細設計モードを含まない版)のときに、UML図・詳細設計モードを含む版へ更新する手順。マイグレーションが6本走る(`f1a2b3c4d5e6`・`b7c8d9e0f1a2`・`c1d2e3f4a5b6`〜`f4a5b6c7d8e9`)。新しい環境変数は無い(`REFRESH_TOKEN_EXPIRE_DAYS`の既定値が30→14日になっただけ。`.env`で指定していれば、その値のまま)。
+
+**API(devex-api)を先に、UI(devex-ui)を後に出す**。UI を先に出すと、モード選択・詳細設計画面が古い API を呼んで失敗する。
+
+1. **バックアップ**(VPS。5節): `pg_dump`でダンプを取り、VPS の外へコピーする。
+2. **重複の確認**(VPS): `e3f4a5b6c7d8`は、generated_documents に同じ版の番号の行があると止まる(どの行を残すかは人が決めるため、自動では消さない)。次の SQL が0行であることを確かめる。
+
+   ```bash
+   docker compose -f docker-compose.prod.yml exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
+     SELECT project_id, doc_type, version, COUNT(*) FROM generated_documents
+     GROUP BY project_id, doc_type, version HAVING COUNT(*) > 1;"'
+   docker compose -f docker-compose.prod.yml exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT version_num FROM alembic_version"'
+   # → a96a8c02c148 (更新前の head)であることも確かめる
+   ```
+
+3. **devex-api の反映**(手元): `git fetch`で origin/main を取り込み、`stage4`との差を確かめてから、`stage4`→`main`の PR を作ってマージする。CI の test が通ると、9節の自動デプロイが走る。
+4. **確認**: GitHub Actions のログで、マイグレーション6本が`Running upgrade`と出ていることを確かめる。`curl -s https://<ドメイン>/health`が`{"status":"ok",...}`を返すことを確かめる。
+5. **devex-ui の反映**(手元): 4 が済んでから`main`を push する(Vercel が自動でデプロイする)。
+6. **本番での確認**: 実際の Gemini で、次の2つを通す。
+   - 簡易ドキュメントモード: ログイン → 作成 → ヒアリング → 4文書。
+   - 詳細設計モード: 段階1〜7 → zip のダウンロード。
+
+   図の自動レイアウトにかかった時間と、段階7の生成にかかった時間を控えておく。
+
+**ロールバック**(6節): コードは`main`を`git revert`して push する。マイグレーションは`alembic downgrade a96a8c02c148`で戻す(この更新で作ったテーブル・列を消す。ローカルの本番相当の構成で、6本の往復を確かめた)。詳細設計モードのデータを残す必要があるなら、downgrade ではなく、1 のバックアップから戻すことを考える。
+

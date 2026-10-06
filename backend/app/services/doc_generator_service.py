@@ -1,4 +1,5 @@
 import uuid
+from datetime import UTC, datetime
 
 import structlog
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -8,10 +9,16 @@ from app.ai.llm.gemini import extract_text_content, get_gemini_llm
 from app.core.database import AsyncSessionLocal
 from app.models.chat_history import ChatHistory
 from app.models.generated_document import GeneratedDocument
+from app.models.project import Project
 from app.repositories.chat_history import ChatHistoryRepository
 from app.repositories.generated_document import DOC_TYPES, GeneratedDocumentRepository
 from app.repositories.project import ProjectRepository
-from app.services.errors import DocumentNotFoundError, LLMQuotaExceededError
+from app.services.errors import (
+    DocGenerationInProgressError,
+    DocumentNotFoundError,
+    LLMQuotaExceededError,
+)
+from app.services.generation_staleness import is_stale
 from app.services.llm_retry import invoke_with_retry
 
 logger = structlog.get_logger(__name__)
@@ -76,7 +83,13 @@ _DOC_TYPE_PROMPTS: dict[str, str] = {
         "## 2.4 外部システム・API連携仕様\n- 連携する外部サービス／API、"
         "認証方式、データ連携タイミング\n\n"
         "## 2.5 データ入出力仕様\n- ファイル入出力（CSV、JSON等）、"
-        "受付フォーマット・バリデーションルール"
+        "受付フォーマット・バリデーションルール\n\n"
+        "## 2.6 API一覧\n"
+        "- 本システム自身が提供するAPIを、Markdownテーブル(メソッド/パス/概要/関連画面)で"
+        "すべて列挙する\n"
+        "- パスは`/api/v1/<リソース>`の形で書き、個別の対象は`{id}`のように波括弧で示す。"
+        "親リソースに属するものは`/api/v1/<親リソース>/{id}/<リソース>`とする\n"
+        "- 関連画面は2.2の画面IDで書く(複数は`/`区切り、画面が無いものは`—`)"
         + _COMMON_FORMAT_GUIDANCE
     ),
     "internal_design": (
@@ -89,11 +102,25 @@ _DOC_TYPE_PROMPTS: dict[str, str] = {
         "## 3.1 技術スタック選定・アーキテクチャ方針\n"
         "- フロントエンド / バックエンド / データベース / インフラの選定理由と構成方針\n\n"
         "## 3.2 データモデル定義\n- 主要エンティティ一覧\n"
-        "- テーブルごとに見出しを立て、"
+        "- テーブルごとに『### テーブル: <テーブル名>』の見出しを立て、"
         "Markdownテーブル(カラム名/データ型/制約/説明)で全カラムを列挙する\n\n"
         "## 3.3 バックエンド処理・モジュール設計\n"
         "- 主要処理ロジック（ビジネスロジック）の分割方針。ディレクトリ構成はコードブロックで示す\n"
-        "- APIエンドポイント一覧はMarkdownテーブル(メソッド/パス/概要)で示す\n\n"
+        "- APIエンドポイント一覧はMarkdownテーブル(メソッド/パス/概要)で示す。"
+        "外部設計書2.6のAPI一覧と同じメソッド・パスを使い、内部の担当(ルート・サービス)の"
+        "観点で概要を書く\n"
+        "- 続けて『### モジュール一覧』の小節を設け、ファイル単位の責務を"
+        "Markdownテーブル(パス/層/責務/主な依存先)で示す。"
+        "スキーマ・設定のような定型のファイルは省くか1行にまとめる\n"
+        "- 続けて『### 処理別データフロー』の小節を設け、APIエンドポイント・バッチ処理ごとに"
+        "『#### DF-<連番>: <HTTPメソッド> <パス>』(バッチは『#### DF-<連番>: <バッチ名>』)の"
+        "見出しを立てる\n"
+        "  - 各見出しの下に、データの流れをMarkdownテーブル(元/データ/変換/先)で示す。"
+        "元・先は外部実体(利用者・外部サービス)、処理(担当モジュール名)、"
+        "データストア(テーブル名)のいずれかとする\n"
+        "  - 続けて、その処理に登場するデータ項目を"
+        "『- データ項目: <名前>(<フィールド1>, <フィールド2>, ...)』の形式で列挙する。"
+        "同じデータ項目は全処理で同じ名前を使う\n\n"
         "## 3.4 例外処理・エラーハンドリング・ログ設計\n"
         "- 共通エラーレスポンス形式、例外検知・ログ出力方針"
         + _COMMON_FORMAT_GUIDANCE
@@ -131,14 +158,37 @@ _DOC_TYPE_INPUTS: dict[str, tuple[str, ...]] = {
     "implementation_plan": ("requirements", "internal_design"),
 }
 
+# モード(projects.mode)ごとに生成する文書。詳細設計モードは要件定義・外部設計だけを生成し、
+# 内部設計・実装計画に当たる部分は段階(docs/internal_design.md 3.3節「4. 詳細設計モード」)
+# へ引き継ぐ。
+# 並びは生成の順序で、_DOC_TYPE_INPUTSの前段が必ず先に来る。
+DOC_TYPES_BY_MODE: dict[str, tuple[str, ...]] = {
+    "simple": DOC_TYPES,
+    "detailed": ("requirements", "external_design"),
+}
+
 _SELF_DIAGNOSIS_SYSTEM_PROMPT = (
-    "あなたはレビュアーです。以下は今しがた生成された4種の設計書です。"
+    "あなたはレビュアーです。以下は今しがた生成された設計書です。"
     "各ドキュメントの不足・不明瞭な点を「最重要(実装着手に支障)」「中程度(後続の設計判断に影響)」"
     "「軽微(運用上の補足)」の3段階に分類し、日本語の箇条書きで指摘してください。"
     "指摘が無い場合は、その旨を簡潔に述べてください。"
 )
 
-async def generate_documents(project_id: uuid.UUID, user_id: uuid.UUID, *, llm=None) -> None:
+# 生成の失敗・中断をチャットに残す文言(生の例外の文字列は利用者に見せず、ログにだけ残す)
+_QUOTA_MESSAGE = "本日の利用上限に達しました。時間をおいて再度お試しください。"
+_FAILED_MESSAGE = "設計書の生成に失敗しました。時間をおいて再度お試しください。"
+_STALE_MESSAGE = (
+    "設計書の生成が時間内に終わらなかったため、中断しました。もう一度生成してください。"
+)
+
+
+async def generate_documents(
+    project_id: uuid.UUID,
+    user_id: uuid.UUID,
+    status_before_generation: str | None = None,
+    *,
+    llm=None,
+) -> None:
     """`BackgroundTasks`から呼び出すエントリポイント。
 
     FastAPI 0.106以降、`yield`を使うDIのセッション(SessionDep)はbackground task実行"前"に
@@ -152,7 +202,9 @@ async def generate_documents(project_id: uuid.UUID, user_id: uuid.UUID, *, llm=N
     ため、background taskへ渡すこと自体に技術的な制約は無い。
     """
     async with AsyncSessionLocal() as session:
-        await DocGeneratorService(session).generate(project_id, user_id, llm=llm)
+        await DocGeneratorService(session).generate(
+            project_id, user_id, status_before_generation=status_before_generation, llm=llm
+        )
 
 
 class DocGeneratorService:
@@ -166,8 +218,57 @@ class DocGeneratorService:
         self._documents = GeneratedDocumentRepository(session)
 
 
-    async def generate(self, project_id: uuid.UUID, user_id: uuid.UUID, *, llm=None) -> None:
-        """チャット全履歴をコンテキストに4種の設計書を生成し、続けて自己診断を行う。
+    async def request_generation(self, project: Project) -> str:
+        """生成の要求を受け付け、`status`を`generating`にしてcommitする。戻り値は受け付ける前の状態
+        (失敗したときに戻す先。バックグラウンドの`generate`へ渡す)。
+
+        生成中なら`DocGenerationInProgressError`(409)にする。受け付けと同じリクエストの中で
+        `generating`にするのは、バックグラウンドで切り替えると、切り替わる前の二度押しを
+        すり抜けさせてしまうため。止まった「生成中」は先に回収する(`recover_if_stale`)。"""
+        await self.recover_if_stale(project)
+        if project.status == "generating":
+            raise DocGenerationInProgressError(
+                "設計書を生成しています。完了してから再度お試しください。"
+            )
+        status_before_generation = project.status
+        project.status = "generating"
+        await self._session.commit()
+        # updated_at(生成を始めた時刻。回収の判定に使う)はDB側で決まるため読み直す
+        await self._session.refresh(project)
+        return status_before_generation
+
+    async def recover_if_stale(self, project: Project, *, now: datetime | None = None) -> bool:
+        """しきい値(15分)を超えて`generating`のままのプロジェクトを、生成前の状態へ戻す
+        (app/services/generation_staleness.py)。戻した場合はTrue。
+
+        生成前の状態は記録していないため、文書が既にあれば`revising`、無ければ`interviewing`にする
+        (どちらも再度「生成する」を押せる状態)。中断したことはチャットに残す。"""
+        if project.status != "generating":
+            return False
+        # updated_at はDB側で更新されるため、失効していれば読み直す(非同期では暗黙に読めない)
+        await self._session.refresh(project, ["updated_at"])
+        if not is_stale(project.updated_at, now or datetime.now(UTC)):
+            return False
+        has_documents = bool(await self._documents.list_current_for_project(project.id))
+        project.status = "revising" if has_documents else "interviewing"
+        await self._chat_histories.add(
+            project_id=project.id, sender="others", message=_STALE_MESSAGE
+        )
+        await self._session.commit()
+        await self._session.refresh(project)
+        logger.warning("documents_generation_stale", project_id=str(project.id))
+        return True
+
+    async def generate(
+        self,
+        project_id: uuid.UUID,
+        user_id: uuid.UUID,
+        *,
+        status_before_generation: str | None = None,
+        llm=None,
+    ) -> None:
+        """チャット全履歴をコンテキストに、モードごとの設計書(simpleは4種、detailedは要件定義・
+        外部設計の2種。DOC_TYPES_BY_MODE)を生成し、続けて自己診断を行う。
         プロジェクトが見つからない場合は何もしない(background task内なので例外を送出しても
         呼び出し元には伝播しないため、静かに終了する)。
 
@@ -177,14 +278,20 @@ class DocGeneratorService:
         失敗した場合に`interviewing`へ巻き戻すと、既に生成済みだったという文脈が失われる
         ため、開始時点の状態を記憶しておいて戻す。
         失敗内容は`sender='others'`のchat_historiesにも記録し、チャット画面に表示できるようにする。
+        失敗したときは、途中まで作った版と古い版の削除を rollback で取り消してから状態を戻す
+        (4文書の組がそろわない状態を残さないため)。
+
+        `status_before_generation`は`request_generation`が受け付けたときの状態。省略したときは
+        (受け付けを経ない呼び出し)ここで`generating`へ切り替える。
         """
         project = await self._projects.get_by_id(project_id, user_id=user_id)
         if project is None:
             return
 
-        status_before_generation = project.status
-        project.status = "generating"
-        await self._session.commit()
+        if status_before_generation is None:
+            status_before_generation = project.status
+            project.status = "generating"
+            await self._session.commit()
 
         try:
             llm = llm or get_gemini_llm()
@@ -192,7 +299,8 @@ class DocGeneratorService:
             transcript = _render_transcript(history)
 
             generated: dict[str, str] = {}
-            for doc_type in DOC_TYPES:
+            doc_types = DOC_TYPES_BY_MODE[project.mode]
+            for doc_type in doc_types:
                 content = await self._generate_one(doc_type, transcript, generated, llm=llm)
                 await self._documents.create_version(
                     project_id=project_id, doc_type=doc_type, content=content
@@ -205,31 +313,50 @@ class DocGeneratorService:
             )
 
 
-        except LLMQuotaExceededError:
+        except Exception as exc:  # noqa: BLE001 -- どの失敗要因も再試行可能な状態に戻す
+            await self._session.rollback()
+            logger.warning(
+                "documents_generation_failed",
+                project_id=str(project_id),
+                error_type=type(exc).__name__,
+            )
+            # rollbackで失効したプロジェクトを読み直してから、状態を戻す
+            project = await self._projects.get_by_id(project_id, user_id=user_id)
+            if project is None:
+                return
+            project.status = status_before_generation
             # LLM_QUOTA_EXCEEDEDはdocs/internal_design.md 3.4節が定めるとおり、
             # ユーザーに分かりやすい専用メッセージを表示する。
-            project.status = status_before_generation
             await self._chat_histories.add(
                 project_id=project_id,
                 sender="others",
-                message="本日の利用上限に達しました。時間をおいて再度お試しください。",
-            )
-            await self._session.commit()
-            return
-        except Exception as exc:  # noqa: BLE001 -- それ以外の失敗要因も再試行可能な状態に戻す
-            project.status = status_before_generation
-            await self._chat_histories.add(
-                project_id=project_id,
-                sender="others",
-                message=f"設計書の生成に失敗しました。時間をおいて再度お試しください。({exc})",
+                message=(
+                    _QUOTA_MESSAGE if isinstance(exc, LLMQuotaExceededError) else _FAILED_MESSAGE
+                ),
             )
             await self._session.commit()
             return
 
         project.status = "completed"
         await self._session.commit()
-        logger.info("documents_generated", project_id=str(project_id), doc_count=len(DOC_TYPES))
+        logger.info(
+            "documents_generated", project_id=str(project_id), doc_count=len(generated)
+        )
 
+
+    async def list_current_documents(self, project_id: uuid.UUID) -> list[GeneratedDocument]:
+        """生成された設計書(各doc_typeの現在表示中のバージョンのみ)一覧を取得する。"""
+        return await self._documents.list_current_for_project(project_id)
+
+    async def get_document(self, *, project: Project, doc_id: uuid.UUID) -> GeneratedDocument:
+        """指定ドキュメントを1件取得する(他プロジェクトのものは404扱い)。
+        GeneratedDocumentRepositoryはProjectRepositoryのような所有権スコープの
+        get_by_idを持たないため、その意味づけ(見つからなければNotFound)をここに集約する
+        (ルーターがRepositoryを直接参照しないため)。"""
+        document = await self._documents.get_by_id(doc_id)
+        if document is None or document.project_id != project.id:
+            raise DocumentNotFoundError(f"Document {doc_id} not found")
+        return document
 
     async def list_versions(self, project_id: uuid.UUID, doc_type: str) -> list[GeneratedDocument]:
         """指定doc_typeの保管済み全バージョン(最大3件)を新しい順に返す。"""
@@ -276,7 +403,8 @@ class DocGeneratorService:
 
 
     async def _self_diagnose(self, generated: dict[str, str], *, llm) -> str:
-        """生成済みの4文書をまとめて入力し、不足・不明瞭な点を3段階で自己診断させる。"""
+        """生成済みの文書(モードにより4種または2種)をまとめて入力し、不足・不明瞭な点を
+        3段階で自己診断させる。"""
         combined = "\n\n".join(
             f"## {_DOC_TYPE_LABELS[doc_type]}\n{content}" for doc_type, content in generated.items()
         )

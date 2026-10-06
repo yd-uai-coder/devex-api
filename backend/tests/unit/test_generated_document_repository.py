@@ -76,6 +76,7 @@ async def test_list_current_for_project_returns_one_per_doc_type(db_session: Asy
     contents = {d.doc_type: d.content for d in result}
     assert contents == {"requirements": "v2", "external_design": "d1"}
 
+
 async def test_list_versions_returns_newest_first(db_session: AsyncSession) -> None:
     project = await _create_project(db_session)
     repo = GeneratedDocumentRepository(db_session)

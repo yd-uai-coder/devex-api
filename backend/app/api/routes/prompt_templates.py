@@ -1,8 +1,8 @@
 from fastapi import APIRouter
 
 from app.api.deps import CurrentUserDep, SessionDep
-from app.repositories.prompt_template import PromptTemplateRepository
 from app.schemas.prompt_template import PromptTemplateRead
+from app.services.prompt_template import PromptTemplateService
 
 router = APIRouter(prefix="/prompt-templates", tags=["prompt-templates"])
 
@@ -13,5 +13,5 @@ async def list_prompt_templates(
 ) -> list[PromptTemplateRead]:
     """選択可能なプロンプトテンプレート一覧(固定シードデータ)を取得する。
     プロジェクトに紐づかない一覧のため、CurrentProjectDepではなくCurrentUserDepのみで認証する。"""
-    templates = await PromptTemplateRepository(session).list_all_templates()
+    templates = await PromptTemplateService(session).list_all()
     return [PromptTemplateRead.model_validate(t) for t in templates]

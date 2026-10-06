@@ -11,7 +11,7 @@ def get_gemini_llm(*, temperature: float = 0.7) -> ChatGoogleGenerativeAI:
     """設定値から構築したChatGoogleGenerativeAIクライアントを、温度パラメータ単位でキャッシュして返す。
 
     `settings.E2E_FAKE_LLM`が有効な場合は実際のGemini APIを呼ばず、決定論的な
-    `E2eFakeLLM`(app/ai/llm/fake.py)を返す(Phase 4-3: ブラウザE2Eテストを無料・
+    `E2eFakeLLM`(app/ai/llm/fake.py)を返す(ブラウザE2Eテストを無料・
     決定論的に実行するため。本番では起動時にこのフラグ自体が拒否される、
     app/core/config.pyのSettings._reject_unsafe_production_settings参照)。
     """
@@ -35,7 +35,7 @@ def extract_text_content(content: str | list) -> str:
     引用符・エスケープされた改行)をそのまま出力してしまうため、`text`フィールドだけを
     取り出して連結する。chat_service.py(ヒアリング応答)・intake_file_processor.py(PDF
     テキスト化)・doc_generator_service.py(4文書生成+自己診断)の3箇所がGeminiの応答を
-    テキスト化する際に共通で使う(CLAUDE.md #17: 実在の複数消費者による共通化)。
+    テキスト化する際に共通で使う。
     """
     if isinstance(content, str):
         return content

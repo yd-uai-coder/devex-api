@@ -44,7 +44,7 @@ routes (app/api/routes) → services (app/services) → repositories (app/reposi
 
 - `app/ai/llm/gemini.py`・`app/ai/tools/tavily.py`は、LLM/検索ツールのクライアントを`lru_cache`でプロセス内キャッシュしている。**理由**：クライアント生成コストを避けつつ、単一プロセス・単一APIキー構成のテンプレートとしてはこれで十分なため。マルチテナントで複数APIキーを使い分ける場合はこのキャッシュ戦略を見直す必要がある。
 - `app/ai/graph/`にLangGraphの`StateGraph`ワークフローを定義。ノード（`nodes.py`）・状態（`state.py`）・組み立て（`workflow.py`）を分離している。
-- `app/services/chat.py`の`_invoke_with_retry`は、LLM呼び出しをラップし「クォータ超過（429相当）は即座に諦める」「それ以外の一時的エラーは規定回数リトライする」を切り分けている。クォータ超過をリトライしても無駄にAPIコールを消費するだけなので、ここは明確に区別する設計にしている。
+- `app/services/llm_retry.py`の`invoke_with_retry`は、LLM呼び出しをラップし「クォータ超過（Geminiの429・Tavilyの利用上限）は即座に諦める」「それ以外の一時的エラーは規定回数リトライする」を切り分けている。クォータ超過をリトライしても無駄にAPIコールを消費するだけなので、ここは明確に区別する設計にしている。汎用チャット（`app/services/chat.py`）を含め、全てのLLM呼び出しがこの1か所を通る。
 - `generate_final_answer`ノードは`with_structured_output`でPydanticスキーマ（`app/schemas/generation.py`の`FinalAnswer`）を使った構造化出力を行う。生文字列のパースに頼らず、LLM出力の型を保証するための最小限のデモ実装。
 
 ## テストの分離

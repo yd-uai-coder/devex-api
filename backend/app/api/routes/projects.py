@@ -2,25 +2,24 @@ import contextlib
 import json
 import uuid
 from typing import Annotated
-from urllib.parse import quote
 
+import structlog
 from fastapi import APIRouter, BackgroundTasks, File, Form, UploadFile, status
 from fastapi.responses import Response, StreamingResponse
 
 from app.api.deps import CurrentProjectDep, CurrentUserDep, SessionDep
-from app.core.errors import BadRequestError
-from app.repositories.chat_history import ChatHistoryRepository
-from app.repositories.generated_document import GeneratedDocumentRepository
-from app.repositories.intake_file import IntakeFileRepository
-from app.repositories.project import ProjectRepository
+from app.api.responses import content_disposition
+from app.core.errors import AppError, BadRequestError
 from app.schemas.document import DocType, GeneratedDocumentRead
 from app.schemas.generation import HearingCompletionCheck
 from app.schemas.hearing import ChatHistoryRead, HearingMessageRequest
-from app.schemas.project import IntakeFileRead, ProjectDetail, ProjectRead
+from app.schemas.project import ProjectDetail, ProjectMode, ProjectRead
 from app.services.chat_service import ChatService
 from app.services.doc_generator_service import DocGeneratorService, generate_documents
-from app.services.errors import DocumentNotFoundError, GenerationFailedError, LLMQuotaExceededError
+from app.services.errors import GenerationFailedError, LLMQuotaExceededError
 from app.services.project import ProjectService, UploadedFileInput
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -33,11 +32,16 @@ def _parse_environment(raw: str | None) -> dict | None:
     except json.JSONDecodeError as exc:
         raise BadRequestError("environment must be a valid JSON object") from exc
 
-def _content_disposition(filename: str) -> str:
-    """日本語等の非ASCII文字を含むファイル名用のContent-Disposition値を組み立てる(RFC 5987)。
-    ASCII非対応のクライアント向けにfilename(置換フォールバック)とfilename*(UTF-8)の両方を含める。"""
-    ascii_fallback = filename.encode("ascii", errors="replace").decode("ascii")
-    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(filename)}"
+def _sse_error_event(exc: Exception) -> str:
+    """ストリームの途中で起きた失敗を`event: error`のSSEイベントにする(`{code, detail}`は
+    通常のエラーレスポンスと同じ形)。応答のヘッダーは送信済みでステータスコードを変えられないため、
+    失敗はイベントで伝える。AppError以外の例外は詳細を返さず、ログにだけ残す。"""
+    if isinstance(exc, AppError):
+        body = {"code": exc.code or "INTERNAL_SERVER_ERROR", "detail": str(exc)}
+    else:
+        logger.error("chat_stream_failed", error_type=type(exc).__name__, exc_info=exc)
+        body = {"code": "INTERNAL_SERVER_ERROR", "detail": "応答の生成中にエラーが発生しました。"}
+    return f"event: error\ndata: {json.dumps(body, ensure_ascii=False)}\n\n"
 
 
 @router.post("", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
@@ -49,6 +53,7 @@ async def create_project(
     notes_raw: Annotated[str | None, Form()] = None,
     environment: Annotated[str | None, Form()] = None,
     template_id: Annotated[uuid.UUID | None, Form()] = None,
+    mode: Annotated[ProjectMode, Form()] = "simple",
     files: Annotated[list[UploadFile] | None, File()] = None,
 ) -> ProjectRead:
     """初期ヒアリング入力(+添付ファイル最大3件、txt/md/pdfのみ)を受け取り、新規プロジェクトを作成する。"""
@@ -64,7 +69,11 @@ async def create_project(
         UploadedFileInput(filename=f.filename or "unnamed", data=await f.read()) for f in files
     ]
     project = await ProjectService(session).create(
-        user_id=current_user.id, intake=intake, files=file_inputs
+        user_id=current_user.id,
+        intake=intake,
+        files=file_inputs,
+        template_id=template_id,
+        mode=mode,
     )
     with contextlib.suppress(LLMQuotaExceededError, GenerationFailedError):
         # AIの最初の発話生成に失敗しても、プロジェクト作成自体は成功させる
@@ -76,24 +85,14 @@ async def create_project(
 @router.get("", response_model=list[ProjectRead])
 async def list_projects(session: SessionDep, current_user: CurrentUserDep) -> list[ProjectRead]:
     """認証ユーザーのプロジェクト一覧を取得する。"""
-    projects = await ProjectRepository(session).list_for_user(current_user.id)
+    projects = await ProjectService(session).list_for_user(current_user.id)
     return [ProjectRead.model_validate(p) for p in projects]
 
 
 @router.get("/{project_id}", response_model=ProjectDetail)
 async def get_project(session: SessionDep, current_project: CurrentProjectDep) -> ProjectDetail:
     """プロジェクトの詳細(初期ヒアリング入力・添付ファイルサマリを含む)を取得する。"""
-    intake_files = await IntakeFileRepository(session).list_for_project(current_project.id)
-    return ProjectDetail(
-        id=current_project.id,
-        title=current_project.title,
-        status=current_project.status,  # type: ignore[arg-type]
-        created_at=current_project.created_at,
-        updated_at=current_project.updated_at,
-        intake=current_project.intake,
-        intake_files=[IntakeFileRead.model_validate(f) for f in intake_files],
-        template_id=current_project.template_id,
-    )
+    return await ProjectService(session).get_detail(current_project)
 
 
 @router.post("/{project_id}/chat")
@@ -104,10 +103,15 @@ async def send_hearing_message(
     AI応答をSSE(Server-Sent Events)でストリーミング返却する。"""
 
     async def event_stream():
-        async for chunk in ChatService(session).stream_reply(
-            current_project, user_message=payload.message
-        ):
-            yield f"data: {json.dumps({'delta': chunk}, ensure_ascii=False)}\n\n"
+        try:
+            async for chunk in ChatService(session).stream_reply(
+                current_project, user_message=payload.message
+            ):
+                yield f"data: {json.dumps({'delta': chunk}, ensure_ascii=False)}\n\n"
+        except Exception as exc:  # noqa: BLE001 -- 200を返した後なので、失敗はSSEのイベントで伝える
+            await session.rollback()
+            yield _sse_error_event(exc)
+            return
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
@@ -118,7 +122,7 @@ async def get_hearing_history(
     session: SessionDep, current_project: CurrentProjectDep
 ) -> list[ChatHistoryRead]:
     """プロジェクトのチャット履歴を取得する。"""
-    history = await ChatHistoryRepository(session).list_for_project(current_project.id)
+    history = await ChatService(session).list_history(current_project.id)
     return [ChatHistoryRead.model_validate(entry) for entry in history]
 
 
@@ -134,6 +138,7 @@ async def get_hearing_completion(
 
 @router.post("/{project_id}/generate", status_code=status.HTTP_202_ACCEPTED)
 async def trigger_generation(
+    session: SessionDep,
     current_project: CurrentProjectDep,
     current_user: CurrentUserDep,
     background_tasks: BackgroundTasks,
@@ -144,17 +149,23 @@ async def trigger_generation(
     実行前にクローズされるため、リクエストのセッションやORMオブジェクトはそのまま渡さない。詳細は
     doc_generator_service.generate_documentsのdocstring参照)。user_idも渡すのは、所有者チェック
     無しの専用メソッドを増やすのではなく、既存の所有者スコープ版get_by_idに統一するため。
+
+    生成中なら409(DOC_GENERATION_IN_PROGRESS)。受け付けた時点で`generating`にし、受け付ける前の
+    状態(失敗時に戻す先)をbackground taskへ渡す。
     """
-    background_tasks.add_task(generate_documents, current_project.id, current_user.id)
+    status_before_generation = await DocGeneratorService(session).request_generation(
+        current_project
+    )
+    background_tasks.add_task(
+        generate_documents, current_project.id, current_user.id, status_before_generation
+    )
 
 @router.get("/{project_id}/documents", response_model=list[GeneratedDocumentRead])
 async def list_generated_documents(
     session: SessionDep, current_project: CurrentProjectDep
 ) -> list[GeneratedDocumentRead]:
     """生成された設計書(各doc_typeの最新バージョンのみ)一覧を取得する。"""
-    documents = await GeneratedDocumentRepository(session).list_current_for_project(
-        current_project.id
-    )
+    documents = await DocGeneratorService(session).list_current_documents(current_project.id)
     return [GeneratedDocumentRead.model_validate(d) for d in documents]
 
 @router.get("/{project_id}/documents/{doc_id}/download")
@@ -165,15 +176,15 @@ async def download_generated_document(
     (docs/external_design.md 2.5節4項: 本リポジトリ`docs/`配下の実ファイル名
     `requirements.md`/`external_design.md`/`internal_design.md`/`implementation_plan.md`
     に合わせ`{document_type}.md`とする)。"""
-    document = await GeneratedDocumentRepository(session).get_by_id(doc_id)
-    if document is None or document.project_id != current_project.id:
-        raise DocumentNotFoundError(f"Document {doc_id} not found")
+    document = await DocGeneratorService(session).get_document(
+        project=current_project, doc_id=doc_id
+    )
 
     filename = f"{document.doc_type}.md"
     return Response(
         content=document.content,
         media_type="text/markdown",
-        headers={"Content-Disposition": _content_disposition(filename)},
+        headers={"Content-Disposition": content_disposition(filename)},
     )
 
 @router.get(

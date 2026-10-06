@@ -3,7 +3,8 @@ import uuid
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.routes.projects import _content_disposition, download_generated_document
+from app.api.responses import content_disposition
+from app.api.routes.projects import download_generated_document
 from app.models.project import Project
 from app.models.user import User
 from app.repositories.generated_document import GeneratedDocumentRepository
@@ -55,7 +56,7 @@ async def test_download_rejects_missing_document(db_session: AsyncSession) -> No
 
 
 def test_content_disposition_includes_ascii_fallback_and_utf8_filename() -> None:
-    header = _content_disposition("備品予約_requirements_20260101.md")
+    header = content_disposition("備品予約_requirements_20260101.md")
 
     assert header.startswith('attachment; filename="')
     assert "filename*=UTF-8''" in header

@@ -6,6 +6,9 @@ from pydantic import BaseModel, ConfigDict
 
 ProjectStatus = Literal["interviewing", "generating", "completed", "revising"]
 IntakeFileStatus = Literal["processed", "failed"]
+# simple: 簡易ドキュメントモード(4文書の一括生成)
+# detailed: 詳細設計モード(docs/external_design.md 2.7節)
+ProjectMode = Literal["simple", "detailed"]
 
 
 class IntakeFileRead(BaseModel):
@@ -28,6 +31,7 @@ class ProjectRead(BaseModel):
     id: uuid.UUID
     title: str
     status: ProjectStatus
+    mode: ProjectMode
     created_at: datetime
     updated_at: datetime
 

@@ -1,0 +1,139 @@
+"""意味モデル(`app.uml.domain`)からレイアウトを計算するエントリポイント。
+
+`compute_layout`が、意味モデルをレイアウト内部表現(`LayoutState`)へ変換し
+(`ranking`でレーン/行を算出)、`crossing_reduction.optimize`(内部で`pipeline.route`を
+繰り返し呼ぶ)を実行し、結果を`uml_diagrams.layout_model`へ保存する形(`LayoutModel`)に
+変換するまでの一連の流れをまとめる。ノード数上限チェック・`asyncio.to_thread`での実行は
+呼び出し側(`app/services/uml_diagram_service.py`)の責務とする(HTTP境界に近い関心事のため)。
+"""
+
+from collections.abc import Mapping
+
+from app.uml.domain import (
+    ComponentSemanticModel,
+    DfdDataStore,
+    DfdExternalEntity,
+    DfdSemanticModel,
+    ErSemanticModel,
+    NotationType,
+    UmlElement,
+)
+from app.uml.layout import crossing_reduction, ranking
+from app.uml.layout.labels import edge_labels
+from app.uml.layout.model import (
+    LayoutBox,
+    LayoutEdge,
+    LayoutEdgeGeometry,
+    LayoutMetrics,
+    LayoutModel,
+    LayoutNode,
+    LayoutState,
+)
+from app.uml.layout.reconcile import reconcile_layout
+
+_AnySemanticModel = ComponentSemanticModel | ErSemanticModel | DfdSemanticModel
+
+
+def element_kind(notation: NotationType, element: UmlElement) -> str:
+    """要素の種類から、レイアウト計算上のノード種別(サイズ見積もり・ポート形状に影響)を返す。
+    出力(`app/uml/export/`)も同じ種別で図形を選ぶ。"""
+    if notation == "er":
+        return "table"
+    if notation == "dfd":
+        if isinstance(element, DfdExternalEntity):
+            return "ent"
+        if isinstance(element, DfdDataStore):
+            return "store"
+        return "proc"  # DfdProcess
+    return "proc"  # component
+
+
+def element_text(notation: NotationType, element: UmlElement) -> str:
+    """ノードに表示するテキスト。ER図のtable種別は「1行目=テーブル名、以降=カラム」という
+    `kind=="table"`ノードの入力形式(改行区切り、折り返しなし)に合わせて組み立てる。"""
+    if notation == "er":
+        columns = getattr(element, "columns", [])
+        rows = []
+        for col in columns:
+            markers = "".join(
+                m for m, flag in (("PK ", col.is_primary_key), ("FK ", col.is_foreign_key)) if flag
+            )
+            rows.append(f"{markers}{col.name}: {col.type}")
+        return "\n".join([element.name, *rows])
+    return element.name
+
+
+def _build_state(
+    diagram_id: str, model: _AnySemanticModel, label_texts: Mapping[str, str]
+) -> LayoutState:
+    lane_labels, lane_of, row_of = ranking.assign_lanes_and_rows(
+        model.notation, model.elements, model.relations
+    )
+    nodes = {
+        el.id: LayoutNode(
+            id=el.id,
+            lane=lane_of[el.id],
+            row=row_of[el.id],
+            text=element_text(model.notation, el),
+            kind=element_kind(model.notation, el),
+        )
+        for el in model.elements
+    }
+    # ラベル(ERの多重度・DFDのデータ項目名)は意味モデルの外(データ辞書)も要るため、
+    # 呼び出し側が`edge_labels`で作って渡す。空文字の辺は`place_labels`が飛ばす。
+    edges = [
+        LayoutEdge(id=rel.id, a=rel.source_id, b=rel.target_id, label=label_texts.get(rel.id, ""))
+        for rel in model.relations
+    ]
+    return LayoutState(diagram_id, lane_labels, nodes, edges)
+
+
+def _to_layout_model(state: LayoutState) -> LayoutModel:
+    nodes = {
+        node_id: LayoutBox(x=n.x, y=n.y, w=n.w, h=n.h, lane=n.lane, row=n.row)
+        for node_id, n in state.nodes.items()
+    }
+    edges = {
+        e.id: LayoutEdgeGeometry(
+            points=[(float(x), float(y)) for x, y in e.pts],
+            # place_labelsのlabel_posは(中心x, 中心y, 矩形)。保存するのは中心だけ
+            label_pos=((float(e.label_pos[0]), float(e.label_pos[1])) if e.label_pos else None),
+        )
+        for e in state.edges
+    }
+    metrics = LayoutMetrics(
+        crossings=state.report["crossings"],
+        overlaps=state.report["overlaps"],
+        collisions=state.report["collisions"],
+    )
+    return LayoutModel(
+        width=state.width, height=state.height, nodes=nodes, edges=edges, metrics=metrics
+    )
+
+
+def compute_layout(
+    diagram_id: str,
+    model: _AnySemanticModel,
+    label_texts: Mapping[str, str] | None = None,
+) -> LayoutModel:
+    """意味モデル1件のレイアウトを計算し、`uml_diagrams.layout_model`へ保存する形で返す。
+
+    `label_texts`は関係id → 辺ラベル(`edge_labels`で作る)。渡すとラベルの位置も探して
+    `LayoutEdgeGeometry.label_pos`に保存する(省略時はラベル無し)。
+
+    CPU負荷の高い処理(交差削減の山登り、経路探索)を含むため、呼び出し側は
+    `asyncio.to_thread`でラップして呼ぶこと(このモジュール自体は同期関数のまま提供する)。
+    """
+    state = _build_state(diagram_id, model, label_texts or {})
+    crossing_reduction.optimize(state)
+    return _to_layout_model(state)
+
+
+__all__ = [
+    "LayoutModel",
+    "compute_layout",
+    "edge_labels",
+    "element_kind",
+    "element_text",
+    "reconcile_layout",
+]

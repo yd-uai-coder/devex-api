@@ -16,9 +16,12 @@ class ProjectRepository(CRUDRepository[Project]):
         title: str,
         intake: dict | None = None,
         template_id: uuid.UUID | None = None,
+        mode: str = "simple",
     ) -> Project:
         """新規プロジェクトをセッションに追加し、flushしてIDを確定させた状態で返す。"""
-        project = Project(user_id=user_id, title=title, intake=intake, template_id=template_id)
+        project = Project(
+            user_id=user_id, title=title, intake=intake, template_id=template_id, mode=mode
+        )
         self._session.add(project)
         await self._session.flush()
         return project

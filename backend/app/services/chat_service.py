@@ -1,5 +1,6 @@
 import json
 import time
+import uuid
 from collections.abc import AsyncIterator
 
 import structlog
@@ -13,7 +14,7 @@ from app.models.prompt_template import PromptTemplate
 from app.repositories.chat_history import ChatHistoryRepository
 from app.repositories.prompt_template import PromptTemplateRepository
 from app.schemas.generation import HearingCompletionCheck
-from app.services.llm_retry import invoke_with_retry, prompt_char_count
+from app.services.llm_retry import as_llm_error, invoke_with_retry, prompt_char_count
 
 logger = structlog.get_logger(__name__)
 
@@ -78,6 +79,10 @@ class ChatService:
         self._prompt_templates = PromptTemplateRepository(session)
 
 
+    async def list_history(self, project_id: uuid.UUID) -> list[ChatHistory]:
+        """プロジェクトのチャット履歴を送信日時の昇順(発生順)で取得する。"""
+        return await self._chat_histories.list_for_project(project_id)
+
     async def stream_reply(
         self, project: Project, *, user_message: str, llm=None
     ) -> AsyncIterator[str]:
@@ -98,12 +103,17 @@ class ChatService:
         llm = llm or get_gemini_llm()
         started = time.monotonic()
         chunks: list[str] = []
-        async for chunk in llm.astream(messages):
-            piece = extract_text_content(chunk.content)
-            if not piece:
-                continue
-            chunks.append(piece)
-            yield piece
+        try:
+            async for chunk in llm.astream(messages):
+                piece = extract_text_content(chunk.content)
+                if not piece:
+                    continue
+                chunks.append(piece)
+                yield piece
+        except Exception as exc:
+            # 再試行はしない(送信済みの断片があるため。llm_retry.pyのdocstring参照)。
+            # 失敗の種類だけを共通の例外に揃え、ルートがSSEの`event: error`で伝える
+            raise as_llm_error(exc) from exc
 
         logger.debug(
             "llm_call_succeeded",

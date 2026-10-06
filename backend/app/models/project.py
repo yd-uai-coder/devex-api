@@ -11,8 +11,12 @@ from app.core.database import Base, PortableJSON
 # 通常の実行時には False -> importされない（循環import回避のため）
 if TYPE_CHECKING:
     from app.models.chat_history import ChatHistory
+    from app.models.data_item import DataItem
+    from app.models.design_stage import DesignStage
     from app.models.generated_document import GeneratedDocument
     from app.models.intake_file import IntakeFile
+    from app.models.uml_diagram import UmlDiagram
+    from app.models.uml_generation_run import UmlGenerationRun
     from app.models.user import User
 
 
@@ -29,6 +33,11 @@ class Project(Base):
     # status: 'interviewing'(ヒアリング中) / 'generating'(生成中) / 'completed'(完了) /
     # 'revising'(修正中。completed後に新規チャットメッセージを送るとここへ遷移する)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="interviewing")
+    # mode: 作成時に選んだモード。'simple'(簡易ドキュメントモード: 4文書の一括生成) /
+    # 'detailed'(詳細設計モード: 要件定義・外部設計の後に段階1〜7)。作成後は変えない
+    mode: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="simple", server_default="simple"
+    )
     # intake: 初期ヒアリング入力(system_overview/goals_raw/notes_raw/environment)をそのまま保持する
     intake: Mapped[dict | None] = mapped_column(PortableJSON, nullable=True)
     # template_id：テンプレートの永続化
@@ -53,5 +62,17 @@ class Project(Base):
         back_populates="project", cascade="all, delete-orphan"
     )
     intake_files: Mapped[list["IntakeFile"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    data_items: Mapped[list["DataItem"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    uml_diagrams: Mapped[list["UmlDiagram"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    uml_generation_runs: Mapped[list["UmlGenerationRun"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    design_stages: Mapped[list["DesignStage"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )

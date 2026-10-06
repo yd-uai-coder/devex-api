@@ -29,9 +29,9 @@ def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> FakeLLM:
     差し替えは呼び出し元モジュールの名前空間ごとに行う必要がある(モジュールが違えば
     別の名前束縛になるため、app.ai.llm.gemini側だけを差し替えても効かない)。
 
-    Phase 4-3で導入するE2eFakeLLM(環境変数E2E_FAKE_LLM経由、ブラウザE2E専用)とは別物 ──
+    E2eFakeLLM(環境変数E2E_FAKE_LLM経由、ブラウザE2E専用)とは別物 ──
     こちらはpytestプロセス内の関数差し替えであり、実プロセスを外部から叩くPlaywrightからは
-    そもそも差し替えが届かない。用途の異なる2つのフェイクが併存する理由はPhase-4-3.md参照。
+    そもそも差し替えが届かない。
     """
     fake = FakeLLM(
         content="[Fake] 次に、想定している主なユーザー層を教えてください。",
@@ -49,7 +49,7 @@ async def test_full_projects_flow_create_chat_generate_download(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """登録→プロジェクト作成→チャット送信→ヒアリング完了判定→生成トリガー→ドキュメント一覧→
-    ダウンロードの一連をAPIレベルで検証する。ブラウザ経由のE2E(Phase 4-4)の前段として、
+    ダウンロードの一連をAPIレベルで検証する。ブラウザ経由のE2Eの前段として、
     「配線」自体がすべて繋がっていることを高速・決定論的に検証する(ブラウザ起動やSSE表示の
     描画待ちを伴わない分、失敗時の原因切り分けがしやすい)。"""
     _install_fake_llm(monkeypatch)
@@ -125,7 +125,7 @@ async def test_full_projects_flow_create_chat_generate_download(
     assert download_response.status_code == 200
     assert download_response.headers["content-type"].startswith("text/markdown")
     # FakeLLMは固定の応答文字列のみ返すため、生成内容そのものの品質はここでは検証しない
-    # (品質はPhase 2-4のdoc_generator_service単体テスト・プロンプト設計の責務)。
+    # (品質はdoc_generator_serviceの単体テスト・プロンプト設計の責務)。
     assert download_response.text == "[Fake] 次に、想定している主なユーザー層を教えてください。"
 
 

@@ -16,7 +16,7 @@ from app.services.errors import DocumentNotFoundError
 
 
 async def _create_project(session: AsyncSession) -> Project:
-    user = User(email="owner@example.com", hashed_password="x")
+    user = User(email=f"owner-{uuid.uuid4()}@example.com", hashed_password="x")
     session.add(user)
     await session.flush()
     project = Project(user_id=user.id, title="p")
@@ -290,6 +290,57 @@ async def test_restore_version_raises_for_missing_version(db_session: AsyncSessi
         await service.restore_version(project.id, "requirements", version=99)
 
 
+async def test_list_current_documents_returns_current_versions_only(
+    db_session: AsyncSession,
+) -> None:
+    project = await _create_project(db_session)
+    fake_llm = _fake_llm_for_generation()
+    service = DocGeneratorService(db_session)
+    await service.generate(project.id, project.user_id, llm=fake_llm)
+
+    documents = await service.list_current_documents(project.id)
+
+    assert {d.doc_type for d in documents} == set(DOC_TYPES)
+
+
+async def test_get_document_returns_document_for_owning_project(
+    db_session: AsyncSession,
+) -> None:
+    project = await _create_project(db_session)
+    fake_llm = _fake_llm_for_generation()
+    service = DocGeneratorService(db_session)
+    await service.generate(project.id, project.user_id, llm=fake_llm)
+    documents = await service.list_current_documents(project.id)
+    target = documents[0]
+
+    result = await service.get_document(project=project, doc_id=target.id)
+
+    assert result.id == target.id
+
+
+async def test_get_document_raises_not_found_for_other_project(
+    db_session: AsyncSession,
+) -> None:
+    project = await _create_project(db_session)
+    other_project = await _create_project(db_session)
+    fake_llm = _fake_llm_for_generation()
+    service = DocGeneratorService(db_session)
+    await service.generate(project.id, project.user_id, llm=fake_llm)
+    documents = await service.list_current_documents(project.id)
+    target = documents[0]
+
+    with pytest.raises(DocumentNotFoundError):
+        await service.get_document(project=other_project, doc_id=target.id)
+
+
+async def test_get_document_raises_not_found_for_unknown_id(db_session: AsyncSession) -> None:
+    project = await _create_project(db_session)
+    service = DocGeneratorService(db_session)
+
+    with pytest.raises(DocumentNotFoundError):
+        await service.get_document(project=project, doc_id=uuid.uuid4())
+
+
 def test_render_transcript_excludes_others_sender() -> None:
     history = [
         ChatHistory(sender="user", message="要望A"),
@@ -302,3 +353,16 @@ def test_render_transcript_excludes_others_sender() -> None:
     assert "要望A" in transcript
     assert "応答A" in transcript
     assert "自己診断結果" not in transcript
+
+
+def test_internal_design_prompt_asks_for_fixed_format_headings_for_uml_generation() -> None:
+    """内部設計書プロンプトが
+    テーブル見出しと処理別データフロー(DF見出し)の固定形式を指示していること。"""
+    from app.services.doc_generator_service import _DOC_TYPE_PROMPTS
+
+    prompt = _DOC_TYPE_PROMPTS["internal_design"]
+
+    assert "### テーブル: <テーブル名>" in prompt
+    assert "### 処理別データフロー" in prompt
+    assert "#### DF-<連番>: <HTTPメソッド> <パス>" in prompt
+    assert "元/データ/変換/先" in prompt

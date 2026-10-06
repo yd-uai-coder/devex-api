@@ -37,12 +37,13 @@ class Settings(BaseSettings):
     JWT_SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 30
+    # refresh の JWT・Redis の TTL・Cookie の max_age は、すべてこの日数から導く
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 14
 
     # AI
     GOOGLE_API_KEY: str | None = None
     TAVILY_API_KEY: str | None = None
-    # Phase 5-2の実API検証で判明: gemini-2.5-flash-liteは新規利用不可(404 NOT_FOUND、
+    # gemini-2.5-flash-liteは新規利用不可(404 NOT_FOUND、
     # APIエラーメッセージが後継としてgemini-3.5-flash-liteを案内)。
     GEMINI_MODEL: str = "gemini-3.5-flash-lite"
 
@@ -50,7 +51,7 @@ class Settings(BaseSettings):
     # が受け取るtimeout秒。
     # 既定はNone=無制限で、応答がハングした場合クライアントへ何も返せないまま
     # 無限に待ち続ける恐れがある。
-    # 30.0は暫定値ではなく実測値: Phase 5-2で実GOOGLE_API_KEY・実GEMINI_MODELに対して
+    # 30.0は暫定値ではなく実測値: 実GOOGLE_API_KEY・実GEMINI_MODELに対して
     # 800字/3000字/6000字相当の出力を要求する3パターンを実行したところ、
     # 最大(約4750字出力)でも11.25秒だった(2.96秒/7.28秒/11.25秒)。実測最大値の
     # 約2.7倍のマージンを見て30秒とする(旧暫定値60秒は実測に基づかない値だった)。
