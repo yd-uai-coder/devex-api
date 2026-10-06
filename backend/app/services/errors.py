@@ -53,6 +53,8 @@ class TooManyFilesError(BadRequestError):
 class UnsupportedFileTypeError(BadRequestError):
     """添付ファイルがtxt/Markdown/PDF以外の形式である場合に送出する。"""
 
+    code: ClassVar[str | None] = "UNSUPPORTED_FILE_TYPE"
+
 class FileTooLargeError(BadRequestError):
     """添付ファイルが1ファイルあたりの上限(5MB)を超えている場合に送出する。"""
 

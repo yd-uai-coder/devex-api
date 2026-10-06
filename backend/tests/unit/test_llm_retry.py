@@ -68,10 +68,11 @@ async def test_fails_fast_on_quota_error_without_retrying(monkeypatch: pytest.Mo
         calls["n"] += 1
         raise RuntimeError("quota exceeded")
 
-    with pytest.raises(LLMQuotaExceededError):
+    with pytest.raises(LLMQuotaExceededError) as exc_info:
         await invoke_with_retry(_call)
 
     assert calls["n"] == 1  # リトライせず1回で諦める
+    assert "本日の利用上限に達しました" in str(exc_info.value)
 
 async def test_treats_timeout_error_as_transient_retryable_failure() -> None:
     """`asyncio.TimeoutError`(get_gemini_llm()のtimeout設定超過時にlangchain-google-genaiが
