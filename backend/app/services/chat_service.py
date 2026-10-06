@@ -178,7 +178,7 @@ class ChatService:
             result = await llm.ainvoke(messages)
             return extract_text_content(result.content)
 
-        reply = await invoke_with_retry(_call)
+        reply = await invoke_with_retry(_call, messages=messages)
         await self._chat_histories.add(project_id=project.id, sender="ai", message=reply)
         await self._session.commit()
         return reply

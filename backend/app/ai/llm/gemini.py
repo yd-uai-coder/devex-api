@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Any
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -7,13 +8,20 @@ from app.core.config import settings
 
 
 @lru_cache
-def get_gemini_llm(*, temperature: float = 0.7) -> ChatGoogleGenerativeAI:
-    """設定値から構築したChatGoogleGenerativeAIクライアントを、温度パラメータ単位でキャッシュして返す。
+def get_gemini_llm(*, temperature: float = 0.7) -> Any:
+    """設定値から構築したLLMクライアントを、温度パラメータ単位でキャッシュして返す。
 
     `settings.E2E_FAKE_LLM`が有効な場合は実際のGemini APIを呼ばず、決定論的な
     `E2eFakeLLM`(app/ai/llm/fake.py)を返す(ブラウザE2Eテストを無料・
     決定論的に実行するため。本番では起動時にこのフラグ自体が拒否される、
     app/core/config.pyのSettings._reject_unsafe_production_settings参照)。
+
+    戻り値の型をAnyにしているのは、E2eFakeLLMがLangChainのRunnableを継承しない軽量スタブ
+    (必要なメソッドのみ実装)で、ChatGoogleGenerativeAIと共通の基底型が無いため。
+
+    実クライアントには`timeout`(settings.LLM_TIMEOUT_SECONDS)を明示する。指定しないと
+    Gemini側の応答がハングしたときに無制限に待ち続ける(invoke_with_retryのリトライは
+    例外発生時のみ働くため、ハングには効かない)。
     """
 
     if settings.E2E_FAKE_LLM:

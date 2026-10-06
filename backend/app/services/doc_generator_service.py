@@ -417,7 +417,7 @@ class DocGeneratorService:
             response = await llm.ainvoke(messages)
             return extract_text_content(response.content)
 
-        return await invoke_with_retry(_call)
+        return await invoke_with_retry(_call, messages=messages)
 
 
 def _render_transcript(history: list[ChatHistory]) -> str:

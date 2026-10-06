@@ -160,8 +160,12 @@ Traefikの`certresolver`(ACME)は証明書の自動更新を組み込みで行�
 
 ```bash
 # 例: 毎日午前4時にダンプを取得し、VPS上に7世代だけ残す
+# $POSTGRES_USER・$POSTGRES_DB はコンテナの中にだけある変数なので、sh -c '...' で囲んで
+# コンテナの中で展開する(VPS のシェルで展開すると空になり、root で接続して失敗する)。
 docker compose -f docker-compose.prod.yml exec -T postgres \
-  pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > backup_$(date +%F).sql
+  sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' > backup_$(date +%F).sql
+# pg_dump が失敗しても、リダイレクトで空のファイルができる。空でないことを確かめる
+test -s backup_$(date +%F).sql && head -5 backup_$(date +%F).sql
 find . -name 'backup_*.sql' -mtime +7 -delete
 ```
 
