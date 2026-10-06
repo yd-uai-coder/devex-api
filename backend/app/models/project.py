@@ -40,6 +40,9 @@ class Project(Base):
     )
     # intake: 初期ヒアリング入力(system_overview/goals_raw/notes_raw/environment)をそのまま保持する
     intake: Mapped[dict | None] = mapped_column(PortableJSON, nullable=True)
+    # hearing_check: 直近のヒアリング完了判定の結果(is_sufficient/summary/missing_points)。
+    # 発言のたびに判定し直して保存し、完了判定の取得はこれを返す(画面を開き直しても変わらない)
+    hearing_check: Mapped[dict | None] = mapped_column(PortableJSON, nullable=True)
     # template_id：テンプレートの永続化
     template_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("prompt_templates.id"), nullable=True

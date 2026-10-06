@@ -500,7 +500,8 @@ async def test_stage2_without_dfd_groups_writes_only_summaries(db_session: Async
     assert llm.structured_output_calls == [ProcessSummaryGenerationOutput]
     assert stage2.model is not None
     assert stage2.model == data_flow_model() | {"summaries": stage2.model["summaries"]}
-    assert stage2.issues == []
+    # DFD を描くグループを選んでいないので、その警告だけが出る
+    assert [issue.code for issue in stage2.issues] == ["NO_DFD_GROUPS"]
 
 
 async def test_resolve_by_name_reuses_existing_and_creates_missing(

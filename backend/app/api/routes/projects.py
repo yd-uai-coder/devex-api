@@ -48,6 +48,7 @@ def _sse_error_event(exc: Exception) -> str:
 async def create_project(
     session: SessionDep,
     current_user: CurrentUserDep,
+    name: Annotated[str, Form()],
     system_overview: Annotated[str, Form()],
     goals_raw: Annotated[str, Form()],
     notes_raw: Annotated[str | None, Form()] = None,
@@ -70,6 +71,7 @@ async def create_project(
     ]
     project = await ProjectService(session).create(
         user_id=current_user.id,
+        name=name,
         intake=intake,
         files=file_inputs,
         template_id=template_id,
@@ -130,10 +132,10 @@ async def get_hearing_history(
 async def get_hearing_completion(
     session: SessionDep, current_project: CurrentProjectDep
 ) -> HearingCompletionCheck:
-    """これまでの対話履歴から、ヒアリングが完了条件(5条件)を満たしたかどうかを判定する。
-    is_sufficient=Trueでも生成へは自動で進まない(呼び出し側が構造化サマリを提示し、
-    ユーザーの明示的な承認を得てから/generateを呼ぶ想定)。"""
-    return await ChatService(session).check_completion(current_project)
+    """直近の発言で行ったヒアリング完了判定(5条件)の結果を返す(判定はチャットの送信時に行い、
+    ここではLLMを呼ばない)。is_sufficient=Trueでも生成へは自動で進まない(チャットにまとめを
+    出し、ユーザーの明示的な承認を得てから/generateを呼ぶ想定)。"""
+    return ChatService(session).stored_completion(current_project)
 
 
 @router.post("/{project_id}/generate", status_code=status.HTTP_202_ACCEPTED)
