@@ -46,10 +46,14 @@ def _plan_output() -> PlanGenerationOutput:
                 name="予約",
                 goal="登録できる",
                 priority="Should",
-                function_ids=["F-01"],
                 tasks=[
                     GeneratedTask(
-                        area="テスト", title="E2E", modules=[ROUTE], function_ids=["F-01"]
+                        kind="feature",
+                        title="予約を登録する",
+                        function_ids=["F-01"],
+                        depends_on=["M-01-T01"],
+                        modules=[ROUTE],
+                        config_files=["Dockerfile"],
                     )
                 ],
             )
@@ -71,12 +75,10 @@ def test_smoke_build_messages_and_convert_outputs():
     model = to_plan_model(crosscutting, _plan_output())
     assert model.crosscutting == crosscutting
     [milestone] = model.milestones
-    assert (milestone.name, milestone.priority, milestone.function_ids) == (
-        "予約",
-        "Should",
-        ["F-01"],
-    )
-    assert milestone.tasks[0].area == "テスト"
+    assert (milestone.name, milestone.priority) == ("予約", "Should")
+    [task] = milestone.tasks
+    assert (task.kind, task.function_ids, task.depends_on) == ("feature", ["F-01"], ["M-01-T01"])
+    assert (task.modules, task.config_files) == ([ROUTE], ["Dockerfile"])
     assert model.environment == "uv"
     assert model.risks[0].mitigation == "削る"
 
@@ -86,29 +88,32 @@ def test_crosscutting_messages_carry_three_documents():
     assert content == "## 要件定義書\n要件\n\n## 外部設計書\n外部\n\n## 詳細設計書\n# 詳細"
 
 
-def test_plan_messages_carry_crosscutting_and_function_ids():
+def test_plan_messages_carry_crosscutting_function_ids_and_module_paths():
     rows = [CrossCuttingRow(topic="認証", policy="JWT")]
-    messages = build_plan_messages("要件", "# 詳細", rows, _FUNCTIONS)
+    messages = build_plan_messages("要件", "# 詳細", rows, _FUNCTIONS, [ROUTE])
     assert messages[0].content == PLAN_SYSTEM_PROMPT
     content = str(messages[1].content)
     assert "## 横断事項\n- 認証: JWT" in content
     assert "## 処理ID の一覧\n- F-01: 予約を登録する" in content
+    assert f"## モジュールのパスの一覧\n- {ROUTE}" in content
     # 外部設計書は詳細設計書(01〜06章)に反映済みなので、計画には渡さない
     assert "外部設計書" not in content
 
 
 def test_plan_messages_mark_empty_inputs():
-    content = str(build_plan_messages("要件", "# 詳細", [], [])[1].content)
+    content = str(build_plan_messages("要件", "# 詳細", [], [], [])[1].content)
     assert "## 横断事項\n(ありません)" in content
     assert "## 処理ID の一覧\n(ありません)" in content
+    assert "## モジュールのパスの一覧\n(ありません)" in content
 
 
 def test_system_prompts_name_default_topics_and_end_with_naming_rules():
     assert all(topic in CROSSCUTTING_SYSTEM_PROMPT for topic in CROSSCUTTING_TOPICS)
     assert CROSSCUTTING_SYSTEM_PROMPT.endswith(NAMING_RULES)
     assert PLAN_SYSTEM_PROMPT.endswith(NAMING_RULES)
-    # ファイルの欄は例で、環境・設定のファイルも書ける
-    assert "Dockerfile" in PLAN_SYSTEM_PROMPT
+    # 機能ごとの縦割り・並び順から導く ID・環境・設定のファイルの欄を指示する
+    for phrase in ("kind=feature", "kind=base", "M-01-T02", "depends_on", "config_files"):
+        assert phrase in PLAN_SYSTEM_PROMPT
 
 
 # --- E2E 用の固定の出力 ---

@@ -32,7 +32,7 @@ async def test_smoke_bundle_contains_implementation_plan(db_session: AsyncSessio
     archive = zipfile.ZipFile(io.BytesIO(bytes(response.body)))
     plan = archive.read(PLAN_MARKDOWN_NAME).decode()
     assert plan.startswith("# 実装計画書: p\n")
-    assert "| F-01 | 予約を登録する | M-01 |" in plan
+    assert "| F-01 | 予約を登録する | M-01-T02 |" in plan
     assert "<h1>p</h1>" in archive.read(PLAN_HTML_NAME).decode()
     assert "## 07 横断事項" in archive.read("detailed_design.md").decode()
 

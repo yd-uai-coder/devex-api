@@ -267,14 +267,17 @@ def plan_model(
     module: str = "app/api/routes/reservations.py",
 ) -> dict:
     """段階7の検証を通る横断事項と実装計画(既定の横断事項4項目・マイルストーン1つ・リスク1件)。
-    `function_list_model()`の F-01 と`module_list_model()`のパスを参照する。`function_ids`に
-    機能一覧に無い処理IDを渡すと、検証のエラーになる。`module`(ファイルの例)は検証しない。"""
+
+    マイルストーンには、基盤の単位 M-01-T01(環境・設定のファイル`Dockerfile`)と、それに依存する
+    機能の単位 M-01-T02(F-01、モジュール`module`)を置く。`function_list_model()`の F-01 と
+    `module_list_model()`のパスを参照する。`function_ids`に機能一覧に無い処理IDを、`module`に
+    モジュール一覧に無いパスを渡すと、検証のエラーになる。"""
     return {
         "crosscutting": [
             {
                 "topic": "例外と HTTP",
                 "policy": "ドメイン例外を共通の形に変換する",
-                "modules": [module],
+                "modules": ["app/api/routes/reservations.py"],
             },
             {"topic": "認証", "policy": "JWT で利用者を確かめる", "modules": []},
             {"topic": "トランザクション", "policy": "commit はサービスだけ", "modules": []},
@@ -285,14 +288,23 @@ def plan_model(
                 "name": "予約の登録",
                 "goal": "予約を登録できる",
                 "priority": "Must",
-                "function_ids": ["F-01"] if function_ids is None else function_ids,
                 "tasks": [
                     {
-                        "area": "バックエンド",
-                        "title": "予約の API を作る",
-                        "modules": [module],
+                        "kind": "base",
+                        "title": "開発環境を用意する",
+                        "function_ids": [],
+                        "depends_on": [],
+                        "modules": [],
+                        "config_files": ["Dockerfile"],
+                    },
+                    {
+                        "kind": "feature",
+                        "title": "予約を登録する",
                         "function_ids": ["F-01"] if function_ids is None else function_ids,
-                    }
+                        "depends_on": ["M-01-T01"],
+                        "modules": [module],
+                        "config_files": [],
+                    },
                 ],
             }
         ],

@@ -14,7 +14,8 @@ app/services/design_stage_service.py)に加えて、段階ごとの検証で「�
 段階4は、段階1の内容と、構成図の要約を使う。
 段階5は、段階1の内容と、段階4のモジュール一覧(手順の呼び出し先の鍵)を使う。
 段階6は、段階5の手順(関数を呼ぶ手順との紐づけ)を使う。
-段階7は、段階1の処理ID(計画の漏れ)を使う。ファイルの欄は例なので検証しない。
+段階7は、段階1の処理ID(計画の漏れ)と、段階4のモジュール一覧(単位のモジュールの欄)を使う。
+環境・設定のファイルの欄と、横断事項のファイルの欄は例なので検証しない。
 """
 
 from collections import Counter
@@ -46,7 +47,16 @@ from app.detailed_design.logic import (
     logic_id,
     logic_key,
 )
-from app.detailed_design.plan import PlanModel, milestone_id, missing_topics, unplanned_functions
+from app.detailed_design.plan import (
+    MAX_UNIT_FUNCTIONS,
+    PlanModel,
+    is_file_path,
+    milestone_id,
+    missing_topics,
+    task_id,
+    unit_ids,
+    unplanned_functions,
+)
 from app.detailed_design.procedure import (
     ProcedureModel,
     is_external_actor,
@@ -563,12 +573,16 @@ def validate_plan(model: Mapping[str, Any], sources: StageSources) -> list[Stage
     """段階7(横断事項と実装計画)の検証。
 
     エラー: 形が不正 / マイルストーンが0件 / マイルストーン名が空・重複 / タスク名が空 /
-    横断事項の項目が空 / 機能一覧に無い処理ID。
-    ファイルの欄(`modules`)は「作成・変更するファイルの例」なので検証しない(環境・設定の
-    ファイルはモジュール一覧に入らないため)。
-    警告: どのマイルストーン・タスクにも無い処理 / タスクの無いマイルストーン /
+    横断事項の項目が空 / 機能一覧に無い処理ID / 単位の一覧に無い依存先 / 自分か後ろの単位への
+    依存(前の単位だけを指せるので、循環も起きない) / 段階4のモジュール一覧に無いモジュール
+    (単位の参照先の鍵のため)。
+    環境・設定のファイルの欄と横断事項のファイルの欄は例なので検証しない(環境のファイルは
+    モジュール一覧に入らないため)。
+    警告: どの単位にも無い処理 / 複数の単位にある処理 / タスクの無いマイルストーン /
+    種別と処理の食い違い(機能なのに処理が無い・基盤なのに処理がある) / 処理が多すぎる単位 /
+    モジュールの無い機能の単位 / ディレクトリのモジュール(ファイルが決まらない) /
     横断事項の既定の項目(`CROSSCUTTING_TOPICS`)が無い・方針が空 / リスクが0件。
-    指摘の`target`は、マイルストーンは M-ID、横断事項は項目名、漏れた処理は処理ID。
+    指摘の`target`は、マイルストーンは M-ID、単位は単位の ID、横断事項は項目名、漏れた処理は処理ID。
     """
     try:
         parsed = PlanModel.model_validate(model)
@@ -577,14 +591,11 @@ def validate_plan(model: Mapping[str, Any], sources: StageSources) -> list[Stage
     function_list = FunctionListModel.model_validate(sources.stages.get(1) or {})
     function_ids = [row.id for row in function_list.functions]
     known_functions = set(function_ids)
+    module_list = ModuleListModel.model_validate(sources.stages.get(4) or {})
+    paths = {row.path.strip() for row in module_list.modules}
+    order = {uid: index for index, uid in enumerate(unit_ids(parsed))}
 
     issues: list[StageIssue] = []
-
-    def check_refs(label: str, target: str, functions: list[str]) -> None:
-        for function_id in functions:
-            if function_id.strip() not in known_functions:
-                message = f"{label} の処理 {function_id} が、機能一覧にありません。"
-                issues.append(_error("UNKNOWN_FUNCTION", message, target))
 
     for index, row in enumerate(parsed.crosscutting, start=1):
         topic = row.topic.strip()
@@ -601,8 +612,9 @@ def validate_plan(model: Mapping[str, Any], sources: StageSources) -> list[Stage
     if not parsed.milestones:
         issues.append(_error("NO_MILESTONE", "マイルストーンが1件もありません。"))
     names = Counter(m.name.strip() for m in parsed.milestones)
-    for index, milestone in enumerate(parsed.milestones):
-        target = milestone_id(index)
+    units_of: dict[str, list[str]] = {}
+    for m_index, milestone in enumerate(parsed.milestones):
+        target = milestone_id(m_index)
         name = milestone.name.strip()
         label = f"{target}({name})" if name else target
         if not name:
@@ -612,18 +624,92 @@ def validate_plan(model: Mapping[str, Any], sources: StageSources) -> list[Stage
             issues.append(_error("DUPLICATE_MILESTONE", message, target))
         if not milestone.tasks:
             issues.append(_warning("EMPTY_TASKS", f"{label} にタスクがありません。", target))
-        check_refs(label, target, milestone.function_ids)
-        for number, task in enumerate(milestone.tasks, start=1):
-            task_label = f"{label} のタスク{number}"
+        for t_index, task in enumerate(milestone.tasks):
+            uid = task_id(m_index, t_index)
+            functions = [f.strip() for f in task.function_ids if f.strip()]
             if not task.title.strip():
-                issues.append(_error("EMPTY_TASK", f"{task_label} の名前が空です。", target))
-            check_refs(task_label, target, task.function_ids)
+                issues.append(_error("EMPTY_TASK", f"{uid} の名前が空です。", uid))
+            for function_id in functions:
+                units_of.setdefault(function_id, []).append(uid)
+                if function_id not in known_functions:
+                    message = f"{uid} の処理 {function_id} が、機能一覧にありません。"
+                    issues.append(_error("UNKNOWN_FUNCTION", message, uid))
+            issues += _task_kind_issues(uid, task.kind, functions, task.modules)
+            issues += _dependency_issues(uid, task.depends_on, order)
+            issues += _module_issues(uid, task.modules, paths)
 
+    for function_id, units in units_of.items():
+        if len(units) > 1 and function_id in known_functions:
+            message = f"{function_id} が、複数の単位({', '.join(units)})にあります。"
+            issues.append(_warning("DUPLICATE_FUNCTION", message, function_id))
     for function_id in unplanned_functions(parsed, function_ids):
-        message = f"{function_id} が、どのマイルストーン・タスクにもありません。"
+        message = f"{function_id} が、どの単位にもありません。"
         issues.append(_warning("UNPLANNED_FUNCTION", message, function_id))
     if not parsed.risks:
         issues.append(_warning("NO_RISKS", "想定リスクが1件もありません。"))
+    return issues
+
+
+def _task_kind_issues(
+    uid: str, kind: str, functions: list[str], modules: list[str]
+) -> list[StageIssue]:
+    """単位の種別と、処理・モジュールの食い違い(警告)。"""
+    issues: list[StageIssue] = []
+    if kind == "feature":
+        if not functions:
+            message = f"{uid} は機能の単位ですが、処理がありません(処理の無い作業は基盤にします)。"
+            issues.append(_warning("KIND_MISMATCH", message, uid))
+        elif len(functions) > MAX_UNIT_FUNCTIONS:
+            message = (
+                f"{uid} に処理が{len(functions)}個あります(1つの単位は原則1処理です。"
+                "分けられないか確かめてください)。"
+            )
+            issues.append(_warning("MANY_FUNCTIONS", message, uid))
+        if not any(m.strip() for m in modules):
+            message = f"{uid} にモジュールがありません(作る・直すファイルが決まりません)。"
+            issues.append(_warning("NO_MODULES", message, uid))
+    elif functions:
+        message = f"{uid} は基盤の単位ですが、処理があります(処理を持つ作業は機能にします)。"
+        issues.append(_warning("KIND_MISMATCH", message, uid))
+    return issues
+
+
+def _dependency_issues(
+    uid: str, depends_on: list[str], order: Mapping[str, int]
+) -> list[StageIssue]:
+    """依存先が単位の一覧に無い・自分か後ろの単位を指す(エラー)。"""
+    issues: list[StageIssue] = []
+    for dependency in (d.strip() for d in depends_on if d.strip()):
+        if dependency not in order:
+            message = f"{uid} の依存先 {dependency} が、単位の一覧にありません。"
+            issues.append(_error("UNKNOWN_DEPENDENCY", message, uid))
+        elif order[dependency] >= order[uid]:
+            # 前の単位だけを指せるようにすると、依存の順と計画の並び順が一致し、循環も起きない
+            message = (
+                f"{uid} の依存先 {dependency} が、自分か後ろの単位です"
+                "(依存先は前に並べます)。"
+            )
+            issues.append(_error("FORWARD_DEPENDENCY", message, uid))
+    return issues
+
+
+def _module_issues(uid: str, modules: list[str], paths: set[str]) -> list[StageIssue]:
+    """モジュールが段階4のモジュール一覧に無い(エラー)・ディレクトリ(警告)。"""
+    issues: list[StageIssue] = []
+    for module in (m.strip() for m in modules if m.strip()):
+        if module not in paths:
+            # 環境・設定のファイルは別の欄に書く(モジュールの欄は手順書が参照する設計の鍵)
+            message = (
+                f"{uid} のモジュール「{module}」が、モジュール一覧にありません"
+                "(環境・設定のファイルなら、その欄に移します)。"
+            )
+            issues.append(_error("UNKNOWN_MODULE", message, uid))
+        elif not is_file_path(module):
+            message = (
+                f"{uid} のモジュール「{module}」はディレクトリで、ファイルが決まりません"
+                "(段階4のモジュール一覧をファイル単位に直します)。"
+            )
+            issues.append(_warning("MODULE_NOT_FILE", message, uid))
     return issues
 
 

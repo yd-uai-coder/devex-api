@@ -1,7 +1,7 @@
 """07 横断事項と実装計画の組み立て(md・HTML)のテスト。
 
 SUT: CHAPTERS・document_source の段階7(app/detailed_design/document/source.py)、
-     function_plans(app/detailed_design/document/views.py)、
+     function_plans・UNIT_HEADERS・UNIT_KIND_LABELS(app/detailed_design/document/views.py)、
      to_markdown の chapters・to_plan_markdown(app/detailed_design/document/markdown.py)、
      to_html の chapters・to_plan_html(app/detailed_design/document/html.py)、
      パッケージの re-export(app/detailed_design/document/__init__.py)
@@ -29,6 +29,7 @@ from app.detailed_design.document import (
     to_plan_html,
     to_plan_markdown,
 )
+from app.detailed_design.document.views import UNIT_HEADERS, UNIT_KIND_LABELS
 
 ROUTE = "app/api/routes/reservations.py"
 
@@ -87,7 +88,7 @@ def test_function_plans_follow_function_list_and_mark_unplanned():
     function_list.functions.append(function_list.functions[0].model_copy(update={"id": "F-02"}))
     plan = PlanModel.model_validate(plan_model())
     assert function_plans(plan, function_list) == [
-        FunctionPlan("F-01", "予約を登録する", ("M-01",)),
+        FunctionPlan("F-01", "予約を登録する", ("M-01-T02",)),
         FunctionPlan("F-02", "予約を登録する", ()),
     ]
     assert function_plans(plan, None) == []
@@ -107,10 +108,12 @@ def test_plan_markdown_has_sections_in_order():
         "## 3 開発環境・事前準備",
         "## 4 想定リスクと対策",
     ]
+    # マイルストーンの処理は単位の処理から導く
     assert "| M-01 | 予約の登録 | Must | 予約を登録できる | F-01 |" in text
-    assert "| 区分 | タスク | 作成・変更するファイル(例) | 処理 |" in text
-    assert f"| バックエンド | 予約の API を作る | {ROUTE} | F-01 |" in text
-    assert "| F-01 | 予約を登録する | M-01 |" in text
+    assert "| " + " | ".join(UNIT_HEADERS) + " |" in text
+    assert "| M-01-T01 | 基盤 | 開発環境を用意する | — | — | — | Dockerfile |" in text
+    assert f"| M-01-T02 | 機能 | 予約を登録する | F-01 | M-01-T01 | {ROUTE} | — |" in text
+    assert "| F-01 | 予約を登録する | M-01-T02 |" in text
     assert "Python 3.13 と PostgreSQL" in text
     assert "| 予約の重複 | 一意制約で防ぐ |" in text
     # 横断事項は詳細設計書の 07章に書く
@@ -128,23 +131,24 @@ def test_plan_markdown_is_unapproved_until_stage7_is_approved():
 # --- 実装計画の HTML ---
 
 
-def test_plan_html_links_milestones_and_escapes_text():
+def test_plan_html_links_milestones_and_units_and_escapes_text():
     models = document_stage_models()
     models[7]["milestones"][0]["name"] = "<予約>"
     html = to_plan_html(sample_document_source(models=models))
     assert "&lt;予約&gt;" in html
     assert "<予約>" not in html
-    # M-ID のバッジの移り先(マイルストーンの見出し)がある
+    assert UNIT_KIND_LABELS == {"feature": "機能", "base": "基盤"}
+    assert 'aria-label="M-01 の単位"' in html
+    # M-ID・単位の ID(処理の割り当てと依存)のバッジの移り先がある
     targets = set(re.findall(r'href="#([^"]+)"', html))
     anchors = set(re.findall(r'id="([^"]+)"', html))
-    assert targets == {"m-01"}
+    assert targets == {"m-01", "m-01-t01", "m-01-t02"}
     assert targets <= anchors
 
 
 def test_plan_html_marks_unplanned_function():
     models = document_stage_models()
-    models[7]["milestones"][0]["function_ids"] = []
-    models[7]["milestones"][0]["tasks"][0]["function_ids"] = []
+    models[7]["milestones"][0]["tasks"][1]["function_ids"] = []
     html = to_plan_html(sample_document_source(models=models))
     assert '<span class="status">未計画</span>' in html
 

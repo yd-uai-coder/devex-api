@@ -319,7 +319,7 @@ _UML_OUTPUTS[LogicGenerationOutput] = LogicGenerationOutput(
 )
 
 # 詳細設計モードの段階7(横断事項と実装計画)の下書き。段階1の2処理(F-01・F-02)と、
-# 段階4のモジュール一覧のパスにそろえる
+# 段階4のモジュール一覧のパスにそろえる。基盤の単位 M-01-T01 の後に、処理ごとの機能の単位を置く
 _UML_OUTPUTS[CrossCuttingGenerationOutput] = CrossCuttingGenerationOutput(
     crosscutting=[
         GeneratedCrossCutting(
@@ -334,13 +334,30 @@ _UML_OUTPUTS[PlanGenerationOutput] = PlanGenerationOutput(
             name="[E2E Fake] 予約の登録と一覧",
             goal="予約を登録して一覧で確かめられる",
             priority="Must",
-            function_ids=["F-01", "F-02"],
             tasks=[
                 GeneratedTask(
-                    area="バックエンド",
-                    title="予約の API とサービスを作る",
+                    kind="base",
+                    title="開発環境を用意する",
+                    function_ids=[],
+                    depends_on=[],
+                    modules=[],
+                    config_files=["Dockerfile", "docker-compose.yml"],
+                ),
+                GeneratedTask(
+                    kind="feature",
+                    title="予約を登録する",
+                    function_ids=["F-01"],
+                    depends_on=["M-01-T01"],
                     modules=["app/api/routes/reservations.py", "app/services/reservation.py"],
-                    function_ids=["F-01", "F-02"],
+                    config_files=[],
+                ),
+                GeneratedTask(
+                    kind="feature",
+                    title="予約の一覧を見る",
+                    function_ids=["F-02"],
+                    depends_on=["M-01-T02"],
+                    modules=["app/api/routes/reservations.py", "app/services/reservation.py"],
+                    config_files=[],
                 ),
             ],
         )
