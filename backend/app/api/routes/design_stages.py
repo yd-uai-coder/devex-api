@@ -21,14 +21,14 @@ from app.services.detailed_design_export_service import DetailedDesignExportServ
 # UMLと同じく、プロジェクト配下の独立したサブツリーとしてprefixにproject_idを含める
 router = APIRouter(prefix="/projects/{project_id}/design-stages", tags=["design-stages"])
 
-StageNumber = Annotated[int, Path(ge=1, le=7, description="段階番号(1〜7)")]
+StageNumber = Annotated[int, Path(ge=1, le=8, description="段階番号(1〜8)")]
 
 
 @router.get("", response_model=list[DesignStageRead])
 async def list_design_stages(
     session: SessionDep, current_project: CurrentProjectDep
 ) -> list[DesignStageRead]:
-    """詳細設計モードの段階1〜7の状態を取得する(未着手の段階も含む)。画面は下書きの生成の完了を
+    """詳細設計モードの段階1〜8の状態を取得する(未着手の段階も含む)。画面は下書きの生成の完了を
     この一覧のポーリングで待つため、止まった生成(15分超)はここで回収してから返す。"""
     await DesignStageGenerationService(session).recover_stale(current_project.id)
     return await DesignStageService(session).list_stages(current_project)

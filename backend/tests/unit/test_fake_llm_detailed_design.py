@@ -142,7 +142,10 @@ async def test_e2e_fake_outputs_pass_stages_1_to_7_and_bundle(db_session: AsyncS
     await _generate(db_session, project, 7, llm)
     await _approve_stage(db_session, project, 7)
 
-    assert [s.state for s in await stages.list_stages(project)] == ["approved"] * 7
+    # 段階8(実装手順書)は開いているが、まだ生成も保存もしていない
+    assert [s.state for s in await stages.list_stages(project)] == ["approved"] * 7 + [
+        "not_started"
+    ]
     bundle = await DetailedDesignExportService(db_session).bundle(project)
     names = zipfile.ZipFile(io.BytesIO(bundle.content)).namelist()
     assert {

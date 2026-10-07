@@ -42,7 +42,7 @@ async def test_routes_save_approve_and_list_stage1(db_session: AsyncSession) -> 
     assert saved.state == "reviewing"
     assert approved.state == "approved"
     assert approved.approved_version == 1
-    assert [s.stage for s in stages] == [1, 2, 3, 4, 5, 6, 7]
+    assert [s.stage for s in stages] == [1, 2, 3, 4, 5, 6, 7, 8]
     assert stages[1].is_open is True
 
 

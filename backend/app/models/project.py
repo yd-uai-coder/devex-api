@@ -34,7 +34,7 @@ class Project(Base):
     # 'revising'(修正中。completed後に新規チャットメッセージを送るとここへ遷移する)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="interviewing")
     # mode: 作成時に選んだモード。'simple'(簡易ドキュメントモード: 4文書の一括生成) /
-    # 'detailed'(詳細設計モード: 要件定義・外部設計の後に段階1〜7)。作成後は変えない
+    # 'detailed'(詳細設計モード: 要件定義・外部設計の後に段階1〜8)。作成後は変えない
     mode: Mapped[str] = mapped_column(
         String(20), nullable=False, default="simple", server_default="simple"
     )

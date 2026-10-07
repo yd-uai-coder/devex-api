@@ -69,7 +69,7 @@ class DesignStageService:
         self._diagrams = UmlDiagramRepository(session)
 
     async def list_stages(self, project: Project) -> list[DesignStageRead]:
-        """段階1〜7の状態を返す(未着手の段階も含む)。"""
+        """段階1〜8の状態を返す(未着手の段階も含む)。"""
         _ensure_detailed(project)
         rows, views, documents = await self._load(project.id)
         sources = await self._sources(project.id, rows, views, documents)
@@ -342,7 +342,13 @@ def _approved_versions(
 
 
 def _to_read(view: StageView, row: DesignStage | None, sources: StageSources) -> DesignStageRead:
-    issues = validate_stage(view.stage, row.model, sources) if row is not None else []
+    if row is not None:
+        issues = validate_stage(view.stage, row.model, sources)
+    elif view.is_open:
+        # 内容の無い段階でも検証する段階がある(段階8は、手順書の無い単位にも指摘が出る)
+        issues = validate_stage(view.stage, None, sources)
+    else:
+        issues = []
     return DesignStageRead(
         stage=view.stage,
         state=view.state,
