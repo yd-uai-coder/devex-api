@@ -10,6 +10,7 @@ from app.schemas.design_stage import (
     DesignStageGenerate,
     DesignStageRead,
     DesignStageSave,
+    SequenceRead,
     UnitContextRead,
 )
 from app.services.design_stage_generation_service import (
@@ -49,6 +50,15 @@ async def download_detailed_design(
         media_type=bundle.media_type,
         headers={"Content-Disposition": content_disposition(bundle.filename)},
     )
+
+
+@router.get("/procedures/{function_id}/sequence", response_model=SequenceRead)
+async def get_procedure_sequence(
+    function_id: str, session: SessionDep, current_project: CurrentProjectDep
+) -> SequenceRead:
+    """段階5の処理1つのシーケンス図(保存した手順から導いた SVG と、図にするときの指摘)を返す。
+    段階5が開いていなければ409、段階5で選んでいない処理は404。"""
+    return await DesignStageService(session).procedure_sequence(current_project, function_id)
 
 
 @router.get("/units/{unit_id}/context", response_model=UnitContextRead)

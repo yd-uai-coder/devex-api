@@ -6,6 +6,7 @@ SUT は`validate_procedure_doc`(`STAGE_VALIDATORS[8]`)と`validate_stage`、ド�
 
 from tests.fixtures.detailed_design import (
     document_stage_models,
+    module_list_model,
     plan_model,
     procedure_doc_model,
     procedure_model,
@@ -151,3 +152,34 @@ def test_directory_module_is_major() -> None:
     assert [(i.code, i.level, i.fix_stage, i.target) for i in issues] == [
         ("MODULE_NOT_FILE", "major", 4, "frontend")
     ]
+
+
+def test_stub_not_called_in_sequence_is_minor_warning_to_stage5() -> None:
+    """スタブの欄が、手順の図で SUT から呼ばれないモジュール(手順に無い依存)を挙げている。"""
+    repository = "app/repositories/reservation_repository.py"
+    modules = module_list_model()
+    modules["modules"].append({**modules["modules"][0], "path": repository, "functions": []})
+    model = procedure_doc_model()
+    model["units"][0]["tests"][0]["stub"] = "reservation_repository をフェイク"
+
+    issues = validate_procedure_doc(model, _sources({4: modules}))
+
+    issue = issues[0]
+    assert (issue.code, issue.level, issue.fix_stage, issue.target, issue.unit) == (
+        "STUB_OUTSIDE_SEQUENCE",
+        "minor",
+        5,
+        "F-01",
+        "M-01-T02",
+    )
+    assert repository in issue.message
+
+
+def test_stub_naming_the_sut_or_unknown_sut_is_not_reported() -> None:
+    sut_named = procedure_doc_model()
+    sut_named["units"][0]["tests"][0]["stub"] = "reservations の外側だけをフェイク"
+    unknown = procedure_doc_model()
+    unknown["units"][0]["tests"][0].update(sut="無い関数", stub="reservations をフェイク")
+
+    assert validate_procedure_doc(sut_named, _sources()) == []
+    assert validate_procedure_doc(unknown, _sources()) == []

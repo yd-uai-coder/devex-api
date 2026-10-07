@@ -9,8 +9,9 @@ docs/external_design.md 2.7節「詳細設計書の出力」。HTML は読むた
   `js`のクラスを付けたときだけ)。
 
 文字はすべて`html.escape`で書く。例外は図の SVG だけで、これはそのまま埋め込む。SVG は自前の
-出力エンジン(app/uml/export/svg.py)が書いたもので、要素の名前などの文字はエンジンの中で
-エスケープ済みのため(ここでもう一度エスケープすると、図ではなく SVG の文字列が表示される)。
+出力エンジン(app/uml/export/svg.py、05 のシーケンス図は app/detailed_design/sequence_svg.py)が
+書いたもので、要素の名前などの文字はエンジンの中でエスケープ済みのため(ここでもう一度エスケープ
+すると、図ではなく SVG の文字列が表示される)。
 
 段階7の実装計画は、別の HTML(`to_plan_html`)にする。CSS は詳細設計書と同じものを使う。
 """
@@ -38,7 +39,9 @@ from app.detailed_design.document.views import (
     logic_ids,
     logic_views,
     main_step_count,
+    procedure_sequence,
     procedure_steps,
+    step_kind_label,
 )
 from app.detailed_design.plan import (
     PLAN_STAGE,
@@ -48,6 +51,8 @@ from app.detailed_design.plan import (
     task_id,
 )
 from app.detailed_design.procedure import step_id
+from app.detailed_design.sequence import SequenceDiagram
+from app.detailed_design.sequence_svg import to_sequence_svg
 
 UNAPPROVED_TEXT = (
     "未承認 ── 段階{stage}が承認されていません。承認すると、この章が組み立てられます。"
@@ -465,6 +470,7 @@ def _procedures(source: DocumentSource) -> str:
             [
                 e(s.number),
                 "" if s.step.is_branch else f"{e(s.step.caller)} → {mono(s.step.callee)}",
+                e(step_kind_label(s.step)),
                 mono(s.step.call)
                 + (f" {badge(s.logic_id, f'詳細 {s.logic_id} ↓')}" if s.logic_id else ""),
                 e(s.step.data),
@@ -489,6 +495,7 @@ def _procedures(source: DocumentSource) -> str:
                     [
                         "No",
                         "呼び出し元 → 呼び出し先",
+                        "種別",
                         "関数",
                         "渡すデータ",
                         "処理内容",
@@ -500,10 +507,22 @@ def _procedures(source: DocumentSource) -> str:
                     label=f"{p.function_id} の手順",
                     row_attrs=attrs,
                 )
-                + note,
+                + note
+                + _sequence_figure(p.function_id, procedure_sequence(p, source.modules)),
             )
         )
     return "".join(parts)
+
+
+def _sequence_figure(function_id: str, diagram: SequenceDiagram) -> str:
+    """05 の処理のシーケンス図(手順の表から導いた SVG。参加者が無ければ出さない)。"""
+    if not diagram.participants:
+        return ""
+    return (
+        '<p class="muted">シーケンス図(手順の表から導いた図。直すのは表)</p>'
+        f'<div class="figure" role="img" aria-label="{e(function_id)} のシーケンス図">'
+        f"{to_sequence_svg(diagram)}</div>"
+    )
 
 
 def _logics(source: DocumentSource) -> str:

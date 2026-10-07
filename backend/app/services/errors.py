@@ -203,6 +203,12 @@ class DesignStageNotFoundError(NotFoundError):
     code: ClassVar[str | None] = "RESOURCE_NOT_FOUND"
 
 
+class DesignProcedureNotFoundError(NotFoundError):
+    """段階5で選んでいない処理のシーケンス図を求めた場合に送出する。"""
+
+    code: ClassVar[str | None] = "RESOURCE_NOT_FOUND"
+
+
 class DesignUnitNotFoundError(NotFoundError):
     """段階7の作業単位に無い単位 ID の手順書の材料(参照の展開)を求めた場合に送出する。"""
 

@@ -6,7 +6,8 @@ docs/internal_design.md 3.3節「5. 実装手順書」。
 中身は保存しない。手順書の下書きの入力と、画面の単位の詳細(参照の API)が同じ関数を使う。
 AI 向けの出力も同じ関数を使い、どこでも同じ中身にする(作成方針17章)。
 
-- 書式は詳細設計書の 05・06 と同じ表(`procedure_table`・`logic_spec`)にする。
+- 書式は詳細設計書の 05・06 と同じ表(`procedure_table`・`logic_spec`)にする。段階5の手順には、
+  05 と同じシーケンス図(Mermaid。`sequence_block`)を添え、画面の単位の詳細には SVG も渡す。
 - 段階7の横断事項(07章)と開発環境は、単位の参照とは別の共通の節として、どの単位にも添える。
 - 解決できない参照(設計に無い)は展開しない(None)。何が足りないかは段階8の検証が指摘する。
 """
@@ -15,7 +16,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from app.detailed_design.document.markdown import logic_spec, md_table, procedure_table
+from app.detailed_design.document.markdown import (
+    logic_spec,
+    md_table,
+    procedure_table,
+    sequence_block,
+)
 from app.detailed_design.document.views import logic_ids
 from app.detailed_design.function_list import FunctionListModel, FunctionRow
 from app.detailed_design.logic import LOGIC_STAGE, LogicModel, LogicRow, logic_key
@@ -28,6 +34,8 @@ from app.detailed_design.procedure_doc import (
     design_index,
     unit_refs,
 )
+from app.detailed_design.sequence import SequenceDiagram, to_sequence
+from app.detailed_design.sequence_svg import to_sequence_svg
 from app.detailed_design.structure import STRUCTURE_STAGE, ModuleListModel, ModuleRow
 
 
@@ -68,7 +76,8 @@ def design_book(stages: Mapping[int, Mapping[str, Any]]) -> DesignBook:
 
 @dataclass(frozen=True)
 class ExpandedRef:
-    """展開した参照1つ。`markdown`は該当箇所の md(解決できない参照は None)。"""
+    """展開した参照1つ。`markdown`は該当箇所の md(解決できない参照は None)。`svg`は段階5の
+    手順のシーケンス図(手順の参照だけ。図にする参加者が無ければ None)。"""
 
     kind: DesignRefKind
     key: str
@@ -76,6 +85,7 @@ class ExpandedRef:
     via: str | None
     label: str
     markdown: str | None
+    svg: str | None = None
 
 
 @dataclass(frozen=True)
@@ -102,6 +112,16 @@ def ref_label(ref: DesignRef, book: DesignBook) -> str:
     return f"段階4 `{ref.key}`"
 
 
+def ref_sequence(ref: DesignRef, book: DesignBook) -> SequenceDiagram | None:
+    """段階5の手順の参照のシーケンス図(手順の参照でない・解決できないときは None)。依存先は
+    承認済みの段階4から。"""
+    procedure = book.procedures.get(ref.key) if ref.kind == "procedure" and ref.resolved else None
+    if procedure is None:
+        return None
+    dependencies = {path: list(row.depends_on) for path, row in book.modules.items()}
+    return to_sequence(procedure, dependencies)
+
+
 def expand_ref(ref: DesignRef, book: DesignBook) -> str | None:
     """参照1つを、設計の該当箇所の md にする(解決できない参照は None)。"""
     if not ref.resolved:
@@ -117,6 +137,10 @@ def expand_ref(ref: DesignRef, book: DesignBook) -> str | None:
         lines += procedure_table(procedure, book.logic_ids)
         if procedure.note.strip():
             lines += ["", f"注記: {procedure.note.strip()}"]
+        diagram = ref_sequence(ref, book)
+        block = sequence_block(diagram) if diagram is not None else []
+        if block:
+            lines += ["", *block]
         return "\n".join(lines)
     if ref.kind == "logic":
         row = book.logics.get(ref.key)
@@ -134,6 +158,11 @@ def expand_ref(ref: DesignRef, book: DesignBook) -> str | None:
         f"- 段階4 `{module.path}`({module.layer or '—'}): "
         f"{module.responsibility or '—'} / 依存先: {depends}"
     )
+
+
+def _ref_svg(ref: DesignRef, book: DesignBook) -> str | None:
+    diagram = ref_sequence(ref, book)
+    return to_sequence_svg(diagram) if diagram is not None and diagram.participants else None
 
 
 def crosscutting_section(plan: PlanModel) -> str:
@@ -164,6 +193,7 @@ def unit_context(unit: PlanUnit, stages: Mapping[int, Mapping[str, Any]]) -> Uni
             via=ref.via,
             label=ref_label(ref, book),
             markdown=expand_ref(ref, book),
+            svg=_ref_svg(ref, book),
         )
         for ref in unit_refs(unit.task, design_index(stages))
     )

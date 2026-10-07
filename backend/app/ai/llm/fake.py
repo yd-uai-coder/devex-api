@@ -300,6 +300,7 @@ _UML_OUTPUTS[ProcedureGenerationOutput] = ProcedureGenerationOutput(
             db="—",
             branch="—",
             is_branch=False,
+            kind="return",
         ),
     ],
 )

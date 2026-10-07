@@ -1,7 +1,7 @@
 """段階5 主要処理の手順の組み立てと検証のテスト。
 
-SUT: number_steps / step_id / is_external_actor / resolve_callee / merge_procedure /
-     pending_function_ids(app/detailed_design/procedure.py)、
+SUT: number_steps / step_id / is_external_actor / calls_function / resolve_callee /
+     merge_procedure / pending_function_ids(app/detailed_design/procedure.py)、
      validate_procedures / STAGE_VALIDATORS(app/detailed_design/validation.py)、
      パッケージの re-export(app/detailed_design/__init__.py)
 ドライバ: 各テスト関数
@@ -25,6 +25,7 @@ from app.detailed_design import (
     ProcedureModel,
     ProcedureStep,
     StageSources,
+    calls_function,
     has_errors,
     is_external_actor,
     merge_procedure,
@@ -156,6 +157,36 @@ def test_merge_procedure_drops_leading_branch_and_empty_rows_and_clears_branch_c
     assert (steps[1].caller, steps[1].callee, steps[1].call) == ("", "", "")
 
 
+def test_step_without_kind_is_read_as_sync_call():
+    # 種別の欄より前に保存した行は、同期の呼び出しとして読む
+    assert ProcedureStep.model_validate({"caller": "利用者", "callee": ROUTE}).kind == "call"
+
+
+@pytest.mark.parametrize(
+    ("step", "expected"),
+    [
+        (ProcedureStep(callee=ROUTE, call="f"), True),
+        (ProcedureStep(callee=ROUTE, call="f", kind="async"), True),
+        (ProcedureStep(callee=ROUTE, call="f", kind="return"), False),
+        (ProcedureStep(callee=ROUTE, call="f", is_branch=True), False),
+        (ProcedureStep(callee="利用者", call="f"), False),
+        (ProcedureStep(callee=ROUTE, call=" "), False),
+    ],
+)
+def test_calls_function_only_for_module_calls(step, expected):
+    assert calls_function(step) is expected
+
+
+def test_merge_procedure_keeps_kind_and_resets_branch_kind():
+    back = ProcedureStep(caller=ROUTE, callee="利用者", action="返す", kind="return")
+    branch = ProcedureStep(action="不正", branch="400", is_branch=True, kind="return")
+    draft = ProcedureDraft(reason="", note="", steps=(_main(), branch, back))
+
+    steps = merge_procedure(ProcedureModel(), "F-01", draft, PATHS).procedures[0].steps
+
+    assert [s.kind for s in steps] == ["call", "call", "return"]
+
+
 def test_pending_function_ids_lists_procedures_without_steps_in_order():
     model = ProcedureModel(
         procedures=[
@@ -221,3 +252,14 @@ def test_validate_warns_module_call_without_function():
     model["procedures"][0]["steps"][0]["call"] = " "
     issues = validate_procedures(model, _sources())
     assert [(i.severity, i.code) for i in issues] == [("warning", "EMPTY_CALL")]
+
+
+def test_validate_does_not_warn_missing_function_on_return_row():
+    model = procedure_model()
+    model["procedures"][0]["steps"].append(
+        {"caller": "app/api/routes/reservations.py", "callee": "利用者", "kind": "return"}
+    )
+    model["procedures"][0]["steps"].append(
+        {"caller": "利用者", "callee": "app/api/routes/reservations.py", "kind": "return"}
+    )
+    assert "EMPTY_CALL" not in _codes(model)

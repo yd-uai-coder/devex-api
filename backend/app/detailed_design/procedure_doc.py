@@ -28,7 +28,7 @@ from app.detailed_design.procedure import (
     PROCEDURE_STAGE,
     Procedure,
     ProcedureModel,
-    is_external_actor,
+    calls_function,
     number_steps,
     step_id,
 )
@@ -205,8 +205,8 @@ def design_index(stages: Mapping[int, Mapping[str, Any]]) -> DesignIndex:
 def unit_refs(task: PlanTask, index: DesignIndex) -> list[DesignRef]:
     """単位が参照する設計を導く(段階5の手順 → 手順が呼ぶ段階6の関数 → 段階4のモジュールの順)。
 
-    段階6の関数は、単位の処理の手順のうち、分岐でなく、呼び出し先がモジュールで、呼ぶ関数が空でない
-    行から導く(段階6の候補と同じ規則)。同じ関数は1つにまとめる。"""
+    段階6の関数は、単位の処理の手順のうち、モジュールの関数を呼ぶ行(`calls_function`)から導く
+    (段階6の候補と同じ規則)。同じ関数は1つにまとめる。"""
     refs: list[DesignRef] = []
     logics: dict[str, DesignRef] = {}
     for function_id in _clean(task.function_ids):
@@ -216,10 +216,9 @@ def unit_refs(task: PlanTask, index: DesignIndex) -> list[DesignRef]:
             continue
         numbers = number_steps(procedure.steps)
         for step, number in zip(procedure.steps, numbers, strict=True):
-            callee, call = step.callee.strip(), step.call.strip()
-            if step.is_branch or not callee or not call or is_external_actor(callee):
+            if not calls_function(step):
                 continue
-            key = logic_key(callee, call)
+            key = logic_key(step.callee.strip(), step.call.strip())
             if key not in logics:
                 via = step_id(function_id, number)
                 logics[key] = DesignRef("logic", key, key in index.logic_keys, via)

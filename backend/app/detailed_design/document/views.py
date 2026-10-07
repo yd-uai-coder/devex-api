@@ -25,10 +25,12 @@ from app.detailed_design.procedure import (
     Procedure,
     ProcedureModel,
     ProcedureStep,
+    calls_function,
     is_external_actor,
     number_steps,
     step_id,
 )
+from app.detailed_design.sequence import SequenceDiagram, module_dependencies, to_sequence
 from app.detailed_design.structure import ModuleListModel
 from app.uml.domain.er import ErSemanticModel
 
@@ -77,16 +79,30 @@ def logic_ids(logics: LogicModel | None) -> dict[str, str]:
     return {logic_key(row.module, row.function): logic_id(i) for i, row in enumerate(logics.logics)}
 
 
+# 手順の行の種別の表示名(05 の表の「種別」の列)
+STEP_KIND_LABELS: dict[str, str] = {"call": "同期", "async": "非同期", "return": "戻り"}
+
+
+def step_kind_label(step: ProcedureStep) -> str:
+    """05 の表の「種別」の列の値(分岐の行は呼び出しでないので空)。"""
+    return "" if step.is_branch else STEP_KIND_LABELS[step.kind]
+
+
 def procedure_steps(procedure: Procedure, ids: Mapping[str, str]) -> list[StepView]:
-    """1つの処理の手順の表の行(番号・手順ID・06 の L-ID つき)。分岐の行は関数を呼ばない。"""
+    """1つの処理の手順の表の行(番号・手順ID・06 の L-ID つき)。分岐・戻りの行は関数を呼ばない。"""
     numbers = number_steps(procedure.steps)
     rows: list[StepView] = []
     for step, number in zip(procedure.steps, numbers, strict=True):
         linked = None
-        if not step.is_branch and step.call.strip():
+        if calls_function(step):
             linked = ids.get(logic_key(step.callee, step.call))
         rows.append(StepView(number, step_id(procedure.function_id, number), step, linked))
     return rows
+
+
+def procedure_sequence(procedure: Procedure, modules: ModuleListModel | None) -> SequenceDiagram:
+    """05 に載せる、1つの処理のシーケンス図のモデル(依存先は承認済みの段階4から)。"""
+    return to_sequence(procedure, module_dependencies(modules))
 
 
 def linked_logic_ids(steps: Iterable[StepView]) -> list[str]:
@@ -123,7 +139,7 @@ class Involvement:
 
 
 def involvement(procedures: ProcedureModel, modules: ModuleListModel | None) -> Involvement:
-    """関与表を導く。列はモジュール一覧の並び(呼ばれたものだけ)。外部の役者と分岐の行は除く。"""
+    """関与表を導く。列はモジュール一覧の並び(呼ばれたものだけ)。外部の役者と分岐・戻りの行は除く。"""
     cells: dict[str, dict[str, list[str]]] = {}
     called: list[str] = []
     for procedure in procedures.procedures:
@@ -131,7 +147,7 @@ def involvement(procedures: ProcedureModel, modules: ModuleListModel | None) -> 
         numbers = number_steps(procedure.steps)
         for step, number in zip(procedure.steps, numbers, strict=True):
             callee = step.callee.strip()
-            if step.is_branch or not callee or is_external_actor(callee):
+            if step.is_branch or step.kind == "return" or not callee or is_external_actor(callee):
                 continue
             row.setdefault(callee, []).append(number)
             if callee not in called:

@@ -128,6 +128,19 @@ def test_logic_candidates_skip_branch_external_actor_and_empty_call():
     assert "" not in functions  # 関数が空
 
 
+def test_logic_candidates_skip_return_rows():
+    # 戻りの行は関数を呼ばない(関数の欄が書かれていても候補にしない)
+    procedures = ProcedureModel(
+        procedures=[
+            Procedure(
+                function_id="F-01",
+                steps=[ProcedureStep(caller=SERVICE, callee=ROUTE, call="back", kind="return")],
+            )
+        ]
+    )
+    assert logic_candidates(procedures) == []
+
+
 def test_calling_steps_returns_step_ids_or_empty():
     assert calling_steps(_procedures(), SERVICE, "ReservationService.create") == [
         "F-01#2",

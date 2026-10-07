@@ -87,9 +87,26 @@ class DesignStageGenerate(BaseModel):
     unit_ids: list[str] | None = None
 
 
+class SequenceIssueRead(BaseModel):
+    """シーケンス図にするときの指摘1つ(app/detailed_design/sequence.py の SequenceIssue)。"""
+
+    step_id: str
+    code: str
+    message: str
+
+
+class SequenceRead(BaseModel):
+    """段階5の処理1つのシーケンス図(保存した手順から導いた SVG と、図にするときの指摘)。"""
+
+    function_id: str
+    svg: str
+    issues: list[SequenceIssueRead]
+
+
 class DesignRefRead(BaseModel):
     """段階8の単位が参照する設計1つ(app/detailed_design/procedure_doc_refs.py の ExpandedRef)。
-    `markdown`は設計の該当箇所を展開した md(設計に無い参照は None)。"""
+    `markdown`は設計の該当箇所を展開した md(設計に無い参照は None)。`svg`は段階5の手順の
+    シーケンス図(手順の参照だけ)。"""
 
     kind: Literal["procedure", "logic", "module"]
     key: str
@@ -97,6 +114,7 @@ class DesignRefRead(BaseModel):
     via: str | None = None
     label: str
     markdown: str | None = None
+    svg: str | None = None
 
 
 class UnitContextRead(BaseModel):

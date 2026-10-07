@@ -5,7 +5,8 @@ docs/external_design.md 2.7節「詳細設計書の出力」。md は差分を�
 「呼ばれる手順: F-01#4」)。`<a id>`のアンカーは md のビューアで消えて飛べなかったため。
 
 図は、zip の中の SVG を相対パスの画像で載せる(`![題](diagrams/x.svg)`)。md のビューアで
-開くと図が見える。画像は章の間のリンクではない。
+開くと図が見える。画像は章の間のリンクではない。05 のシーケンス図は手順の表から導く別の見え方
+なので、ファイルにせず Mermaid のコードブロックで載せる(AI が読める形のまま)。
 
 段階7の実装計画は、詳細設計書とは別の md(`to_plan_markdown`)にする(簡易モードで
 実装計画書が別の文書なのとそろえる)。段階7の下書きの入力には、詳細設計書の md(`to_markdown`の
@@ -33,11 +34,14 @@ from app.detailed_design.document.views import (
     logic_ids,
     logic_views,
     main_step_count,
+    procedure_sequence,
     procedure_steps,
+    step_kind_label,
 )
 from app.detailed_design.logic import LogicRow
 from app.detailed_design.plan import PLAN_STAGE, milestone_functions, milestone_id, task_id
 from app.detailed_design.procedure import Procedure
+from app.detailed_design.sequence import SequenceDiagram, to_mermaid
 
 UNAPPROVED_TEXT = "未承認(段階{stage}が承認されていません。承認すると、この章が組み立てられます)"
 SKIPPED_TEXT = "省略(段階6を飛ばしました)"
@@ -211,6 +215,7 @@ def procedure_table(procedure: Procedure, ids: Mapping[str, str]) -> list[str]:
         [
             "No",
             "呼び出し元 → 呼び出し先",
+            "種別",
             "関数",
             "渡すデータ",
             "処理内容",
@@ -222,6 +227,7 @@ def procedure_table(procedure: Procedure, ids: Mapping[str, str]) -> list[str]:
             [
                 s.number,
                 "" if s.step.is_branch else f"{s.step.caller} → {s.step.callee}",
+                step_kind_label(s.step),
                 s.step.call + (f" → 詳細: {s.logic_id}" if s.logic_id else ""),
                 s.step.data,
                 s.step.action,
@@ -232,6 +238,20 @@ def procedure_table(procedure: Procedure, ids: Mapping[str, str]) -> list[str]:
             for s in procedure_steps(procedure, ids)
         ],
     )
+
+
+def sequence_block(diagram: SequenceDiagram) -> list[str]:
+    """シーケンス図の Mermaid のコードブロック(05 の本文。段階8の参照の展開も同じ形を使う)。
+    参加者が無ければ空。"""
+    if not diagram.participants:
+        return []
+    return [
+        "シーケンス図(手順の表から導いた図。直すのは表):",
+        "",
+        "```mermaid",
+        to_mermaid(diagram),
+        "```",
+    ]
 
 
 def logic_spec(row: LogicRow) -> list[str]:
@@ -297,6 +317,9 @@ def _procedures(source: DocumentSource) -> list[str]:
         lines += procedure_table(p, ids)
         if p.note.strip():
             lines += ["", f"注記: {p.note.strip()}"]
+        block = sequence_block(procedure_sequence(p, source.modules))
+        if block:
+            lines += ["", *block]
     return lines
 
 

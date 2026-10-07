@@ -1,6 +1,7 @@
 import uuid
 
 import structlog
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.detailed_design import (
@@ -8,10 +9,14 @@ from app.detailed_design import (
     ER_SUBJECT,
     PLAN_STAGE,
     PROCEDURE_DOC_STAGE,
+    PROCEDURE_STAGE,
     STAGE_INPUTS,
+    STRUCTURE_STAGE,
     STRUCTURE_SUBJECT,
     Fingerprint,
+    ModuleListModel,
     PlanModel,
+    ProcedureModel,
     StageRecord,
     StageView,
     can_approve,
@@ -22,10 +27,13 @@ from app.detailed_design import (
     dfd_accesses,
     er_table_names,
     find_unit,
+    module_dependencies,
     table_key,
     tables_without_primary_key,
 )
 from app.detailed_design.procedure_doc_refs import unit_context
+from app.detailed_design.sequence import to_sequence
+from app.detailed_design.sequence_svg import to_sequence_svg
 from app.detailed_design.validation import (
     ComponentDiagramSummary,
     DfdDiagramSummary,
@@ -46,10 +54,13 @@ from app.schemas.design_stage import (
     DesignRefRead,
     DesignStageRead,
     DfdAccessRead,
+    SequenceIssueRead,
+    SequenceRead,
     StageIssueRead,
     UnitContextRead,
 )
 from app.services.errors import (
+    DesignProcedureNotFoundError,
     DesignStageGenerationInProgressError,
     DesignStageInvalidError,
     DesignStageLockedError,
@@ -219,6 +230,41 @@ class DesignStageService:
             refs=[DesignRefRead.model_validate(ref, from_attributes=True) for ref in context.refs],
             crosscutting=context.crosscutting,
             environment=context.environment,
+        )
+
+    async def procedure_sequence(self, project: Project, function_id: str) -> SequenceRead:
+        """段階5の処理1つのシーケンス図を、保存した手順(下書き・レビュー中を含む)から導いて返す
+        (画面の段階5のタブが使う)。図は保存しない。依存先の指摘は承認済みの段階4を使う。
+        段階5が開いていなければ断り、段階5で選んでいない処理は見つからないとする。"""
+        _ensure_detailed(project)
+        rows, views, _ = await self._load(project.id)
+        _ensure_open(views[PROCEDURE_STAGE])
+        row = rows.get(PROCEDURE_STAGE)
+        try:
+            model = ProcedureModel.model_validate(row.model if row is not None else {})
+        except ValidationError as exc:
+            raise DesignProcedureNotFoundError(f"Stage {PROCEDURE_STAGE} model is invalid") from exc
+        procedure = next(
+            (p for p in model.procedures if p.function_id.strip() == function_id.strip()), None
+        )
+        if procedure is None:
+            raise DesignProcedureNotFoundError(
+                f"Function {function_id} is not in stage {PROCEDURE_STAGE}"
+            )
+        structure = rows.get(STRUCTURE_STAGE)
+        modules = (
+            ModuleListModel.model_validate(structure.model)
+            if structure is not None and views[STRUCTURE_STAGE].state == "approved"
+            else None
+        )
+        diagram = to_sequence(procedure, module_dependencies(modules))
+        return SequenceRead(
+            function_id=procedure.function_id,
+            svg=to_sequence_svg(diagram),
+            issues=[
+                SequenceIssueRead.model_validate(issue, from_attributes=True)
+                for issue in diagram.issues
+            ],
         )
 
     async def _load(
