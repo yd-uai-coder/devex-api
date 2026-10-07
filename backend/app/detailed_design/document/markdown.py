@@ -12,7 +12,7 @@ docs/external_design.md 2.7節「詳細設計書の出力」。md は差分を�
 01〜06章)を使う。
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from app.detailed_design.document.source import (
     CHAPTERS,
@@ -35,7 +35,9 @@ from app.detailed_design.document.views import (
     main_step_count,
     procedure_steps,
 )
+from app.detailed_design.logic import LogicRow
 from app.detailed_design.plan import PLAN_STAGE, milestone_functions, milestone_id, task_id
+from app.detailed_design.procedure import Procedure
 
 UNAPPROVED_TEXT = "未承認(段階{stage}が承認されていません。承認すると、この章が組み立てられます)"
 SKIPPED_TEXT = "省略(段階6を飛ばしました)"
@@ -203,6 +205,56 @@ def _structure(source: DocumentSource) -> list[str]:
     return lines
 
 
+def procedure_table(procedure: Procedure, ids: Mapping[str, str]) -> list[str]:
+    """1つの処理の手順の表(05 の本文。段階8の参照の展開も同じ表を使う)。"""
+    return md_table(
+        [
+            "No",
+            "呼び出し元 → 呼び出し先",
+            "関数",
+            "渡すデータ",
+            "処理内容",
+            "結果",
+            "DB 操作",
+            "分岐・例外",
+        ],
+        [
+            [
+                s.number,
+                "" if s.step.is_branch else f"{s.step.caller} → {s.step.callee}",
+                s.step.call + (f" → 詳細: {s.logic_id}" if s.logic_id else ""),
+                s.step.data,
+                s.step.action,
+                s.step.result,
+                s.step.db,
+                s.step.branch,
+            ]
+            for s in procedure_steps(procedure, ids)
+        ],
+    )
+
+
+def logic_spec(row: LogicRow) -> list[str]:
+    """1つの関数のモジュール仕様の表と擬似フロー(06 の本文。段階8の参照の展開も同じ形を使う)。"""
+    lines = md_table(
+        ["項目", "内容"],
+        [
+            ["シグネチャ", row.signature],
+            ["引数", row.args],
+            ["戻り値", row.returns],
+            ["例外", row.raises],
+            ["事前条件", row.pre],
+            ["事後条件", row.post],
+        ],
+    )
+    if row.pseudo:
+        lines += ["", "擬似フロー:", ""]
+        for n, step in enumerate(row.pseudo, start=1):
+            lines.append(f"{n}. {step.text}")
+            lines += [f"    - {sub}" for sub in step.sub]
+    return lines
+
+
 def _procedures(source: DocumentSource) -> list[str]:
     assert source.procedures is not None
     names = functions_by_id(source.function_list)
@@ -242,31 +294,7 @@ def _procedures(source: DocumentSource) -> list[str]:
             lines += [f"トリガー: {row.trigger}", ""]
         if p.reason.strip():
             lines += [f"選定理由: {p.reason.strip()}", ""]
-        lines += md_table(
-            [
-                "No",
-                "呼び出し元 → 呼び出し先",
-                "関数",
-                "渡すデータ",
-                "処理内容",
-                "結果",
-                "DB 操作",
-                "分岐・例外",
-            ],
-            [
-                [
-                    s.number,
-                    "" if s.step.is_branch else f"{s.step.caller} → {s.step.callee}",
-                    s.step.call + (f" → 詳細: {s.logic_id}" if s.logic_id else ""),
-                    s.step.data,
-                    s.step.action,
-                    s.step.result,
-                    s.step.db,
-                    s.step.branch,
-                ]
-                for s in procedure_steps(p, ids)
-            ],
-        )
+        lines += procedure_table(p, ids)
         if p.note.strip():
             lines += ["", f"注記: {p.note.strip()}"]
     return lines
@@ -288,22 +316,7 @@ def _logics(source: DocumentSource) -> list[str]:
             f"モジュール: {row.module}",
             "",
         ]
-        lines += md_table(
-            ["項目", "内容"],
-            [
-                ["シグネチャ", row.signature],
-                ["引数", row.args],
-                ["戻り値", row.returns],
-                ["例外", row.raises],
-                ["事前条件", row.pre],
-                ["事後条件", row.post],
-            ],
-        )
-        if row.pseudo:
-            lines += ["", "擬似フロー:", ""]
-            for n, step in enumerate(row.pseudo, start=1):
-                lines.append(f"{n}. {step.text}")
-                lines += [f"    - {sub}" for sub in step.sub]
+        lines += logic_spec(row)
     return lines
 
 

@@ -10,6 +10,7 @@ from app.schemas.design_stage import (
     DesignStageGenerate,
     DesignStageRead,
     DesignStageSave,
+    UnitContextRead,
 )
 from app.services.design_stage_generation_service import (
     DesignStageGenerationService,
@@ -50,6 +51,15 @@ async def download_detailed_design(
     )
 
 
+@router.get("/units/{unit_id}/context", response_model=UnitContextRead)
+async def get_unit_context(
+    unit_id: str, session: SessionDep, current_project: CurrentProjectDep
+) -> UnitContextRead:
+    """段階8の作業単位1つが参照する設計(段階5の手順・段階6の関数・段階4のモジュール)を展開して
+    返す。段階7の 07 横断事項と開発環境も添える。段階8が開いていなければ409。"""
+    return await DesignStageService(session).unit_context(current_project, unit_id)
+
+
 @router.post(
     "/{stage}/generate", response_model=DesignStageRead, status_code=status.HTTP_202_ACCEPTED
 )
@@ -63,15 +73,17 @@ async def generate_design_stage(
     """段階のAIの下書きの生成を受け付け、バックグラウンドで実行する。
     段階は「生成中」になり、終わると`completed`/`failed`になる。background taskには値だけを渡す
     (doc生成・UML図の生成と同じ理由)。段階5は、本文の`function_ids`で下書きを作る処理を選べる。
-    段階6は、本文の`logics`で下書きを作る関数を選べる。"""
+    段階6は、本文の`logics`で下書きを作る関数を選べる。段階8は、本文の`unit_ids`で手順書を作る
+    作業単位を選べる。"""
     function_ids = payload.function_ids if payload is not None else None
+    unit_ids = payload.unit_ids if payload is not None else None
     logics = (
         [(t.module, t.function) for t in payload.logics]
         if payload is not None and payload.logics is not None
         else None
     )
     accepted = await DesignStageGenerationService(session).request_generation(
-        current_project, stage=stage, function_ids=function_ids, logics=logics
+        current_project, stage=stage, function_ids=function_ids, logics=logics, unit_ids=unit_ids
     )
     background_tasks.add_task(
         run_design_stage_generation,
@@ -80,6 +92,7 @@ async def generate_design_stage(
         stage,
         function_ids,
         logics,
+        unit_ids,
     )
     return accepted
 

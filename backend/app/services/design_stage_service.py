@@ -6,9 +6,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.detailed_design import (
     DATA_MODEL_STAGE,
     ER_SUBJECT,
+    PLAN_STAGE,
+    PROCEDURE_DOC_STAGE,
     STAGE_INPUTS,
     STRUCTURE_SUBJECT,
     Fingerprint,
+    PlanModel,
     StageRecord,
     StageView,
     can_approve,
@@ -18,9 +21,11 @@ from app.detailed_design import (
     derive_states,
     dfd_accesses,
     er_table_names,
+    find_unit,
     table_key,
     tables_without_primary_key,
 )
+from app.detailed_design.procedure_doc_refs import unit_context
 from app.detailed_design.validation import (
     ComponentDiagramSummary,
     DfdDiagramSummary,
@@ -37,7 +42,13 @@ from app.models.uml_diagram import UmlDiagram
 from app.repositories.design_stage import DesignStageRepository
 from app.repositories.generated_document import GeneratedDocumentRepository
 from app.repositories.uml_diagram import UmlDiagramRepository
-from app.schemas.design_stage import DesignStageRead, DfdAccessRead, StageIssueRead
+from app.schemas.design_stage import (
+    DesignRefRead,
+    DesignStageRead,
+    DfdAccessRead,
+    StageIssueRead,
+    UnitContextRead,
+)
 from app.services.errors import (
     DesignStageGenerationInProgressError,
     DesignStageInvalidError,
@@ -46,6 +57,7 @@ from app.services.errors import (
     DesignStageNotFoundError,
     DesignStagesNotAvailableError,
     DesignStageVersionConflictError,
+    DesignUnitNotFoundError,
 )
 
 logger = structlog.get_logger(__name__)
@@ -189,6 +201,25 @@ class DesignStageService:
         await self._session.refresh(row)
         logger.info("design_stage_approved", project_id=str(project.id), stage=stage)
         return await self._read_one(project.id, stage)
+
+    async def unit_context(self, project: Project, unit_id: str) -> UnitContextRead:
+        """段階8の単位1つが参照する設計を展開して返す(画面の単位の詳細が使う)。中身は承認済みの
+        段階1〜7から毎回導き、保存しない。段階8が開いていなければ断る。"""
+        _ensure_detailed(project)
+        rows, views, documents = await self._load(project.id)
+        _ensure_open(views[PROCEDURE_DOC_STAGE])
+        sources = await self._sources(project.id, rows, views, documents)
+        plan = PlanModel.model_validate(sources.stages.get(PLAN_STAGE) or {})
+        unit = find_unit(plan, unit_id)
+        if unit is None:
+            raise DesignUnitNotFoundError(f"Unit {unit_id} is not in stage {PLAN_STAGE}")
+        context = unit_context(unit, sources.stages)
+        return UnitContextRead(
+            unit_id=unit.unit_id,
+            refs=[DesignRefRead.model_validate(ref, from_attributes=True) for ref in context.refs],
+            crosscutting=context.crosscutting,
+            environment=context.environment,
+        )
 
     async def _load(
         self, project_id: uuid.UUID

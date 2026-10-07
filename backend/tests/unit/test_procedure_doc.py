@@ -19,11 +19,14 @@ from app.detailed_design import (
     PlanModel,
     PlanTask,
     ProcedureDocModel,
+    UnitProcedure,
     design_index,
+    documented_unit_ids,
+    merge_unit_procedure,
     plan_units,
     unit_refs,
 )
-from app.detailed_design.procedure_doc import name_key, spelling_match
+from app.detailed_design.procedure_doc import generation_targets, name_key, spelling_match
 
 
 def _stages(overrides: dict[int, dict] | None = None) -> dict[int, dict]:
@@ -130,3 +133,57 @@ def test_spelling_match_finds_only_same_module_variant() -> None:
     assert spelling_match(index, route, "create_reservation") is None
     assert spelling_match(index, route, "list_reservations") is None
     assert spelling_match(index, "app/services/other.py", "createReservation") is None
+
+
+_PLAN = PlanModel.model_validate(plan_model())
+
+
+def test_documented_units_need_same_id_and_title() -> None:
+    """手順書のある単位は、単位の ID とタスク名の両方が段階7と合うものだけ。"""
+    doc = ProcedureDocModel.model_validate(procedure_doc_model())
+    renamed = ProcedureDocModel.model_validate(procedure_doc_model(title="旧い名前"))
+
+    assert documented_unit_ids(_PLAN, doc) == {"M-01-T02"}
+    assert documented_unit_ids(_PLAN, renamed) == set()
+
+
+def test_generation_targets_default_to_undocumented_units() -> None:
+    doc = ProcedureDocModel.model_validate(procedure_doc_model())
+
+    assert generation_targets(_PLAN, doc, None) == ["M-01-T01"]
+    assert generation_targets(_PLAN, ProcedureDocModel(), None) == ["M-01-T01", "M-01-T02"]
+
+
+def test_generation_targets_keep_requested_order_without_duplicates() -> None:
+    requested = [" M-01-T02 ", "M-01-T01", "M-01-T02", ""]
+
+    assert generation_targets(_PLAN, ProcedureDocModel(), requested) == ["M-01-T02", "M-01-T01"]
+
+
+def test_merge_replaces_unit_and_keeps_plan_order() -> None:
+    """対象の単位だけを置き換え、段階7の並び順に並べる。他の単位の手直しは残す。"""
+    doc = ProcedureDocModel.model_validate(procedure_doc_model())
+    base = UnitProcedure(unit_id="M-01-T01", title="開発環境を用意する", purpose="下書き")
+    feature = UnitProcedure(unit_id="M-01-T02", title="予約を登録する", purpose="作り直し")
+
+    merged = merge_unit_procedure(doc, _PLAN, base)
+    remerged = merge_unit_procedure(merged, _PLAN, feature)
+
+    assert [(u.unit_id, u.purpose) for u in merged.units] == [
+        ("M-01-T01", "下書き"),
+        ("M-01-T02", "予約を登録できるようにする"),
+    ]
+    assert [(u.unit_id, u.purpose) for u in remerged.units] == [
+        ("M-01-T01", "下書き"),
+        ("M-01-T02", "作り直し"),
+    ]
+
+
+def test_merge_keeps_units_missing_from_plan_at_the_end() -> None:
+    """段階7に無くなった単位の手順書は消さずに後ろへ置く(検証の UNIT_MISMATCH で知らせる)。"""
+    doc = ProcedureDocModel.model_validate(procedure_doc_model(unit_id="M-09-T01"))
+    base = UnitProcedure(unit_id="M-01-T01", title="開発環境を用意する")
+
+    merged = merge_unit_procedure(doc, _PLAN, base)
+
+    assert [u.unit_id for u in merged.units] == ["M-01-T01", "M-09-T01"]
