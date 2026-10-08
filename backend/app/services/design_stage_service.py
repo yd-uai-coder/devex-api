@@ -32,6 +32,12 @@ from app.detailed_design import (
     tables_without_primary_key,
 )
 from app.detailed_design.procedure_doc_refs import unit_context
+from app.detailed_design.procedure_output import (
+    count_by_level,
+    procedure_output_source,
+    to_ai_markdown,
+    unit_findings,
+)
 from app.detailed_design.sequence import to_sequence
 from app.detailed_design.sequence_svg import to_sequence_svg
 from app.detailed_design.validation import (
@@ -57,6 +63,7 @@ from app.schemas.design_stage import (
     SequenceIssueRead,
     SequenceRead,
     StageIssueRead,
+    UnitAiMarkdownRead,
     UnitContextRead,
 )
 from app.services.errors import (
@@ -69,6 +76,7 @@ from app.services.errors import (
     DesignStagesNotAvailableError,
     DesignStageVersionConflictError,
     DesignUnitNotFoundError,
+    DesignUnitProcedureNotFoundError,
 )
 
 logger = structlog.get_logger(__name__)
@@ -230,6 +238,46 @@ class DesignStageService:
             refs=[DesignRefRead.model_validate(ref, from_attributes=True) for ref in context.refs],
             crosscutting=context.crosscutting,
             environment=context.environment,
+        )
+
+    async def unit_ai_markdown(self, project: Project, unit_id: str) -> UnitAiMarkdownRead:
+        """段階8の単位1つの AI 向けの版を、保存済みの手順書(下書き・レビュー中・古いものを含む)と
+        承認済みの段階1〜7から組み立てて返す(画面の「AI 向けにコピー」が使う)。段階8が承認済みで
+        なければ、md の先頭で警告する。段階8が開いていなければ断り、段階7に無い単位・手順書の無い
+        単位は見つからないとする。"""
+        _ensure_detailed(project)
+        rows, views, documents = await self._load(project.id)
+        view = views[PROCEDURE_DOC_STAGE]
+        _ensure_open(view)
+        sources = await self._sources(project.id, rows, views, documents)
+        plan = PlanModel.model_validate(sources.stages.get(PLAN_STAGE) or {})
+        if find_unit(plan, unit_id) is None:
+            raise DesignUnitNotFoundError(f"Unit {unit_id} is not in stage {PLAN_STAGE}")
+        row = rows.get(PROCEDURE_DOC_STAGE)
+        model = row.model if row is not None else None
+        try:
+            source = procedure_output_source(
+                project.title,
+                view.state,
+                sources.stages,
+                model,
+                validate_stage(PROCEDURE_DOC_STAGE, model, sources),
+                sources.documents.get("requirements", ""),
+            )
+        except ValidationError as exc:
+            raise DesignUnitProcedureNotFoundError(
+                f"Stage {PROCEDURE_DOC_STAGE} model is invalid"
+            ) from exc
+        key = unit_id.strip()
+        if key not in source.procedures:
+            raise DesignUnitProcedureNotFoundError(f"Unit {key} has no procedure document")
+        findings = unit_findings(source, key)
+        return UnitAiMarkdownRead(
+            unit_id=key,
+            markdown=to_ai_markdown(source, key),
+            state=view.state,
+            finding_total=len(findings),
+            critical=count_by_level(findings)["critical"],
         )
 
     async def procedure_sequence(self, project: Project, function_id: str) -> SequenceRead:

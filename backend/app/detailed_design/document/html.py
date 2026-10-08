@@ -243,11 +243,11 @@ def to_html(source: DocumentSource, chapters: Sequence[Chapter] = CHAPTERS) -> s
         f'<nav class="toc">{toc}</nav></header>'
     )
     body = "".join(_chapter(source, c) for c in chapters)
-    return _page(f"詳細設計書: {source.title}", header + body)
+    return page(f"詳細設計書: {source.title}", header + body)
 
 
-def _page(title: str, content: str) -> str:
-    """自己完結の HTML の1ページ(詳細設計書と実装計画で共通)。"""
+def page(title: str, content: str) -> str:
+    """自己完結の HTML の1ページ(詳細設計書・実装計画・実装手順書で共通)。"""
     return (
         '<!doctype html>\n<html lang="ja"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -640,7 +640,7 @@ def to_plan_html(source: DocumentSource) -> str:
     )
     title = f"実装計画書: {source.title}"
     if source.status(PLAN_STAGE) != "approved" or plan is None:
-        return _page(title, header + f'<p class="status">{e(PLAN_UNAPPROVED_TEXT)}</p>')
+        return page(title, header + f'<p class="status">{e(PLAN_UNAPPROVED_TEXT)}</p>')
 
     def section(number: str, heading: str, body: str) -> str:
         return (
@@ -685,7 +685,7 @@ def to_plan_html(source: DocumentSource) -> str:
     risks = table(
         ["リスク", "対策"], [[e(r.risk), e(r.mitigation)] for r in plan.risks], label="想定リスク"
     )
-    return _page(
+    return page(
         title,
         header
         + section("1", "マイルストーン", overview + details)

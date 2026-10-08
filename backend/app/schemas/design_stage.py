@@ -125,3 +125,15 @@ class UnitContextRead(BaseModel):
     refs: list[DesignRefRead]
     crosscutting: str
     environment: str
+
+
+class UnitAiMarkdownRead(BaseModel):
+    """段階8の単位1つの AI 向けの版(画面の「AI 向けにコピー」。zip の`ai/<単位ID>.md`と同じ
+    組み立て)。保存済みの手順書から作る。`state`は段階8の状態、`finding_total`・`critical`は
+    その単位に残る未定義の件数と、そのうち最重要の件数(画面の警告に使う)。"""
+
+    unit_id: str
+    markdown: str
+    state: StageState
+    finding_total: int
+    critical: int

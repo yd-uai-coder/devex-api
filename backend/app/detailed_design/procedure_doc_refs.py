@@ -34,7 +34,7 @@ from app.detailed_design.procedure_doc import (
     design_index,
     unit_refs,
 )
-from app.detailed_design.sequence import SequenceDiagram, to_sequence
+from app.detailed_design.sequence import SequenceDiagram, to_mermaid, to_sequence
 from app.detailed_design.sequence_svg import to_sequence_svg
 from app.detailed_design.structure import STRUCTURE_STAGE, ModuleListModel, ModuleRow
 
@@ -76,8 +76,9 @@ def design_book(stages: Mapping[int, Mapping[str, Any]]) -> DesignBook:
 
 @dataclass(frozen=True)
 class ExpandedRef:
-    """展開した参照1つ。`markdown`は該当箇所の md(解決できない参照は None)。`svg`は段階5の
-    手順のシーケンス図(手順の参照だけ。図にする参加者が無ければ None)。"""
+    """展開した参照1つ。`markdown`は該当箇所の md(解決できない参照は None)。`svg`と`mermaid`は
+    段階5の手順のシーケンス図の SVG と Mermaid の本文(手順の参照だけ。図にする参加者が無ければ
+    None)。`mermaid`は、参照を ID だけで書く手順書の md に図だけを載せるために使う。"""
 
     kind: DesignRefKind
     key: str
@@ -86,6 +87,7 @@ class ExpandedRef:
     label: str
     markdown: str | None
     svg: str | None = None
+    mermaid: str | None = None
 
 
 @dataclass(frozen=True)
@@ -160,9 +162,23 @@ def expand_ref(ref: DesignRef, book: DesignBook) -> str | None:
     )
 
 
-def _ref_svg(ref: DesignRef, book: DesignBook) -> str | None:
+def _drawable(ref: DesignRef, book: DesignBook) -> SequenceDiagram | None:
     diagram = ref_sequence(ref, book)
-    return to_sequence_svg(diagram) if diagram is not None and diagram.participants else None
+    return diagram if diagram is not None and diagram.participants else None
+
+
+def _expanded(ref: DesignRef, book: DesignBook) -> ExpandedRef:
+    diagram = _drawable(ref, book)
+    return ExpandedRef(
+        kind=ref.kind,
+        key=ref.key,
+        resolved=ref.resolved,
+        via=ref.via,
+        label=ref_label(ref, book),
+        markdown=expand_ref(ref, book),
+        svg=to_sequence_svg(diagram) if diagram is not None else None,
+        mermaid=to_mermaid(diagram) if diagram is not None else None,
+    )
 
 
 def crosscutting_section(plan: PlanModel) -> str:
@@ -186,16 +202,7 @@ def unit_context(unit: PlanUnit, stages: Mapping[int, Mapping[str, Any]]) -> Uni
     """単位の参照を導いて展開し、共通の節と合わせる。"""
     book = design_book(stages)
     refs = tuple(
-        ExpandedRef(
-            kind=ref.kind,
-            key=ref.key,
-            resolved=ref.resolved,
-            via=ref.via,
-            label=ref_label(ref, book),
-            markdown=expand_ref(ref, book),
-            svg=_ref_svg(ref, book),
-        )
-        for ref in unit_refs(unit.task, design_index(stages))
+        _expanded(ref, book) for ref in unit_refs(unit.task, design_index(stages))
     )
     return UnitContext(
         unit=unit,

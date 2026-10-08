@@ -7,7 +7,7 @@ SUT は`app/detailed_design/procedure_doc_refs.py`の純粋関数(と`procedure_
 
 from tests.fixtures.detailed_design import document_stage_models
 
-from app.detailed_design import PlanModel, ProcedureModel, find_unit, to_sequence
+from app.detailed_design import PlanModel, ProcedureModel, find_unit, to_mermaid, to_sequence
 from app.detailed_design.document.markdown import logic_spec, procedure_table, sequence_block
 from app.detailed_design.logic import LogicModel
 from app.detailed_design.procedure_doc_refs import (
@@ -78,6 +78,9 @@ def test_procedure_ref_has_sequence_as_mermaid_and_svg() -> None:
     )
     assert procedure_ref.svg is not None and procedure_ref.svg.startswith("<svg ")
     assert (logic_ref.svg, module_ref.svg) == (None, None)
+    # 手順書の md(参照を ID だけで書く)に図だけを載せるための Mermaid の本文
+    assert procedure_ref.mermaid == to_mermaid(to_sequence(procedure))
+    assert (logic_ref.mermaid, module_ref.mermaid) == (None, None)
 
 
 def test_unresolved_refs_are_not_expanded() -> None:

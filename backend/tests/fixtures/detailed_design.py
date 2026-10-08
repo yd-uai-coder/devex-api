@@ -16,7 +16,9 @@ from app.detailed_design.procedure_doc_drafting import (
     GeneratedUnitFile,
     ProcedureDocGenerationOutput,
 )
+from app.detailed_design.procedure_output import ProcedureOutputSource, procedure_output_source
 from app.detailed_design.stages import StageState
+from app.detailed_design.validation import StageIssue
 from app.models.project import Project
 from app.models.user import User
 from app.repositories.generated_document import GeneratedDocumentRepository
@@ -471,3 +473,30 @@ def procedure_doc_output(**overrides) -> ProcedureDocGenerationOutput:
         ],
     }
     return ProcedureDocGenerationOutput(**(values | overrides))
+
+
+# 要件定義書の 1.4節(MoSCoW)。手順書の対象外(Should / Could / Won't)を読むテストで使う
+REQUIREMENTS_WITH_SCOPE = (
+    "# 要件定義書\n\n## 1.4 機能要件(MoSCoW優先度)\n\n"
+    "- **Must have(必須)**: 予約の登録\n- **Should have(重要)**: 予約の履歴\n"
+    "- **Could have(あると良い)**: \n- **Won't have(見送り)**: 決済\n\n## 1.5 非機能要件\n"
+)
+
+
+def sample_procedure_source(
+    *,
+    state: StageState = "approved",
+    model: dict | None = None,
+    issues: tuple[StageIssue, ...] = (),
+) -> ProcedureOutputSource:
+    """手順書の出力の入力(段階1〜7は`document_stage_models()`、段階8は`procedure_doc_model()`)。
+    M-01-T01(基盤)は手順書が無く、M-01-T02(機能)は最重要の AI の指摘を1件持つ。md・HTML の
+    組み立てのテストで使う。`issues`で段階8の検証の指摘を足せる。"""
+    return procedure_output_source(
+        "予約システム",
+        state,
+        document_stage_models(),
+        procedure_doc_model() if model is None else model,
+        issues,
+        REQUIREMENTS_WITH_SCOPE,
+    )
