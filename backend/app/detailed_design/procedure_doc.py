@@ -45,6 +45,17 @@ MAX_PROCEDURE_DOC_TARGETS = 5
 FindingLevel = Literal["critical", "major", "minor"]
 FINDING_LEVELS: tuple[FindingLevel, ...] = ("critical", "major", "minor")
 
+# 簡易ドキュメントモードの4文書(指摘の直す先。簡易モードには段階1〜7が無いため、文書で示す)
+DesignDocument = Literal[
+    "requirements", "external_design", "internal_design", "implementation_plan"
+]
+DESIGN_DOCUMENT_LABELS: dict[DesignDocument, str] = {
+    "requirements": "要件定義書",
+    "external_design": "外部設計書",
+    "internal_design": "内部設計書",
+    "implementation_plan": "実装計画書",
+}
+
 # 手順書のファイルの種類。module = 段階4のモジュール(検証する)、test = テスト、
 # config = 環境・設定のファイル
 UnitFileKind = Literal["module", "test", "config"]
@@ -69,12 +80,14 @@ class TestPoint(BaseModel):
 
 
 class AiFinding(BaseModel):
-    """手順書を作った AI の指摘1つ(設計に無いため決められないこと)。`fix_stage`は直す先の段階。"""
+    """手順書を作った AI の指摘1つ(設計に無いため決められないこと)。`fix_stage`は直す先の段階。
+    簡易モードでは直す先を文書`fix_document`で示す(`fix_stage`は直す先の段階が無いことを示す8)。"""
 
     level: FindingLevel = "major"
     target: str = ""
     message: str = ""
     fix_stage: int = Field(default=PROCEDURE_DOC_STAGE, ge=1, le=PROCEDURE_DOC_STAGE)
+    fix_document: DesignDocument | None = None
 
 
 class UnitProcedure(BaseModel):
@@ -152,8 +165,10 @@ def merge_unit_procedure(
 
 
 # 単位が参照する設計の種類。procedure = 段階5の手順(鍵は処理ID)、logic = 段階6の関数
-# (鍵は`logic_key`)、module = 段階4のモジュール(鍵はパス)
-DesignRefKind = Literal["procedure", "logic", "module"]
+# (鍵は`logic_key`)、module = 段階4のモジュール(鍵はパス。簡易モードでは内部設計書の
+# モジュール一覧)、dataflow = 簡易モードの内部設計書の処理別データフロー(鍵は`DF-<n>`)、
+# datamodel = 簡易モードの内部設計書 3.2節のデータモデル全体(鍵は`3.2`。DF を持たない単位に添える)
+DesignRefKind = Literal["procedure", "logic", "module", "dataflow", "datamodel"]
 
 
 @dataclass(frozen=True)

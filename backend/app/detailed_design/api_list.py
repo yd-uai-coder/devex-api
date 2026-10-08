@@ -65,24 +65,27 @@ def trigger_key(trigger: str) -> str | None:
     return endpoint_key(*parsed) if parsed is not None else None
 
 
-def extract_api_endpoints(markdown: str) -> list[ApiEndpoint]:
+def extract_api_endpoints(
+    markdown: str, section_number: str = API_LIST_SECTION
+) -> list[ApiEndpoint]:
     """外部設計書の2.6節の表から、APIを表の順に取り出す。節や表が無ければ空。
 
     列は見出しの名前で探す(「メソッド」「パス」は必須、「概要」「関連画面」は任意)。
-    同じキーのAPIが2行あれば、最初の行だけを残す。"""
-    section = extract_section(markdown, API_LIST_SECTION)
+    同じキーのAPIが2行あれば、最初の行だけを残す。`section_number`で別の節も読める
+    (内部設計書の 3.3節のAPIエンドポイント一覧。メソッドの列が無い表は読み飛ばす)。"""
+    section = extract_section(markdown, section_number)
     endpoints: list[ApiEndpoint] = []
     seen: set[str] = set()
     columns: dict[str, int] | None = None
     for line in section.splitlines():
-        cells = _cells(line)
+        cells = table_cells(line)
         if cells is None:
             columns = None  # 表の外に出た
             continue
         if columns is None:
             columns = _header_columns(cells)
             continue
-        if all(_SEPARATOR_CELL.match(cell) for cell in cells if cell):
+        if is_separator_row(cells):
             continue
         endpoint = _endpoint_from_row(cells, columns)
         if endpoint is not None and endpoint.key not in seen:
@@ -91,11 +94,17 @@ def extract_api_endpoints(markdown: str) -> list[ApiEndpoint]:
     return endpoints
 
 
-def _cells(line: str) -> list[str] | None:
+def table_cells(line: str) -> list[str] | None:
+    """Markdown の表の1行をセルに分ける(表の行でなければ None)。"""
     stripped = line.strip()
     if not stripped.startswith("|"):
         return None
     return [cell.strip() for cell in stripped.strip("|").split("|")]
+
+
+def is_separator_row(cells: list[str]) -> bool:
+    """表の見出しと本体の区切り行(`|---|:---:|`)か。"""
+    return all(_SEPARATOR_CELL.match(cell) for cell in cells if cell)
 
 
 def _header_columns(cells: list[str]) -> dict[str, int] | None:

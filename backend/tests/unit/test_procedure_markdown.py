@@ -7,9 +7,11 @@ SUT は`app/detailed_design/procedure_output/markdown.py`の`to_index_markdown`�
 
 import pytest
 from tests.fixtures.detailed_design import document_stage_models, sample_procedure_source
+from tests.fixtures.simple_procedure import sample_simple_procedure_source
 
 from app.detailed_design import ProcedureModel
 from app.detailed_design.document.markdown import procedure_table
+from app.detailed_design.procedure_basis import MODULE_RULE, SIMPLE_MODULE_RULE
 from app.detailed_design.procedure_doc_refs import design_book
 from app.detailed_design.procedure_output import (
     ai_warnings,
@@ -19,7 +21,6 @@ from app.detailed_design.procedure_output import (
 )
 from app.detailed_design.procedure_output.markdown import (
     COMPLETION_CRITERIA,
-    MODULE_RULE,
     PROCEDURE_UNAPPROVED_TEXT,
 )
 from app.detailed_design.validation import StageIssue
@@ -151,3 +152,29 @@ def test_unit_without_procedure_raises() -> None:
         to_unit_markdown(source, "M-01-T01")
     with pytest.raises(KeyError):
         to_ai_markdown(source, "M-09-T01")
+
+
+def test_simple_mode_index_and_ai_markdown() -> None:
+    """簡易モードは、作業単位の出どころ・実装前提・直す先を文書で書く(形は詳細設計モードと同じ)。"""
+    source = sample_simple_procedure_source()
+
+    index = to_index_markdown(source)
+    ai = to_ai_markdown(source, "M-01-T02")
+
+    assert _sections(index)[:5] == [
+        "## 1. 実装概要",
+        "## 2. 実装前提・制約",
+        "## 3. 単位の一覧(依存順)",
+        "## 4. 未定義・要決定の一覧(実装可能性チェックの結果)",
+        "## 5. 完了条件",
+    ]
+    assert "実装計画書のマイルストーン M-01〜M-02。" in index
+    assert "### 技術スタック・開発環境(実装計画書 4.3・内部設計書 3.1)" in index
+    assert f"- {SIMPLE_MODULE_RULE}" in index
+    assert "- 3.4 ログは JSON で出す" in index
+    assert "| 内容 | 直す先 |" in index
+    assert "| 期間が重なったときの応答が無い | 内部設計書 |" in index
+    assert "- Could have（あると良い機能）: 通知" in index
+    assert f"- {SIMPLE_MODULE_RULE}" in ai
+    assert "### 内部設計書 DF-1 POST /api/v1/reservations" in ai
+    assert "### 内部設計書 3.4 例外処理・エラー・ログ" in ai

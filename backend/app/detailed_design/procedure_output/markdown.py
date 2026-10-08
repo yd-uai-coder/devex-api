@@ -28,7 +28,7 @@ from app.detailed_design.procedure_output.source import (
     UnitFinding,
     count_by_level,
     count_text,
-    fix_stage_text,
+    fix_target_text,
     unit_filename,
     unit_findings,
 )
@@ -48,9 +48,6 @@ UNIT_LIST_HEADERS: tuple[str, ...] = (
     "確認方法",
     "未定義",
 )
-
-# 段階4のモジュール一覧から引く実装ルール(どの単位にも共通)
-MODULE_RULE = "モジュールは、段階4のモジュール一覧の依存先にだけ依存する(層を飛び越さない)。"
 
 # 単位の完了条件(すべての単位に共通。作成方針12章)
 COMPLETION_CRITERIA: tuple[str, ...] = (
@@ -108,7 +105,7 @@ def _overview(source: ProcedureOutputSource) -> list[str]:
     milestones = source.plan.milestones
     lines = ["## 1. 実装概要", "", "### 対象", ""]
     if milestones:
-        lines += [f"段階7のマイルストーン {_milestone_span(source.plan)}。", ""]
+        lines += [f"{source.labels.plan}のマイルストーン {_milestone_span(source.plan)}。", ""]
     lines += md_table(
         ["M-ID", "名前", "優先度", "ゴール"],
         [[milestone_id(i), m.name, m.priority, m.goal] for i, m in enumerate(milestones)],
@@ -123,10 +120,10 @@ def _overview(source: ProcedureOutputSource) -> list[str]:
 
 
 def _premises(source: ProcedureOutputSource) -> list[str]:
-    lines = ["## 2. 実装前提・制約", "", "### 技術スタック・開発環境(段階7)", ""]
-    lines += [source.plan.environment.strip() or "—", "", "### 実装ルール(段階4・07章より)", ""]
-    lines.append(f"- {MODULE_RULE}")
-    lines += [f"- 07章 {row.topic}: {row.policy}" for row in source.plan.crosscutting]
+    labels = source.labels
+    lines = ["## 2. 実装前提・制約", "", f"### {labels.environment}", ""]
+    lines += [source.environment.strip() or "—", "", f"### {labels.rules}", ""]
+    lines += [f"- {rule}" for rule in source.rules] or ["—"]
     return [*lines, ""]
 
 
@@ -166,22 +163,24 @@ def _finding_list(source: ProcedureOutputSource) -> list[str]:
     lines = [
         "## 4. 未定義・要決定の一覧(実装可能性チェックの結果)",
         "",
-        "「直す段階」へ戻って設計を直す。直した段階は差し戻され、この手順書は「古い」になる。"
-        "手順書の上では決めない。",
+        f"{source.labels.fix_guide}手順書の上では決めない。",
         "",
         "### 全体(単位によらない)",
         "",
     ]
     overall = unit_findings(source, None)
-    lines += _finding_table(overall, with_unit=False) if overall else ["なし"]
+    heading = source.labels.fix_heading
+    lines += _finding_table(overall, heading, with_unit=False) if overall else ["なし"]
     lines += ["", "### 単位ごと", ""]
     per_unit = [f for f in source.findings if f.unit is not None]
-    lines += _finding_table(per_unit, with_unit=True) if per_unit else ["なし"]
+    lines += _finding_table(per_unit, heading, with_unit=True) if per_unit else ["なし"]
     return [*lines, ""]
 
 
-def _finding_table(findings: Sequence[UnitFinding], *, with_unit: bool) -> list[str]:
-    headers = ["重要度", "出どころ", *(["単位"] if with_unit else []), "対象", "内容", "直す段階"]
+def _finding_table(
+    findings: Sequence[UnitFinding], fix_heading: str, *, with_unit: bool
+) -> list[str]:
+    headers = ["重要度", "出どころ", *(["単位"] if with_unit else []), "対象", "内容", fix_heading]
     return md_table(
         headers,
         [
@@ -191,7 +190,7 @@ def _finding_table(findings: Sequence[UnitFinding], *, with_unit: bool) -> list[
                 *([f.unit or ""] if with_unit else []),
                 f.target,
                 f.message,
-                fix_stage_text(f.fix_stage),
+                fix_target_text(f),
             ]
             for f in findings
         ],
@@ -237,7 +236,8 @@ def to_unit_markdown(source: ProcedureOutputSource, unit_id: str) -> str:
     lines += _bullets(procedure.verify)
     lines += ["", "## 未定義・要決定", ""]
     findings = unit_findings(source, unit.unit_id)
-    lines += _finding_table(findings, with_unit=False) if findings else ["なし"]
+    heading = source.labels.fix_heading
+    lines += _finding_table(findings, heading, with_unit=False) if findings else ["なし"]
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -252,7 +252,7 @@ def to_ai_markdown(source: ProcedureOutputSource, unit_id: str) -> str:
     findings = unit_findings(source, unit.unit_id)
     lines = [*ai_warnings(source, findings), AI_INTRO, ""]
     lines += ["## プロジェクト概要", "", _project_line(source, unit), ""]
-    lines += ["## 実装ルール", "", f"- {MODULE_RULE}", ""]
+    lines += ["## 実装ルール", "", f"- {source.labels.module_rule}", ""]
     for section in (context.crosscutting, context.environment):
         if section:
             lines += [section, ""]
@@ -344,7 +344,8 @@ def _unit_meta(source: ProcedureOutputSource, unit: PlanUnit) -> str:
 
 def _project_line(source: ProcedureOutputSource, unit: PlanUnit) -> str:
     return (
-        f"{source.title}: 段階7のマイルストーン {_milestone_span(source.plan)} を実装する。"
+        f"{source.title}: {source.labels.plan}のマイルストーン {_milestone_span(source.plan)}"
+        " を実装する。"
         "今回はそのうち、"
         f"{unit.milestone}({source.milestone_name(unit)})の単位 {unit.unit_id} だけを扱う。"
     )

@@ -28,7 +28,8 @@
   (`DetailedDesignExportService.collect`・`to_markdown`)で 01〜06章の md にする。
 - 段階8は、段階7の作業単位ごとに手順書を下書きする(1単位 LLM 1回)。対象は単位の ID で受け渡し、
   段階7の単位から決める(指定が無ければ、手順書の無い単位)。入力は単位が参照する設計の展開
-  (`unit_context`)だけで、設計の全文は渡さない。
+  (`unit_context`)だけで、設計の全文は渡さない。簡易モードは段階8だけを持ち、作業単位を実装計画書の
+  WBS から、参照を内部設計書から取る(`procedure_basis`)。
 """
 
 import uuid
@@ -107,6 +108,7 @@ from app.detailed_design.procedure import (
     generation_targets,
     merge_procedure,
 )
+from app.detailed_design.procedure_basis import procedure_basis
 from app.detailed_design.procedure_doc import (
     MAX_PROCEDURE_DOC_TARGETS,
     PROCEDURE_DOC_STAGE,
@@ -118,10 +120,11 @@ from app.detailed_design.procedure_doc import (
 from app.detailed_design.procedure_doc import generation_targets as unit_generation_targets
 from app.detailed_design.procedure_doc_drafting import (
     ProcedureDocGenerationOutput,
+    SimpleProcedureDocGenerationOutput,
     build_procedure_doc_messages,
+    build_simple_procedure_doc_messages,
     to_unit_procedure,
 )
-from app.detailed_design.procedure_doc_refs import unit_context
 from app.detailed_design.procedure_drafting import (
     ProcedureGenerationOutput,
     build_procedure_messages,
@@ -436,18 +439,30 @@ async def generate_procedure_docs(context: StageGenerationContext) -> dict:
     """段階8: 対象の単位ごとに、手順書を下書きする(1単位 LLM 1回)。
 
     対象の単位の手順書だけを置き換え、他の単位(人が手直しした手順書)はそのまま残す。入力は、
-    単位が参照する設計を承認済みの段階1〜7から展開したもの。"""
-    plan = PlanModel.model_validate(context.sources.stages.get(PLAN_STAGE) or {})
+    単位が参照する設計を展開したもの(詳細設計モードは承認済みの段階1〜7から、簡易モードは
+    4文書から。`procedure_basis`)。簡易モードは、指摘の直す先を文書で書かせる。"""
+    sources = context.sources
+    basis = procedure_basis(sources.mode, sources.stages, sources.documents)
+    plan = basis.plan
     model = ProcedureDocModel.model_validate(context.previous or {})
     for unit_id in context.targets:
         unit = find_unit(plan, unit_id)
         if unit is None:
             continue
-        output = await _invoke_structured(
-            context.llm,
-            ProcedureDocGenerationOutput,
-            build_procedure_doc_messages(unit_context(unit, context.sources.stages)),
-        )
+        unit_context = basis.context(unit)
+        output: ProcedureDocGenerationOutput | SimpleProcedureDocGenerationOutput
+        if basis.mode == "simple":
+            output = await _invoke_structured(
+                context.llm,
+                SimpleProcedureDocGenerationOutput,
+                build_simple_procedure_doc_messages(unit_context),
+            )
+        else:
+            output = await _invoke_structured(
+                context.llm,
+                ProcedureDocGenerationOutput,
+                build_procedure_doc_messages(unit_context),
+            )
         model = merge_unit_procedure(model, plan, to_unit_procedure(unit, output))
     return model.model_dump(mode="json")
 
@@ -528,7 +543,8 @@ def _targets(
     sources: StageSources | None = None,
 ) -> tuple[str, ...]:
     """段階5で下書きを作る処理・段階6で下書きを作る関数の鍵・段階8で手順書を作る単位の ID
-    (他の段階は空)。段階8の単位は、入力`sources`の承認済みの段階7から決める。"""
+    (他の段階は空)。段階8の単位は、入力`sources`の作業単位(詳細設計モードは承認済みの段階7、
+    簡易モードは実装計画書の WBS)から決める。"""
     if stage == PROCEDURE_STAGE:
         return tuple(generation_targets(ProcedureModel.model_validate(model or {}), function_ids))
     if stage == LOGIC_STAGE:
@@ -541,8 +557,10 @@ def _targets(
 
 
 def _plan(sources: StageSources | None) -> PlanModel:
-    stages = sources.stages if sources is not None else {}
-    return PlanModel.model_validate(stages.get(PLAN_STAGE) or {})
+    """段階8の作業単位(モードの土台から)。"""
+    if sources is None:
+        return PlanModel()
+    return procedure_basis(sources.mode, sources.stages, sources.documents).plan
 
 
 def _check_request(
@@ -556,7 +574,7 @@ def _check_request(
     """段階ごとの、生成を受け付ける前の確認。段階2は DFD を描くグループの数(上限を超えたまま
     生成すると、15分の回収のしきい値を超えるおそれがあるため)。段階5は下書きを作る処理(空・
     選ばれていない処理・上限を超える数を断る)。段階6は下書きを作る関数(段階5と同じ規則)。
-    段階8は手順書を作る単位(空・段階7に無い単位・上限を超える数を断る)。処理の指定は段階5だけ、
+    段階8は手順書を作る単位(空・作業単位に無い単位・上限を超える数を断る)。処理の指定は段階5だけ、
     関数の指定は段階6だけ、単位の指定は段階8だけが受け付ける。"""
     if function_ids is not None and stage != PROCEDURE_STAGE:
         raise DesignStageInvalidError("処理を指定して生成できるのは段階5だけです。")
@@ -573,7 +591,8 @@ def _check_request(
             )
         unknown = [t for t in targets if t not in planned]
         if unknown:
-            raise DesignStageInvalidError(f"段階7に無い単位です: {', '.join(unknown)}")
+            source = "実装計画書" if sources is not None and sources.mode == "simple" else "段階7"
+            raise DesignStageInvalidError(f"{source}に無い単位です: {', '.join(unknown)}")
         if len(targets) > MAX_PROCEDURE_DOC_TARGETS:
             raise DesignStageInvalidError(
                 f"1回に手順書を作れる単位は {MAX_PROCEDURE_DOC_TARGETS} つまでです"
@@ -664,7 +683,8 @@ class DesignStageGenerationService:
         """生成を受け付け、段階を「生成中」にする。生成自体は呼び出し元がバックグラウンドで
         `execute`する。未着手の段階は、ここで行を作る(内容は空、`draft`)。
 
-        断る条件(この順): 詳細設計モードでない / 生成に対応していない段階 / 段階が開いていない /
+        断る条件(この順): モードに無い段階(簡易モードは段階8だけ) / 生成に対応していない段階 /
+        段階が開いていない /
         その段階を生成中 / 段階ごとの確認(段階2の DFD を描くグループの数、段階5の対象の処理、
         段階6の対象の関数、段階8の対象の単位)。"""
         await self.recover_stale(project.id)

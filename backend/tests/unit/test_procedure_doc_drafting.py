@@ -8,14 +8,20 @@ SUT: build_procedure_doc_messages / to_unit_procedure
 """
 
 from tests.fixtures.detailed_design import document_stage_models, procedure_doc_output
+from tests.fixtures.simple_procedure import simple_documents
 
 from app.detailed_design import PlanModel, find_unit
+from app.detailed_design.procedure_basis import procedure_basis
 from app.detailed_design.procedure_doc_drafting import (
     PROCEDURE_DOC_SYSTEM_PROMPT,
+    SIMPLE_PROCEDURE_DOC_SYSTEM_PROMPT,
     GeneratedFinding,
+    GeneratedSimpleFinding,
     GeneratedUnitFile,
     ProcedureDocGenerationOutput,
+    SimpleProcedureDocGenerationOutput,
     build_procedure_doc_messages,
+    build_simple_procedure_doc_messages,
     to_unit_procedure,
 )
 from app.detailed_design.procedure_doc_refs import unit_context
@@ -119,3 +125,40 @@ def test_fix_stage_out_of_range_becomes_stage8() -> None:
     procedure = to_unit_procedure(_unit(document_stage_models()), output())
 
     assert [(f.level, f.fix_stage) for f in procedure.findings] == [("critical", 3), ("minor", 8)]
+
+
+def test_simple_messages_use_internal_design_and_documents() -> None:
+    """簡易モードは、内部設計書の参照と共通の節を渡し、直す先を文書で書かせる。"""
+    basis = procedure_basis("simple", {}, simple_documents())
+    unit = basis.units[1]
+
+    messages = build_simple_procedure_doc_messages(basis.context(unit))
+
+    assert messages[0].content == SIMPLE_PROCEDURE_DOC_SYSTEM_PROMPT
+    assert "fix_document" in SIMPLE_PROCEDURE_DOC_SYSTEM_PROMPT
+    assert "詳細設計モード" in SIMPLE_PROCEDURE_DOC_SYSTEM_PROMPT
+    assert SIMPLE_PROCEDURE_DOC_SYSTEM_PROMPT.endswith(NAMING_RULES)
+    text = str(messages[1].content)
+    assert "- 処理: DF-1" in text
+    assert "- モジュール(内部設計書 3.3): app/api/reservations.py" in text
+    assert "### 内部設計書 DF-1 POST /api/v1/reservations" in text
+    assert "## 共通の方針(内部設計書・実装計画書)" in text
+
+
+def test_simple_findings_keep_document_and_stage8() -> None:
+    """簡易モードの指摘は直す先の文書を持ち、段階は8(直す先の段階が無い)にする。"""
+    basis = procedure_basis("simple", {}, simple_documents())
+    output = SimpleProcedureDocGenerationOutput(
+        **procedure_doc_output().model_dump(exclude={"findings"}),
+        findings=[
+            GeneratedSimpleFinding(
+                level="major", target="DF-1", message="応答が無い", fix_document="internal_design"
+            )
+        ],
+    )
+
+    procedure = to_unit_procedure(basis.units[1], output)
+
+    assert [(f.fix_stage, f.fix_document) for f in procedure.findings] == [
+        (8, "internal_design")
+    ]

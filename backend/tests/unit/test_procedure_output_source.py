@@ -19,7 +19,12 @@ from app.detailed_design.procedure_output import (
     unit_filename,
     unit_findings,
 )
-from app.detailed_design.procedure_output.source import count_text, fix_stage_text
+from app.detailed_design.procedure_output.source import (
+    UnitFinding,
+    count_text,
+    fix_stage_text,
+    fix_target_text,
+)
 from app.detailed_design.validation import StageIssue
 
 
@@ -109,3 +114,11 @@ def test_unit_filename_replaces_unsafe_characters() -> None:
     )
     blank = unit.task.model_copy(update={"title": "  "})
     assert unit_filename(unit.__class__(unit.unit_id, unit.milestone, blank)) == "M-01-T02.md"
+
+
+def test_fix_target_prefers_document() -> None:
+    """直す先は、文書があれば文書の名前(簡易モード)、無ければ段階。"""
+    finding = UnitFinding("major", "check", None, "DF-1", "x", 8, "internal_design")
+
+    assert fix_target_text(finding) == "内部設計書"
+    assert fix_target_text(UnitFinding("major", "check", None, "F-01", "x", 5)) == "段階5"

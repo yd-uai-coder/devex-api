@@ -80,8 +80,8 @@ _DOC_TYPE_LABELS: dict[str, str] = {
     "implementation_plan": "実装計画書",
 }
 
-# 内部設計書は、内部設計書プロンプトが指示する固定形式の見出し(3.2節のテーブル・処理別データフロー)
-# を含めて返す。
+# 内部設計書は、内部設計書プロンプトが指示する固定形式の見出し(3.2節のテーブル・3.3節のAPI一覧・
+# モジュール一覧・処理別データフロー・3.4節)を含めて返す。簡易モードの実装手順書が読むため。
 _INTERNAL_DESIGN_REPLY = (
     "# 内部設計書(E2E Fake)\n\n"
     "## 3.1 技術スタック選定・アーキテクチャ方針\n- api / service / repository の3層構成\n\n"
@@ -89,10 +89,36 @@ _INTERNAL_DESIGN_REPLY = (
     "### テーブル: reservations\n| カラム名 | データ型 | 制約 | 説明 |\n|---|---|---|---|\n"
     "| id | UUID | PK | 予約ID |\n\n"
     "## 3.3 バックエンド処理・モジュール設計\n- api → service → repository\n\n"
+    "| メソッド | パス | 概要 |\n|---|---|---|\n"
+    "| POST | /api/v1/reservations | 予約を登録する(ルート → サービス) |\n\n"
+    "### モジュール一覧\n| パス | 層 | 責務 | 主な依存先 |\n|---|---|---|---|\n"
+    "| app/main.py | 起動 | アプリの組み立て | app/api/reservations.py |\n"
+    "| app/api/reservations.py | api | 予約のルート | app/services/reservation.py |\n"
+    "| app/services/reservation.py | service | 予約の検証と保存 | — |\n\n"
     "### 処理別データフロー\n\n"
     "#### DF-1: POST /api/v1/reservations\n| 元 | データ | 変換 | 先 |\n|---|---|---|---|\n"
     "| 利用者 | 予約リクエスト | 検証して保存 | reservations |\n"
-    "- データ項目: 予約リクエスト(item_id, start_at)\n"
+    "- データ項目: 予約リクエスト(item_id, start_at)\n\n"
+    "## 3.4 例外処理・エラーハンドリング・ログ設計\n"
+    "- エラーは {code, message} の形で返す\n"
+)
+
+# 実装計画書は、実装計画書プロンプトが指示する固定形式の WBS(4.2節。縦割り・ID 付き)で返す。
+# 簡易モードの実装手順書が作業単位として読むため、_INTERNAL_DESIGN_REPLY の DF・モジュールに
+# そろえる。
+_IMPLEMENTATION_PLAN_REPLY = (
+    "# 実装計画書(E2E Fake)\n\n"
+    "## 4.1 開発フェーズ分割・マイルストーン\n### フェーズ1(M-01) ── 【Must】\n\n"
+    "## 4.2 タスク分解（WBS）\n"
+    "### M-01: 予約の登録 ── 【Must】\n- ゴール: 備品を予約できる\n"
+    "- [ ] M-01-T01 [基盤] 開発環境を用意する\n"
+    "  - 処理: なし\n  - 依存: なし\n  - モジュール: app/main.py\n"
+    "  - 環境・設定: docker-compose.yml\n"
+    "- [ ] M-01-T02 [機能] 予約を登録する\n"
+    "  - 処理: DF-1\n  - 依存: M-01-T01\n"
+    "  - モジュール: app/api/reservations.py, app/services/reservation.py\n"
+    "  - 環境・設定: なし\n\n"
+    "## 4.3 開発環境・CI/CD・事前準備事項\n- Docker Compose で API と DB を起動する\n"
 )
 
 # 外部設計書は、詳細設計モードの段階1(機能一覧)がAPI一覧(2.6節)を読むため、外部設計書
@@ -450,6 +476,8 @@ class E2eFakeLLM:
                     return _INTERNAL_DESIGN_REPLY
                 if doc_type == "external_design":
                     return _EXTERNAL_DESIGN_REPLY
+                if doc_type == "implementation_plan":
+                    return _IMPLEMENTATION_PLAN_REPLY
                 label = _DOC_TYPE_LABELS[doc_type]
                 return f"# {label}(E2E Fake)\n\nこれはE2Eテスト用に生成されたダミーの{label}です。"
         if "レビュアー" in system_text:

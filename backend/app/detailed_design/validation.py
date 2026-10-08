@@ -19,6 +19,8 @@ app/services/design_stage_service.py)に加えて、段階ごとの検証で「�
 段階8は、段階7の作業単位と、単位が参照する段階3〜6の設計を使う(実装可能性チェック)。
 設計の不足は、重要度(`level`)と直す先の段階(`fix_stage`)を持つ警告にする。段階8の指摘は
 手順書がまだ無くても出る(段階7の単位と設計から決まるため)。
+簡易ドキュメントモードの段階8は、実装計画書の WBS の単位と内部設計書を使う(`procedure_basis`)。
+直す先は段階でなく文書(`fix_document`)で示す。
 """
 
 from collections import Counter
@@ -52,7 +54,6 @@ from app.detailed_design.logic import (
 )
 from app.detailed_design.plan import (
     MAX_UNIT_FUNCTIONS,
-    PLAN_STAGE,
     PlanModel,
     is_file_path,
     milestone_id,
@@ -67,15 +68,15 @@ from app.detailed_design.procedure import (
     number_steps,
     step_id,
 )
+from app.detailed_design.procedure_basis import ProcedureBasis, procedure_basis
 from app.detailed_design.procedure_doc import (
     PROCEDURE_DOC_STAGE,
+    DesignDocument,
     DesignIndex,
     FindingLevel,
     PlanUnit,
     ProcedureDocModel,
     UnitProcedure,
-    design_index,
-    plan_units,
     spelling_match,
     unit_refs,
 )
@@ -86,9 +87,14 @@ from app.detailed_design.sequence import (
     sut_participant,
     to_sequence,
 )
+from app.detailed_design.stages import ProjectMode
 from app.detailed_design.structure import ModuleListModel, module_ref_matches
 
 Severity = Literal["error", "warning"]
+
+# 簡易モードの段階8の指摘の直す先(実装計画書・内部設計書)
+_PLAN: DesignDocument = "implementation_plan"
+_DESIGN: DesignDocument = "internal_design"
 
 
 @dataclass(frozen=True)
@@ -96,7 +102,8 @@ class StageIssue:
     """検証の指摘1件。`target`は指摘の対象(処理ID・機能グループ名など。無ければNone)。
 
     段階8(実装可能性チェック)の指摘だけが、重要度`level`・直す先の段階`fix_stage`・
-    指摘の出た作業単位`unit`(単位によらなければNone)を持つ。"""
+    指摘の出た作業単位`unit`(単位によらなければNone)を持つ。簡易モードの段階8の指摘は、
+    直す先を文書`fix_document`で示す(`fix_stage`は直す先の段階が無いことを示す8)。"""
 
     severity: Severity
     code: str
@@ -105,6 +112,7 @@ class StageIssue:
     level: FindingLevel | None = None
     fix_stage: int | None = None
     unit: str | None = None
+    fix_document: DesignDocument | None = None
 
 
 @dataclass(frozen=True)
@@ -145,6 +153,7 @@ class StageSources:
     - `dfd_diagrams`: 機能グループの DFD の要約(subject → 要約)。段階2・3が使う。
     - `er_diagram`: ER の要約(まだ無ければ None)。段階3が使う。
     - `component_diagram`: 構成図の要約(まだ無ければ None)。段階4が使う。
+    - `mode`: プロジェクトのモード。簡易モードの段階8は、段階でなく4文書から作業単位と設計を読む。
     """
 
     documents: Mapping[str, str] = field(default_factory=dict)
@@ -152,6 +161,7 @@ class StageSources:
     dfd_diagrams: Mapping[str, DfdDiagramSummary] = field(default_factory=dict)
     er_diagram: ErDiagramSummary | None = None
     component_diagram: ComponentDiagramSummary | None = None
+    mode: ProjectMode = "detailed"
 
 
 StageValidator = Callable[[Mapping[str, Any], StageSources], list[StageIssue]]
@@ -770,13 +780,35 @@ def validate_procedure_doc(
         parsed = ProcedureDocModel.model_validate(model)
     except ValidationError as exc:
         return [_error("INVALID_MODEL", f"実装手順書の形が正しくありません: {exc}")]
-    units = plan_units(PlanModel.model_validate(sources.stages.get(PLAN_STAGE) or {}))
-    by_id = {unit.unit_id: unit for unit in units}
-    index = design_index(sources.stages)
+    basis = procedure_basis(sources.mode, sources.stages, sources.documents)
+    issues, matched = _matched_procedures(parsed, basis)
+    if basis.mode == "simple":
+        return issues + _simple_procedure_issues(basis)
+    index = basis.index
     function_list = FunctionListModel.model_validate(sources.stages.get(1) or {})
     triggers = {row.id: row.trigger for row in function_list.functions}
+    for doc, unit in matched:
+        uid = unit.unit_id
+        for file in doc.files:
+            path = file.path.strip()
+            if file.kind == "module" and path and path not in index.module_paths:
+                message = f"{uid} の手順書のファイル「{path}」が、モジュール一覧にありません。"
+                issues.append(_finding("UNKNOWN_FILE", message, path, "major", 4, uid))
+        issues += _stub_issues(doc, unit, index, triggers)
+    for unit in basis.units:
+        issues += _unit_design_issues(unit, index)
+    return issues
 
+
+def _matched_procedures(
+    parsed: ProcedureDocModel, basis: ProcedureBasis
+) -> tuple[list[StageIssue], list[tuple[UnitProcedure, PlanUnit]]]:
+    """手順書を作業単位と突き合わせる(両モード共通)。戻り値は、手順書そのもののエラー
+    (同じ単位が2つ・単位が無い・タスク名が違う)と、単位と合った手順書の組。"""
+    by_id = {unit.unit_id: unit for unit in basis.units}
+    source = basis.labels.plan
     issues: list[StageIssue] = []
+    matched: list[tuple[UnitProcedure, PlanUnit]] = []
     counts = Counter(doc.unit_id.strip() for doc in parsed.units)
     reported: set[str] = set()
     for doc in parsed.units:
@@ -789,25 +821,72 @@ def validate_procedure_doc(
             continue
         unit = by_id.get(uid)
         if unit is None:
-            message = f"手順書の単位 {uid} が、段階7にありません(手順書を作り直してください)。"
+            message = (
+                f"手順書の単位 {uid} が、{source}にありません(手順書を作り直してください)。"
+            )
             issues.append(_unit_error("UNIT_MISMATCH", message, uid))
             continue
         if unit.task.title.strip() != doc.title.strip():
             message = (
-                f"{uid} の手順書は「{doc.title.strip()}」のものですが、段階7の {uid} は"
-                f"「{unit.task.title.strip()}」です(段階7を並べ替えたか改名しました。"
+                f"{uid} の手順書は「{doc.title.strip()}」のものですが、{source}の {uid} は"
+                f"「{unit.task.title.strip()}」です({source}を並べ替えたか改名しました。"
                 "手順書を作り直してください)。"
             )
             issues.append(_unit_error("UNIT_MISMATCH", message, uid))
             continue
-        for file in doc.files:
-            path = file.path.strip()
-            if file.kind == "module" and path and path not in index.module_paths:
-                message = f"{uid} の手順書のファイル「{path}」が、モジュール一覧にありません。"
-                issues.append(_finding("UNKNOWN_FILE", message, path, "major", 4, uid))
-        issues += _stub_issues(doc, unit, index, triggers)
+        matched.append((doc, unit))
+    return issues, matched
+
+
+def _simple_procedure_issues(basis: ProcedureBasis) -> list[StageIssue]:
+    """簡易モードの実装可能性チェック(警告。直す先は文書)。
+
+    - 実装計画書: WBS の書式(`WBS_*`)、依存先が一覧に無い・後ろの単位、[機能]に DF が無い、
+      DF が内部設計書に無い、どの単位にも入っていない DF(軽微)
+    - 内部設計書: モジュール一覧が無い(最重要)
+
+    モジュールとファイルは見ない。簡易モードのモジュール一覧は層ごとにまとめた行で、ファイルは
+    層まで照合する(参照の展開。`module_layer`)。層に当たらないファイルも、簡易モードの粒度では
+    一覧に無くて当然なので指摘しない。
+    """
+    book = basis.book
+    issues = [
+        _doc_finding(i.code, i.message, i.target, i.level, i.fix_document, i.unit)
+        for i in basis.wbs_issues
+    ]
+    if not book.has_module_list:
+        message = (
+            "内部設計書に「モジュール一覧」がありません。単位のファイルの層が決まらないので、"
+            "内部設計書を再生成してください。"
+        )
+        issues.append(_doc_finding("NO_MODULE_LIST", message, None, "critical", _DESIGN))
+    units = basis.units
+    order = {unit.unit_id: position for position, unit in enumerate(units)}
     for unit in units:
-        issues += _unit_design_issues(unit, index)
+        uid = unit.unit_id
+        for issue in _dependency_issues(uid, unit.task.depends_on, order):
+            issues.append(_doc_finding(issue.code, issue.message, uid, "major", _PLAN, uid))
+        issues += _simple_unit_issues(unit, basis)
+    planned = {f.strip() for unit in units for f in unit.task.function_ids}
+    for flow_id in book.dataflows:
+        if flow_id not in planned:
+            message = f"内部設計書の処理 {flow_id} が、どの単位にも入っていません。"
+            issues.append(_doc_finding("UNPLANNED_DATAFLOW", message, flow_id, "minor", _PLAN))
+    return issues
+
+
+def _simple_unit_issues(unit: PlanUnit, basis: ProcedureBasis) -> list[StageIssue]:
+    """簡易モードの単位1つの、処理(DF)の不足。"""
+    uid = unit.unit_id
+    refs = basis.refs(unit.task)
+    issues: list[StageIssue] = []
+    if unit.task.kind == "feature" and not any(r.kind == "dataflow" for r in refs):
+        message = f"{uid} は機能の単位ですが、処理(DF)がありません。"
+        issues.append(_doc_finding("FEATURE_WITHOUT_DATAFLOW", message, uid, "major", _PLAN, uid))
+    for ref in refs:
+        if ref.kind == "dataflow" and not ref.resolved:
+            message = f"{uid} の処理 {ref.key} が、内部設計書の処理別データフローにありません。"
+            issues.append(_doc_finding("UNKNOWN_DATAFLOW", message, ref.key, "major", _PLAN, uid))
     return issues
 
 
@@ -897,6 +976,20 @@ def _finding(
 ) -> StageIssue:
     """段階8の実装可能性チェックの警告(重要度と直す先の段階を持つ)。"""
     return StageIssue("warning", code, message, target, level, fix_stage, unit)
+
+
+def _doc_finding(
+    code: str,
+    message: str,
+    target: str | None,
+    level: FindingLevel,
+    fix_document: DesignDocument,
+    unit: str | None = None,
+) -> StageIssue:
+    """簡易モードの段階8の警告(直す先は文書。段階は無いので`fix_stage`は段階8)。"""
+    return StageIssue(
+        "warning", code, message, target, level, PROCEDURE_DOC_STAGE, unit, fix_document
+    )
 
 
 def _error(code: str, message: str, target: str | None = None) -> StageIssue:

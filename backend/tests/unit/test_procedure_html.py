@@ -6,6 +6,7 @@ SUT は`app/detailed_design/procedure_output/html.py`の`to_procedure_html`(と�
 """
 
 from tests.fixtures.detailed_design import procedure_doc_model, sample_procedure_source
+from tests.fixtures.simple_procedure import sample_simple_procedure_source
 
 from app.detailed_design.document.html import page
 from app.detailed_design.procedure_output import to_procedure_html
@@ -65,3 +66,12 @@ def test_unapproved_html_only_says_so() -> None:
 
 def test_page_is_shared() -> None:
     assert page("t", "<p>x</p>").startswith('<!doctype html>\n<html lang="ja">')
+
+
+def test_simple_mode_html_names_documents() -> None:
+    """簡易モードの HTML は、元を「4文書」、直す先を文書の名前で書く。"""
+    html = to_procedure_html(sample_simple_procedure_source())
+
+    assert "承認済みの段階8と4文書から組み立てた" in html
+    assert "<h3>実装ルール(内部設計書 3.3・3.4より)</h3>" in html
+    assert "<td>内部設計書</td>" in html

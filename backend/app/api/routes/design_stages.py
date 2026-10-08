@@ -31,8 +31,9 @@ StageNumber = Annotated[int, Path(ge=1, le=8, description="段階番号(1〜8)")
 async def list_design_stages(
     session: SessionDep, current_project: CurrentProjectDep
 ) -> list[DesignStageRead]:
-    """詳細設計モードの段階1〜8の状態を取得する(未着手の段階も含む)。画面は下書きの生成の完了を
-    この一覧のポーリングで待つため、止まった生成(15分超)はここで回収してから返す。"""
+    """モードの段階の状態を取得する(未着手の段階も含む。詳細設計モードは段階1〜8、簡易
+    ドキュメントモードは段階8だけ)。画面は下書きの生成の完了をこの一覧のポーリングで待つため、
+    止まった生成(15分超)はここで回収してから返す。"""
     await DesignStageGenerationService(session).recover_stale(current_project.id)
     return await DesignStageService(session).list_stages(current_project)
 
@@ -52,7 +53,8 @@ async def download_implementation_procedure(
     session: SessionDep, current_project: CurrentProjectDep
 ) -> Response:
     """実装手順書(`index.md`・単位ごとの md・AI 向けの版・HTML 1枚)を zip でダウンロードする。
-    段階8が承認済みでなければ409。簡易ドキュメントモードのプロジェクトは409。"""
+    段階8が承認済みでなければ409。簡易ドキュメントモードのプロジェクトも、段階8を承認すれば
+    ダウンロードできる。"""
     return _zip_response(
         await DetailedDesignExportService(session).bundle_procedure(current_project)
     )
@@ -71,7 +73,7 @@ async def get_procedure_sequence(
     function_id: str, session: SessionDep, current_project: CurrentProjectDep
 ) -> SequenceRead:
     """段階5の処理1つのシーケンス図(保存した手順から導いた SVG と、図にするときの指摘)を返す。
-    段階5が開いていなければ409、段階5で選んでいない処理は404。"""
+    段階5が開いていなければ409、段階5で選んでいない処理は404。簡易ドキュメントモードは409。"""
     return await DesignStageService(session).procedure_sequence(current_project, function_id)
 
 
@@ -79,8 +81,9 @@ async def get_procedure_sequence(
 async def get_unit_context(
     unit_id: str, session: SessionDep, current_project: CurrentProjectDep
 ) -> UnitContextRead:
-    """段階8の作業単位1つが参照する設計(段階5の手順・段階6の関数・段階4のモジュール)を展開して
-    返す。段階7の 07 横断事項と開発環境も添える。段階8が開いていなければ409。"""
+    """段階8の作業単位1つが参照する設計(段階5の手順・段階6の関数・段階4のモジュール。簡易
+    ドキュメントモードは内部設計書の処理別データフローとモジュール一覧)を展開して返す。共通の節
+    (07 横断事項と開発環境)も添える。段階8が開いていなければ409。"""
     return await DesignStageService(session).unit_context(current_project, unit_id)
 
 
@@ -90,7 +93,7 @@ async def get_unit_ai_markdown(
 ) -> UnitAiMarkdownRead:
     """段階8の作業単位1つの AI 向けの版(参照する設計を展開した md)を返す。保存済みの手順書から
     作り、段階8が承認済みでない・未定義が残るときは先頭で警告する。段階8が開いていなければ409、
-    段階7に無い単位・手順書の無い単位は404。"""
+    作業単位に無い単位・手順書の無い単位は404。"""
     return await DesignStageService(session).unit_ai_markdown(current_project, unit_id)
 
 

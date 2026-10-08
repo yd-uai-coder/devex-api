@@ -12,6 +12,9 @@ DBに保存する状態は`draft`/`regenerated`/`reviewing`/`approved`の4つだ
 前の段階が承認済みでない(未着手・下書き・レビュー中・古い)とき、その段階の「今の値」は`None`に
 する。そのため、前の段階を編集した時点で後ろの段階に「古い」が出て、古さは後ろへ順に伝わる。
 後ろの段階を自動で作り直すことはしない(再生成するか、このまま承認し直すかは人が選ぶ)。
+
+簡易ドキュメントモードのプロジェクトは、段階8(実装手順書)だけを持つ。入力は段階でなく、生成済みの
+4文書(`SIMPLE_STAGE_INPUTS`)。どれかの文書を再生成・復元すると、段階8は「古い」になる。
 """
 
 from collections.abc import Mapping
@@ -19,6 +22,9 @@ from dataclasses import dataclass
 from typing import Literal
 
 STAGES: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7, 8)
+
+# プロジェクトのモード(作成後は変えない)。simple = 簡易ドキュメントモード、detailed = 詳細設計モード
+ProjectMode = Literal["simple", "detailed"]
 
 StoredStatus = Literal["draft", "regenerated", "reviewing", "approved"]
 StageState = Literal["not_started", "draft", "regenerated", "reviewing", "approved", "outdated"]
@@ -46,6 +52,23 @@ STAGE_INPUTS: dict[int, StageInputs] = {
     7: StageInputs(stages=(1, 2, 3, 4, 5, 6), documents=("requirements", "external_design")),
     8: StageInputs(stages=(1, 2, 3, 4, 5, 6, 7), documents=("requirements",)),
 }
+
+# 簡易ドキュメントモードの段階(段階8だけ)と入力。段階8は4文書をすべて読む(作業単位は実装計画書の
+# WBS、参照する設計は内部設計書・外部設計書、対象外は要件定義書から)。
+SIMPLE_DOCUMENTS: tuple[str, ...] = (
+    "requirements",
+    "external_design",
+    "internal_design",
+    "implementation_plan",
+)
+SIMPLE_STAGE_INPUTS: dict[int, StageInputs] = {
+    8: StageInputs(stages=(), documents=SIMPLE_DOCUMENTS)
+}
+
+
+def stage_inputs(mode: str) -> Mapping[int, StageInputs]:
+    """モードの段階と入力(段階の順)。詳細設計モードは段階1〜8、簡易モードは段階8だけ。"""
+    return STAGE_INPUTS if mode == "detailed" else SIMPLE_STAGE_INPUTS
 
 
 @dataclass(frozen=True)
@@ -84,25 +107,33 @@ def current_inputs(
     *,
     approved_stage_versions: Mapping[int, int | None],
     doc_versions: Mapping[str, int | None],
+    inputs: Mapping[int, StageInputs] = STAGE_INPUTS,
 ) -> Fingerprint:
-    """段階`stage`が今入力にしているものの版を返す。承認済みでない段階・まだ無い文書は`None`。"""
-    inputs = STAGE_INPUTS[stage]
+    """段階`stage`が今入力にしているものの版を返す。承認済みでない段階・まだ無い文書は`None`。
+    `inputs`はモードの段階と入力(`stage_inputs`。既定は詳細設計モード)。"""
+    stage_input = inputs[stage]
     fingerprint: Fingerprint = {
-        stage_key(s): approved_stage_versions.get(s) for s in inputs.stages
+        stage_key(s): approved_stage_versions.get(s) for s in stage_input.stages
     }
-    fingerprint.update({doc_key(d): doc_versions.get(d) for d in inputs.documents})
+    fingerprint.update({doc_key(d): doc_versions.get(d) for d in stage_input.documents})
     return fingerprint
 
 
 def derive_states(
-    records: Mapping[int, StageRecord], doc_versions: Mapping[str, int | None]
+    records: Mapping[int, StageRecord],
+    doc_versions: Mapping[str, int | None],
+    inputs: Mapping[int, StageInputs] = STAGE_INPUTS,
 ) -> dict[int, StageView]:
-    """全段階の状態を、段階の順に決める(前の段階の結果が後ろの段階の入力になるため)。"""
+    """モードの全段階の状態を、段階の順に決める(前の段階の結果が後ろの段階の入力になるため)。
+    `inputs`に無い段階の行(`records`)は読まない。"""
     approved_versions: dict[int, int | None] = {}
     views: dict[int, StageView] = {}
-    for stage in STAGES:
+    for stage in inputs:
         current = current_inputs(
-            stage, approved_stage_versions=approved_versions, doc_versions=doc_versions
+            stage,
+            approved_stage_versions=approved_versions,
+            doc_versions=doc_versions,
+            inputs=inputs,
         )
         record = records.get(stage)
         state = _state_of(record, current)

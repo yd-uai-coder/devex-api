@@ -39,6 +39,7 @@ from app.detailed_design.document import (
     to_plan_html,
     to_plan_markdown,
 )
+from app.detailed_design.procedure_basis import procedure_basis
 from app.detailed_design.procedure_doc import PROCEDURE_DOC_STAGE
 from app.detailed_design.procedure_output import (
     ProcedureOutputSource,
@@ -51,13 +52,13 @@ from app.detailed_design.procedure_output import (
 )
 from app.detailed_design.stages import StageState
 from app.detailed_design.structure import STRUCTURE_SUBJECT
-from app.detailed_design.validation import validate_stage
+from app.detailed_design.validation import StageSources, validate_stage
 from app.models.project import Project
 from app.models.uml_diagram import UmlDiagram
 from app.repositories.data_item import DataItemRepository
 from app.repositories.uml_diagram import UmlDiagramRepository
 from app.services.design_stage_service import DesignStageService
-from app.services.errors import DesignDocumentNotReadyError
+from app.services.errors import DesignDocumentNotReadyError, DesignStagesNotAvailableError
 from app.uml.domain import (
     STATUS_AFTER_EXPORT,
     ErSemanticModel,
@@ -120,6 +121,7 @@ class DetailedDesignExportService:
         まとめる。段階1〜7のどれかが承認済みでなければ`DesignDocumentNotReadyError`(409。図も
         描かず`exported`にしない)、簡易ドキュメントモードのプロジェクトは
         `DesignStagesNotAvailableError`(409)。"""
+        _ensure_detailed(project)
         await self._ensure_approved(project, DOCUMENT_STAGES)
         collected = await self.collect(project, render=True)
         source = collected.source
@@ -144,12 +146,15 @@ class DetailedDesignExportService:
     async def bundle_procedure(self, project: Project) -> BundleFile:
         """実装手順書(`index.md`・単位ごとの md・`ai/<単位ID>.md`・HTML 1枚)を zip にまとめる。
         段階8が承認済みでなければ`DesignDocumentNotReadyError`(409)。図は描かない(手順の
-        シーケンス図は手順から導くので、詳細設計書の図のファイルは要らない)。"""
+        シーケンス図は手順から導くので、詳細設計書の図のファイルは要らない)。詳細設計書の
+        組み立て(`collect`)は通らないので、簡易ドキュメントモードのプロジェクトも作れる。"""
         await self._ensure_approved(project, PROCEDURE_STAGES)
-        collected = await self.collect(project, render=False)
+        views, sources = await self._stages.overview(project)
+        states: dict[int, StageState] = {stage: view.state for stage, view in views.items()}
+        procedure = procedure_source(project.title, states, sources)
         buffer = BytesIO()
         with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for path, content in procedure_files(collected.procedure).items():
+            for path, content in procedure_files(procedure).items():
                 archive.writestr(path, content)
         return BundleFile(
             filename=PROCEDURE_FILENAME, content=buffer.getvalue(), media_type="application/zip"
@@ -166,6 +171,7 @@ class DetailedDesignExportService:
         """組み立ての入力を集める。`render`なら承認済みの図を描く(zip 用)。描かないときも、
         図の意味モデル(DFD の線・ER のテーブル)は表の導出に使うので読む。DB は書き換えない。
         簡易ドキュメントモードのプロジェクトは`DesignStagesNotAvailableError`(409)。"""
+        _ensure_detailed(project)
         views, sources = await self._stages.overview(project)
         states: dict[int, StageState] = {stage: view.state for stage, view in views.items()}
         approved = sources.stages
@@ -253,16 +259,7 @@ class DetailedDesignExportService:
             er_diagram=er_diagram,
             component_diagram=component_diagram,
         )
-        procedure = procedure_output_source(
-            project.title,
-            states[PROCEDURE_DOC_STAGE],
-            approved,
-            approved.get(PROCEDURE_DOC_STAGE),
-            validate_stage(PROCEDURE_DOC_STAGE, approved.get(PROCEDURE_DOC_STAGE), sources)
-            if PROCEDURE_DOC_STAGE in approved
-            else [],
-            sources.documents.get("requirements", ""),
-        )
+        procedure = procedure_source(project.title, states, sources)
         return CollectedDocument(
             source=source, procedure=procedure, files=collected_files, rendered=rendered
         )
@@ -273,6 +270,30 @@ class DetailedDesignExportService:
         return await self._diagrams.get_by_subject(
             project_id=project_id, notation=notation, subject=subject
         )
+
+
+def _ensure_detailed(project: Project) -> None:
+    """詳細設計書は詳細設計モードのプロジェクトだけが持つ(簡易モードは段階8だけ)。"""
+    if project.mode != "detailed":
+        raise DesignStagesNotAvailableError(
+            f"Project {project.id} is not in detailed design mode (mode={project.mode})"
+        )
+
+
+def procedure_source(
+    title: str, states: Mapping[int, StageState], sources: StageSources
+) -> ProcedureOutputSource:
+    """実装手順書の組み立ての入力。段階8は承認済みの内容だけを使い(未承認なら手順書は空)、
+    作業単位と参照はモードの土台(`procedure_basis`)から取る。"""
+    model = sources.stages.get(PROCEDURE_DOC_STAGE)
+    return procedure_output_source(
+        title,
+        states[PROCEDURE_DOC_STAGE],
+        procedure_basis(sources.mode, sources.stages, sources.documents),
+        model,
+        validate_stage(PROCEDURE_DOC_STAGE, model, sources) if model is not None else [],
+        sources.documents.get("requirements", ""),
+    )
 
 
 def missing_approvals(states: Mapping[int, StageState], stages: Iterable[int]) -> list[int]:

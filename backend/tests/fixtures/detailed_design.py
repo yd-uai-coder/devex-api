@@ -10,6 +10,7 @@ from app.detailed_design.document import (
     RenderedDiagram,
     document_source,
 )
+from app.detailed_design.procedure_basis import procedure_basis
 from app.detailed_design.procedure_doc_drafting import (
     GeneratedFinding,
     GeneratedTestPoint,
@@ -495,7 +496,7 @@ def sample_procedure_source(
     return procedure_output_source(
         "予約システム",
         state,
-        document_stage_models(),
+        procedure_basis("detailed", document_stage_models(), {}),
         procedure_doc_model() if model is None else model,
         issues,
         REQUIREMENTS_WITH_SCOPE,

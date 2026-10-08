@@ -368,12 +368,15 @@ def test_internal_design_prompt_asks_for_fixed_format_headings_for_uml_generatio
     assert "元/データ/変換/先" in prompt
 
 
-def test_implementation_plan_prompt_asks_for_unnumbered_checkbox_tasks() -> None:
-    """実装計画書プロンプトが、WBSのタスクを番号なしのチェックボックスで書くよう指示していること
-    (LLMが自分で振った番号は、区分をまたいで重複しやすいため)。"""
+def test_implementation_plan_prompt_asks_for_vertical_units_with_ids() -> None:
+    """実装計画書プロンプトが、WBSを縦割り・ID付きの決まった書式で書くよう指示していること
+    (簡易モードの実装手順書が、この書式を作業単位として決定的に読むため)。"""
     from app.services.doc_generator_service import _DOC_TYPE_PROMPTS
 
     prompt = _DOC_TYPE_PROMPTS["implementation_plan"]
 
-    assert "`- [ ] タスク内容`" in prompt
-    assert "タスクに番号を付けない" in prompt
+    assert "### M-<2桁の連番>: <マイルストーン名> ── 【Must/Should/Could】" in prompt
+    assert "- [ ] M-<2桁>-T<2桁> [機能] <タスク名>" in prompt
+    for field in ("処理: DF-<連番>", "依存: M-<2桁>-T<2桁>", "モジュール: <パス>", "環境・設定:"):
+        assert field in prompt
+    assert "タスクに番号を付けない" not in prompt

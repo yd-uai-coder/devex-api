@@ -11,7 +11,8 @@ class StageIssueRead(BaseModel):
     `error`があると承認できない。`warning`は承認を止めない。
 
     段階8(実装可能性チェック)の指摘だけが、重要度`level`(critical=最重要・major=中程度・
-    minor=軽微)・直す先の段階`fix_stage`・指摘の出た作業単位の ID`unit`を持つ。"""
+    minor=軽微)・直す先の段階`fix_stage`・指摘の出た作業単位の ID`unit`を持つ。簡易モードの
+    段階8の指摘は、直す先を文書`fix_document`で示す(`fix_stage`は直す先の段階が無いことを示す8)。"""
 
     severity: Literal["error", "warning"]
     code: str
@@ -20,6 +21,9 @@ class StageIssueRead(BaseModel):
     level: Literal["critical", "major", "minor"] | None = None
     fix_stage: int | None = None
     unit: str | None = None
+    fix_document: (
+        Literal["requirements", "external_design", "internal_design", "implementation_plan"] | None
+    ) = None
 
 
 class DfdAccessRead(BaseModel):
@@ -32,7 +36,8 @@ class DfdAccessRead(BaseModel):
 
 
 class DesignStageRead(BaseModel):
-    """段階1つ分の状態。未着手の段階も含めて、段階1〜8を常に返す(行が無ければversion等はNone)。
+    """段階1つ分の状態。未着手の段階も含めて、モードの全段階を常に返す(詳細設計モードは段階1〜8、
+    簡易モードは段階8だけ。行が無ければversion等はNone)。`mode`はプロジェクトのモード。
 
     `missing_inputs`は、まだそろっていない入力(`stage:<n>`=承認されていない前の段階、
     `doc:<doc_type>`=まだ無い文書)。空なら段階は開いていて、保存・承認できる。
@@ -40,9 +45,12 @@ class DesignStageRead(BaseModel):
     `generation_status`はAIの下書きの生成の状態(None=まだ生成していない/generating/completed/
     failed)、`generation_error`は直近の生成が失敗した理由(ユーザー向けの文言)。`issues`は段階ごとの
     検証の結果。`dfd_accesses`は段階3だけが持つ、DFD から決まる R/W(画面で
-    DFD を読み直して導き直さないよう、導いた結果を渡す)。"""
+    DFD を読み直して導き直さないよう、導いた結果を渡す)。`plan`は段階8だけが持つ、作業単位
+    (段階7と同じ形。詳細設計モードは承認済みの段階7、簡易モードは実装計画書の WBS を読んだもの。
+    段階8が開いていなければ None)。"""
 
     stage: int
+    mode: Literal["simple", "detailed"] = "detailed"
     state: StageState
     is_open: bool
     missing_inputs: list[str]
@@ -54,6 +62,7 @@ class DesignStageRead(BaseModel):
     generation_error: str | None = None
     issues: list[StageIssueRead] = Field(default_factory=list)
     dfd_accesses: list[DfdAccessRead] = Field(default_factory=list)
+    plan: dict[str, Any] | None = None
 
 
 class DesignStageSave(BaseModel):
@@ -80,7 +89,7 @@ class DesignStageGenerate(BaseModel):
     """段階の下書きの生成リクエスト(本文は省略できる)。`function_ids`は段階5だけが使う、下書きを
     作る処理の処理ID(省略すると、選んだ処理のうちまだ手順の無いもの)。`logics`は段階6
     だけが使う、下書きを作る関数(省略すると、選んだ関数のうちまだ詳細の無いもの)。`unit_ids`は
-    段階8だけが使う、手順書を作る作業単位の ID(省略すると、段階7の単位のうち手順書の無いもの)。"""
+    段階8だけが使う、手順書を作る作業単位の ID(省略すると、作業単位のうち手順書の無いもの)。"""
 
     function_ids: list[str] | None = None
     logics: list[LogicTarget] | None = None
@@ -106,9 +115,11 @@ class SequenceRead(BaseModel):
 class DesignRefRead(BaseModel):
     """段階8の単位が参照する設計1つ(app/detailed_design/procedure_doc_refs.py の ExpandedRef)。
     `markdown`は設計の該当箇所を展開した md(設計に無い参照は None)。`svg`は段階5の手順の
-    シーケンス図(手順の参照だけ)。"""
+    シーケンス図(手順の参照だけ)。簡易モードの参照は、内部設計書の処理別データフロー
+    (`dataflow`)・3.2節のデータモデル全体(`datamodel`。DF を持たない単位だけ)・モジュール一覧の
+    層(`module`)。"""
 
-    kind: Literal["procedure", "logic", "module"]
+    kind: Literal["procedure", "logic", "module", "dataflow", "datamodel"]
     key: str
     resolved: bool
     via: str | None = None
@@ -118,8 +129,9 @@ class DesignRefRead(BaseModel):
 
 
 class UnitContextRead(BaseModel):
-    """段階8の単位1つの、手順書を読むための材料(参照する設計の展開と、段階7の共通の節)。
-    `crosscutting`・`environment`は 07章 横断事項と開発環境の md(書かれていなければ空)。"""
+    """段階8の単位1つの、手順書を読むための材料(参照する設計の展開と、共通の節)。
+    `crosscutting`・`environment`は 07章 横断事項と開発環境の md(簡易モードは内部設計書 3.4節と、
+    実装計画書 4.3節・内部設計書 3.1節。書かれていなければ空)。"""
 
     unit_id: str
     refs: list[DesignRefRead]
