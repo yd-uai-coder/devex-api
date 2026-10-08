@@ -64,13 +64,14 @@ def _plan_output() -> PlanGenerationOutput:
                 name=" 予約の登録 ",
                 goal="予約を登録できる",
                 priority="Must",
-                function_ids=["F-01", "F-01"],
                 tasks=[
                     GeneratedTask(
-                        area="バックエンド",
+                        kind="feature",
                         title="予約の API",
-                        modules=[ROUTE],
-                        function_ids=["F-01"],
+                        function_ids=["F-01", "F-01"],
+                        depends_on=[],
+                        modules=["routes/reservations"],
+                        config_files=[],
                     )
                 ],
             )
@@ -92,7 +93,15 @@ async def test_smoke_stage7_generates_plan_from_design_markdown_and_can_be_appro
         prompts.append(str(messages[1].content))
         return messages
 
+    plan_prompts: list[str] = []
+
+    def plan_spy(*args, **kwargs):
+        messages = plan_drafting.build_plan_messages(*args, **kwargs)
+        plan_prompts.append(str(messages[1].content))
+        return messages
+
     monkeypatch.setattr(generation_service, "build_crosscutting_messages", spy)
+    monkeypatch.setattr(generation_service, "build_plan_messages", plan_spy)
     project = await create_stage7_project(db_session)
     project_id = project.id
     llm = FakeLLM(structured_sequence=[_crosscutting_output(), _plan_output()])
@@ -113,12 +122,17 @@ async def test_smoke_stage7_generates_plan_from_design_markdown_and_can_be_appro
     assert "## 06 処理ロジックの詳細" in prompt
     assert "07 横断事項" not in prompt
     assert "![" not in prompt  # 図は描かない
+    [plan_prompt] = plan_prompts
+    assert f"## モジュールのパスの一覧\n- {ROUTE}" in plan_prompt
     assert stage7.state == "draft"
     model = stage7.model
     assert model is not None
     assert model["crosscutting"][0]["modules"] == [ROUTE]
     milestone = model["milestones"][0]
-    assert (milestone["name"], milestone["function_ids"]) == ("予約の登録", ["F-01"])
+    assert milestone["name"] == "予約の登録"
+    # 処理の重複を除き、モジュールの短い書き方をパスにそろえる
+    [task] = milestone["tasks"]
+    assert (task["function_ids"], task["modules"]) == (["F-01"], [ROUTE])
     assert stage7.issues == []
     diagrams = await UmlDiagramRepository(db_session).list_for_project(project_id)
     assert {d.status for d in diagrams} == {"approved"}

@@ -3,12 +3,16 @@
 1回の生成で、次の2種類を順に呼ぶ(段階3・4と同じ形):
 
 - 横断事項(07): 入力は、要件定義書・外部設計書・詳細設計書の md(01〜06章)(LLM 1回)。
-- 実装計画: 入力は、要件定義書・詳細設計書の md・先に作った横断事項・処理ID の一覧(LLM 1回)。
+- 実装計画: 入力は、要件定義書・詳細設計書の md・先に作った横断事項・処理ID の一覧・
+  モジュールのパスの一覧(LLM 1回)。
 
 詳細設計書の md は、出力と同じ組み立て(`to_markdown`)で作る。簡易ドキュメント
 モードの実装計画が「要件定義+内部設計書」を入力にするのに当たり、承認済みの段階1〜6の内容を
-人が読むのと同じ形で渡せる。処理ID の一覧を別に渡すのは、計画の漏れ(どのマイルストーンにも
-入らない処理)を減らすため。
+人が読むのと同じ形で渡せる。処理ID の一覧を別に渡すのは、計画の漏れ(どの単位にも入らない処理)
+を減らすため。モジュールのパスの一覧を別に渡すのは、単位のモジュールの欄が段階4のパスで検証される
+ため(環境・設定のファイルは別の欄に書かせる)。
+
+単位の ID(`M-01-T01`)は保存せず並び順から導くので、依存先も「出力の並び順から導く ID」で書かせる。
 """
 
 from collections.abc import Sequence
@@ -25,7 +29,7 @@ from app.detailed_design.plan import (
     PlanTask,
     Priority,
     Risk,
-    TaskArea,
+    UnitKind,
 )
 from app.detailed_design.prompt_rules import NAMING_RULES
 
@@ -48,15 +52,27 @@ class CrossCuttingGenerationOutput(BaseModel):
 
 
 class GeneratedTask(BaseModel):
-    """AIが下書きするタスク1つ。"""
+    """AIが下書きするタスク(作業単位)1つ。"""
 
-    area: TaskArea = Field(description="区分")
-    title: str = Field(description="タスクの内容(1文)")
-    modules: list[str] = Field(
-        description="作る・直すファイルのパスの例(モジュール一覧のパスや、Dockerfile・"
-        "docker-compose.yml などの環境・設定のファイル)。無ければ空"
+    kind: UnitKind = Field(
+        description="種別。feature = 処理を動くようにする機能の単位、"
+        "base = 処理の無い準備・デプロイ"
     )
-    function_ids: list[str] = Field(description="このタスクで動くようにする処理ID。無ければ空")
+    title: str = Field(description="タスクの内容(1文)")
+    function_ids: list[str] = Field(
+        description="この単位で動くようにする処理ID(feature は原則1つ。base は空)"
+    )
+    depends_on: list[str] = Field(
+        description="先に終わっている必要がある単位の ID(M-01-T01 の形。前にある単位だけ)。"
+        "無ければ空"
+    )
+    modules: list[str] = Field(
+        description="作る・直すモジュールのパス(【モジュールのパスの一覧】にあるものだけ)。無ければ空"
+    )
+    config_files: list[str] = Field(
+        description="作る・直す環境・設定のファイル(Dockerfile・docker-compose.yml・CI の設定など)"
+        "。無ければ空"
+    )
 
 
 class GeneratedMilestone(BaseModel):
@@ -65,7 +81,6 @@ class GeneratedMilestone(BaseModel):
     name: str = Field(description="マイルストーンの名前")
     goal: str = Field(description="完了の基準(何ができるようになるか)を1文で")
     priority: Priority = Field(description="MoSCoW の優先度")
-    function_ids: list[str] = Field(description="このマイルストーンで動くようにする処理ID")
     tasks: list[GeneratedTask]
 
 
@@ -106,12 +121,19 @@ PLAN_SYSTEM_PROMPT = (
     "規則:\n"
     "- マイルストーンは、動くものを段階的に増やす順に3〜6個にする。最初のマイルストーンは"
     "環境構築と横断事項(認証・例外・ログ)を含める。優先度は要件定義書の MoSCoW に合わせる\n"
-    "- 【処理ID の一覧】のすべての処理を、いずれかのマイルストーンの function_ids に入れる\n"
-    "- タスクは、マイルストーンごとに準備・バックエンド・フロントエンド・テスト・デプロイの区分で"
-    "分ける。modules には作る・直すファイルのパスを例として書く(【詳細設計書】04 のモジュール"
-    "一覧にあるものはそのパスをそのまま使い、Dockerfile・docker-compose.yml・CI の設定などの"
-    "環境・設定のファイルも書いてよい)。function_ids には【処理ID の一覧】の ID だけを"
-    "そのまま書く\n"
+    "- タスクは実装の作業単位で、層で横に分けず、機能ごとに縦に切る。処理を動くようにするタスクは"
+    "kind=feature にし、その処理のバックエンド・フロントエンド・テストを1つのタスクにまとめる。"
+    "1つのタスクの処理は原則1つにし、切り離せないものだけをまとめる。処理の無い準備"
+    "(開発環境・横断事項の土台)とデプロイは kind=base にし、function_ids を空にする\n"
+    "- 【処理ID の一覧】のすべての処理を、いずれかのタスクの function_ids に入れる。"
+    "同じ処理を2つのタスクに入れない。function_ids には【処理ID の一覧】の ID だけをそのまま書く\n"
+    "- タスクの ID は、出力の並び順から M-<マイルストーンの番号2桁>-T<タスクの番号2桁> と"
+    "決まる(1つ目のマイルストーンの2つ目のタスクは M-01-T02)。depends_on には、先に終わっている"
+    "必要があるタスクの ID を書く。指せるのは自分より前に並ぶタスクだけで、後ろのタスクに依存する"
+    "ときは並び順を入れ替える\n"
+    "- modules には作る・直すモジュールのパスを、【モジュールのパスの一覧】からそのまま選んで書く"
+    "(一覧に無いパスは書かない)。Dockerfile・docker-compose.yml・CI の設定などの環境・設定の"
+    "ファイルは config_files に書く\n"
     "- リスクは3〜5件。納期・予算を超えそうなときに削る機能・代替手段も対策に書く" + NAMING_RULES
 )
 
@@ -135,16 +157,19 @@ def build_plan_messages(
     design_markdown: str,
     crosscutting: Sequence[CrossCuttingRow],
     functions: Sequence[FunctionRow],
+    module_paths: Sequence[str],
 ) -> list[BaseMessage]:
     """実装計画の下書きの入力。横断事項は、先に作った下書き(1回目の LLM の出力)。"""
     crosscutting_text = "\n".join(f"- {row.topic}: {row.policy}" for row in crosscutting)
     functions_text = "\n".join(f"- {row.id}: {row.name}" for row in functions)
+    paths_text = "\n".join(f"- {path}" for path in module_paths)
     content = "\n\n".join(
         [
             f"## 要件定義書\n{requirements}",
             f"## 詳細設計書\n{design_markdown}",
             f"## 横断事項\n{crosscutting_text or '(ありません)'}",
             f"## 処理ID の一覧\n{functions_text or '(ありません)'}",
+            f"## モジュールのパスの一覧\n{paths_text or '(ありません)'}",
         ]
     )
     return [SystemMessage(content=PLAN_SYSTEM_PROMPT), HumanMessage(content=content)]
@@ -169,13 +194,14 @@ def to_plan_model(
                 name=m.name,
                 goal=m.goal,
                 priority=m.priority,
-                function_ids=list(m.function_ids),
                 tasks=[
                     PlanTask(
-                        area=t.area,
+                        kind=t.kind,
                         title=t.title,
-                        modules=list(t.modules),
                         function_ids=list(t.function_ids),
+                        depends_on=list(t.depends_on),
+                        modules=list(t.modules),
+                        config_files=list(t.config_files),
                     )
                     for t in m.tasks
                 ],

@@ -203,6 +203,32 @@ class DesignStageNotFoundError(NotFoundError):
     code: ClassVar[str | None] = "RESOURCE_NOT_FOUND"
 
 
+class DesignProcedureNotFoundError(NotFoundError):
+    """段階5で選んでいない処理のシーケンス図を求めた場合に送出する。"""
+
+    code: ClassVar[str | None] = "RESOURCE_NOT_FOUND"
+
+
+class DesignUnitNotFoundError(NotFoundError):
+    """段階7の作業単位に無い単位 ID の手順書の材料(参照の展開)を求めた場合に送出する。"""
+
+    code: ClassVar[str | None] = "RESOURCE_NOT_FOUND"
+
+
+class DesignUnitProcedureNotFoundError(NotFoundError):
+    """手順書の無い単位(まだ生成していない・段階7と合わない)の AI 向けの版を求めた場合に
+    送出する。"""
+
+    code: ClassVar[str | None] = "RESOURCE_NOT_FOUND"
+
+
+class DesignDocumentNotReadyError(ConflictError):
+    """文書の元になる段階が承認されていないのに、zip(詳細設計書・実装計画 / 実装手順書)を
+    求めた場合に送出する。"""
+
+    code: ClassVar[str | None] = "DESIGN_DOCUMENT_NOT_READY"
+
+
 class DesignStageVersionConflictError(ConflictError):
     """段階の保存・承認時、リクエストのversionがDB上のversionと一致しない場合に送出する(楽観ロック)。"""
 

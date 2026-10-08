@@ -55,6 +55,8 @@ def test_html_links_05_and_06_both_ways() -> None:
     assert 'href="#l-01">詳細 L-01 ↓</a>' in html  # 05 → 06
     assert 'href="#f-01-1">↑ F-01#1</a>' in html  # 06 → 05
     assert '<tr id="f-01-1a" class="branch">' in html
+    assert "<th>種別</th>" in html and "<td>同期</td>" in html
+    assert 'aria-label="F-01 のシーケンス図"><svg ' in html  # 05 の処理のシーケンス図
 
 
 def test_html_escapes_text_but_embeds_svg_as_is() -> None:

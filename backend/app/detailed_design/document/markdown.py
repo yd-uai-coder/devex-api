@@ -5,14 +5,15 @@ docs/external_design.md 2.7節「詳細設計書の出力」。md は差分を�
 「呼ばれる手順: F-01#4」)。`<a id>`のアンカーは md のビューアで消えて飛べなかったため。
 
 図は、zip の中の SVG を相対パスの画像で載せる(`![題](diagrams/x.svg)`)。md のビューアで
-開くと図が見える。画像は章の間のリンクではない。
+開くと図が見える。画像は章の間のリンクではない。05 のシーケンス図は手順の表から導く別の見え方
+なので、ファイルにせず Mermaid のコードブロックで載せる(AI が読める形のまま)。
 
 段階7の実装計画は、詳細設計書とは別の md(`to_plan_markdown`)にする(簡易モードで
 実装計画書が別の文書なのとそろえる)。段階7の下書きの入力には、詳細設計書の md(`to_markdown`の
 01〜06章)を使う。
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from app.detailed_design.document.source import (
     CHAPTERS,
@@ -21,6 +22,8 @@ from app.detailed_design.document.source import (
     RenderedDiagram,
 )
 from app.detailed_design.document.views import (
+    UNIT_HEADERS,
+    UNIT_KIND_LABELS,
     CrudMark,
     crud_matrix,
     data_item_usage,
@@ -31,9 +34,14 @@ from app.detailed_design.document.views import (
     logic_ids,
     logic_views,
     main_step_count,
+    procedure_sequence,
     procedure_steps,
+    step_kind_label,
 )
-from app.detailed_design.plan import PLAN_STAGE, milestone_id
+from app.detailed_design.logic import LogicRow
+from app.detailed_design.plan import PLAN_STAGE, milestone_functions, milestone_id, task_id
+from app.detailed_design.procedure import Procedure
+from app.detailed_design.sequence import SequenceDiagram, to_mermaid
 
 UNAPPROVED_TEXT = "未承認(段階{stage}が承認されていません。承認すると、この章が組み立てられます)"
 SKIPPED_TEXT = "省略(段階6を飛ばしました)"
@@ -201,6 +209,72 @@ def _structure(source: DocumentSource) -> list[str]:
     return lines
 
 
+def procedure_table(procedure: Procedure, ids: Mapping[str, str]) -> list[str]:
+    """1つの処理の手順の表(05 の本文。段階8の参照の展開も同じ表を使う)。"""
+    return md_table(
+        [
+            "No",
+            "呼び出し元 → 呼び出し先",
+            "種別",
+            "関数",
+            "渡すデータ",
+            "処理内容",
+            "結果",
+            "DB 操作",
+            "分岐・例外",
+        ],
+        [
+            [
+                s.number,
+                "" if s.step.is_branch else f"{s.step.caller} → {s.step.callee}",
+                step_kind_label(s.step),
+                s.step.call + (f" → 詳細: {s.logic_id}" if s.logic_id else ""),
+                s.step.data,
+                s.step.action,
+                s.step.result,
+                s.step.db,
+                s.step.branch,
+            ]
+            for s in procedure_steps(procedure, ids)
+        ],
+    )
+
+
+def sequence_block(diagram: SequenceDiagram) -> list[str]:
+    """シーケンス図の Mermaid のコードブロック(05 の本文。段階8の参照の展開も同じ形を使う)。
+    参加者が無ければ空。"""
+    if not diagram.participants:
+        return []
+    return [
+        "シーケンス図(手順の表から導いた図。直すのは表):",
+        "",
+        "```mermaid",
+        to_mermaid(diagram),
+        "```",
+    ]
+
+
+def logic_spec(row: LogicRow) -> list[str]:
+    """1つの関数のモジュール仕様の表と擬似フロー(06 の本文。段階8の参照の展開も同じ形を使う)。"""
+    lines = md_table(
+        ["項目", "内容"],
+        [
+            ["シグネチャ", row.signature],
+            ["引数", row.args],
+            ["戻り値", row.returns],
+            ["例外", row.raises],
+            ["事前条件", row.pre],
+            ["事後条件", row.post],
+        ],
+    )
+    if row.pseudo:
+        lines += ["", "擬似フロー:", ""]
+        for n, step in enumerate(row.pseudo, start=1):
+            lines.append(f"{n}. {step.text}")
+            lines += [f"    - {sub}" for sub in step.sub]
+    return lines
+
+
 def _procedures(source: DocumentSource) -> list[str]:
     assert source.procedures is not None
     names = functions_by_id(source.function_list)
@@ -240,33 +314,12 @@ def _procedures(source: DocumentSource) -> list[str]:
             lines += [f"トリガー: {row.trigger}", ""]
         if p.reason.strip():
             lines += [f"選定理由: {p.reason.strip()}", ""]
-        lines += md_table(
-            [
-                "No",
-                "呼び出し元 → 呼び出し先",
-                "関数",
-                "渡すデータ",
-                "処理内容",
-                "結果",
-                "DB 操作",
-                "分岐・例外",
-            ],
-            [
-                [
-                    s.number,
-                    "" if s.step.is_branch else f"{s.step.caller} → {s.step.callee}",
-                    s.step.call + (f" → 詳細: {s.logic_id}" if s.logic_id else ""),
-                    s.step.data,
-                    s.step.action,
-                    s.step.result,
-                    s.step.db,
-                    s.step.branch,
-                ]
-                for s in procedure_steps(p, ids)
-            ],
-        )
+        lines += procedure_table(p, ids)
         if p.note.strip():
             lines += ["", f"注記: {p.note.strip()}"]
+        block = sequence_block(procedure_sequence(p, source.modules))
+        if block:
+            lines += ["", *block]
     return lines
 
 
@@ -286,22 +339,7 @@ def _logics(source: DocumentSource) -> list[str]:
             f"モジュール: {row.module}",
             "",
         ]
-        lines += md_table(
-            ["項目", "内容"],
-            [
-                ["シグネチャ", row.signature],
-                ["引数", row.args],
-                ["戻り値", row.returns],
-                ["例外", row.raises],
-                ["事前条件", row.pre],
-                ["事後条件", row.post],
-            ],
-        )
-        if row.pseudo:
-            lines += ["", "擬似フロー:", ""]
-            for n, step in enumerate(row.pseudo, start=1):
-                lines.append(f"{n}. {step.text}")
-                lines += [f"    - {sub}" for sub in step.sub]
+        lines += logic_spec(row)
     return lines
 
 
@@ -327,8 +365,9 @@ _BODIES = {
 def to_plan_markdown(source: DocumentSource) -> str:
     """実装計画の md の全文(段階7。未承認なら「未承認」とだけ書く)。
 
-    マイルストーン一覧 → マイルストーンごとのタスク → 処理の割り当て → 開発環境 → リスクの順。
-    横断事項は詳細設計書の07章に書くので、ここには書かない。"""
+    マイルストーン一覧 → マイルストーンごとの単位(タスク) → 処理の割り当て → 開発環境 → リスクの順。
+    マイルストーンの処理は単位の処理から導く。横断事項は詳細設計書の07章に書くので、ここには
+    書かない。"""
     lines = [f"# 実装計画書: {source.title}", ""]
     plan = source.plan
     if source.status(PLAN_STAGE) != "approved" or plan is None:
@@ -338,7 +377,7 @@ def to_plan_markdown(source: DocumentSource) -> str:
     lines += md_table(
         ["M-ID", "名前", "優先度", "ゴール", "処理"],
         [
-            [milestone_id(i), m.name, m.priority, m.goal, ", ".join(m.function_ids)]
+            [milestone_id(i), m.name, m.priority, m.goal, ", ".join(milestone_functions(m))]
             for i, m in enumerate(plan.milestones)
         ],
     )
@@ -347,17 +386,25 @@ def to_plan_markdown(source: DocumentSource) -> str:
         if milestone.goal:
             lines += [f"ゴール: {milestone.goal}", ""]
         lines += md_table(
-            ["区分", "タスク", "作成・変更するファイル(例)", "処理"],
+            UNIT_HEADERS,
             [
-                [t.area, t.title, ", ".join(t.modules), ", ".join(t.function_ids)]
-                for t in milestone.tasks
+                [
+                    task_id(index, t_index),
+                    UNIT_KIND_LABELS[t.kind],
+                    t.title,
+                    ", ".join(t.function_ids),
+                    ", ".join(t.depends_on),
+                    ", ".join(t.modules),
+                    ", ".join(t.config_files),
+                ]
+                for t_index, t in enumerate(milestone.tasks)
             ],
         )
     lines += ["", "## 2 処理の割り当て", ""]
     lines += md_table(
-        ["処理ID", "名称", "マイルストーン"],
+        ["処理ID", "名称", "単位"],
         [
-            [row.function_id, row.name, ", ".join(row.milestones) or "未計画"]
+            [row.function_id, row.name, ", ".join(row.units) or "未計画"]
             for row in function_plans(plan, source.function_list)
         ],
     )

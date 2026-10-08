@@ -8,15 +8,20 @@ docs/internal_design.md 3.3節「4. 詳細設計モード」の「詳細設計�
   図の出力と同じ規則(`app.uml.export.render_diagram`)。
 - zip に入れた図は`exported`にする(図のファイルを出力した記録)。
 - 段階7の実装計画は、詳細設計書とは別のファイル(implementation_plan.md・.html)にする。
+- 段階8の実装手順書は別の zip(`implementation_procedure.zip`。`index.md`・単位ごとの md・
+  `ai/<単位ID>.md`・HTML 1枚)にする(組み立ては`app.detailed_design.procedure_output`)。
+
+zip は、元になる段階が承認済み(古くない)になるまで断る(`DesignDocumentNotReadyError`、409)。
+詳細設計書・実装計画は段階1〜7、実装手順書は段階8。章の「未承認」の書き方は組み立ての側に残す
+(段階7の下書きの入力が、承認済みの章だけの詳細設計書の md を使うため)。
 
 入力を集める部分(`collect`)は、段階7の下書きの生成も使う。生成では図を描かず(`render=False`)、図を`exported`にもしない。
 
-ダウンロードは、どの段階が承認済みでもいつでもできる。承認していない段階の章は「未承認」になる
-。
 """
 
 import uuid
 import zipfile
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from io import BytesIO
 
@@ -34,13 +39,26 @@ from app.detailed_design.document import (
     to_plan_html,
     to_plan_markdown,
 )
+from app.detailed_design.procedure_basis import procedure_basis
+from app.detailed_design.procedure_doc import PROCEDURE_DOC_STAGE
+from app.detailed_design.procedure_output import (
+    ProcedureOutputSource,
+    procedure_output_source,
+    to_ai_markdown,
+    to_index_markdown,
+    to_procedure_html,
+    to_unit_markdown,
+    unit_filename,
+)
 from app.detailed_design.stages import StageState
 from app.detailed_design.structure import STRUCTURE_SUBJECT
+from app.detailed_design.validation import StageSources, validate_stage
 from app.models.project import Project
 from app.models.uml_diagram import UmlDiagram
 from app.repositories.data_item import DataItemRepository
 from app.repositories.uml_diagram import UmlDiagramRepository
 from app.services.design_stage_service import DesignStageService
+from app.services.errors import DesignDocumentNotReadyError, DesignStagesNotAvailableError
 from app.uml.domain import (
     STATUS_AFTER_EXPORT,
     ErSemanticModel,
@@ -57,6 +75,15 @@ DOCUMENT_MARKDOWN_NAME = "detailed_design.md"
 DOCUMENT_DIAGRAM_DIR = "diagrams"
 PLAN_HTML_NAME = "implementation_plan.html"
 PLAN_MARKDOWN_NAME = "implementation_plan.md"
+PROCEDURE_FILENAME = "implementation_procedure.zip"
+PROCEDURE_INDEX_NAME = "index.md"
+PROCEDURE_HTML_NAME = "implementation_procedure.html"
+PROCEDURE_AI_DIR = "ai"
+
+# zip の元になる段階(承認済みになるまでダウンロードを断る)。詳細設計書(01〜07章)と実装計画は
+# 段階1〜7、実装手順書は段階8
+DOCUMENT_STAGES: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7)
+PROCEDURE_STAGES: tuple[int, ...] = (PROCEDURE_DOC_STAGE,)
 
 
 @dataclass(frozen=True)
@@ -71,9 +98,11 @@ class BundleFile:
 @dataclass
 class CollectedDocument:
     """組み立ての入力と、描いた図。`files`は zip の中のパス → 図の SVG・draw.io の本文、
-    `rendered`は描いた図の行(zip に入れたら`exported`にする)。図を描かないときは両方空。"""
+    `rendered`は描いた図の行(zip に入れたら`exported`にする)。図を描かないときは両方空。
+    `procedure`は実装手順書の組み立ての入力(段階8は承認済みの内容だけを使う)。"""
 
     source: DocumentSource
+    procedure: ProcedureOutputSource
     files: dict[str, str] = field(default_factory=dict)
     rendered: list[UmlDiagram] = field(default_factory=list)
 
@@ -89,7 +118,11 @@ class DetailedDesignExportService:
 
     async def bundle(self, project: Project) -> BundleFile:
         """詳細設計書の HTML・md、実装計画の HTML・md と、載せた図の SVG・draw.io を zip に
-        まとめる。簡易ドキュメントモードのプロジェクトは`DesignStagesNotAvailableError`(409)。"""
+        まとめる。段階1〜7のどれかが承認済みでなければ`DesignDocumentNotReadyError`(409。図も
+        描かず`exported`にしない)、簡易ドキュメントモードのプロジェクトは
+        `DesignStagesNotAvailableError`(409)。"""
+        _ensure_detailed(project)
+        await self._ensure_approved(project, DOCUMENT_STAGES)
         collected = await self.collect(project, render=True)
         source = collected.source
 
@@ -110,10 +143,35 @@ class DetailedDesignExportService:
             filename=DOCUMENT_FILENAME, content=buffer.getvalue(), media_type="application/zip"
         )
 
+    async def bundle_procedure(self, project: Project) -> BundleFile:
+        """実装手順書(`index.md`・単位ごとの md・`ai/<単位ID>.md`・HTML 1枚)を zip にまとめる。
+        段階8が承認済みでなければ`DesignDocumentNotReadyError`(409)。図は描かない(手順の
+        シーケンス図は手順から導くので、詳細設計書の図のファイルは要らない)。詳細設計書の
+        組み立て(`collect`)は通らないので、簡易ドキュメントモードのプロジェクトも作れる。"""
+        await self._ensure_approved(project, PROCEDURE_STAGES)
+        views, sources = await self._stages.overview(project)
+        states: dict[int, StageState] = {stage: view.state for stage, view in views.items()}
+        procedure = procedure_source(project.title, states, sources)
+        buffer = BytesIO()
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for path, content in procedure_files(procedure).items():
+                archive.writestr(path, content)
+        return BundleFile(
+            filename=PROCEDURE_FILENAME, content=buffer.getvalue(), media_type="application/zip"
+        )
+
+    async def _ensure_approved(self, project: Project, stages: tuple[int, ...]) -> None:
+        views, _ = await self._stages.overview(project)
+        missing = missing_approvals({s: v.state for s, v in views.items()}, stages)
+        if missing:
+            names = "・".join(str(s) for s in missing)
+            raise DesignDocumentNotReadyError(f"段階{names}が承認されていません")
+
     async def collect(self, project: Project, *, render: bool) -> CollectedDocument:
         """組み立ての入力を集める。`render`なら承認済みの図を描く(zip 用)。描かないときも、
         図の意味モデル(DFD の線・ER のテーブル)は表の導出に使うので読む。DB は書き換えない。
         簡易ドキュメントモードのプロジェクトは`DesignStagesNotAvailableError`(409)。"""
+        _ensure_detailed(project)
         views, sources = await self._stages.overview(project)
         states: dict[int, StageState] = {stage: view.state for stage, view in views.items()}
         approved = sources.stages
@@ -201,7 +259,10 @@ class DetailedDesignExportService:
             er_diagram=er_diagram,
             component_diagram=component_diagram,
         )
-        return CollectedDocument(source=source, files=collected_files, rendered=rendered)
+        procedure = procedure_source(project.title, states, sources)
+        return CollectedDocument(
+            source=source, procedure=procedure, files=collected_files, rendered=rendered
+        )
 
     async def _get(
         self, project_id: uuid.UUID, notation: NotationType, subject: str
@@ -209,6 +270,53 @@ class DetailedDesignExportService:
         return await self._diagrams.get_by_subject(
             project_id=project_id, notation=notation, subject=subject
         )
+
+
+def _ensure_detailed(project: Project) -> None:
+    """詳細設計書は詳細設計モードのプロジェクトだけが持つ(簡易モードは段階8だけ)。"""
+    if project.mode != "detailed":
+        raise DesignStagesNotAvailableError(
+            f"Project {project.id} is not in detailed design mode (mode={project.mode})"
+        )
+
+
+def procedure_source(
+    title: str, states: Mapping[int, StageState], sources: StageSources
+) -> ProcedureOutputSource:
+    """実装手順書の組み立ての入力。段階8は承認済みの内容だけを使い(未承認なら手順書は空)、
+    作業単位と参照はモードの土台(`procedure_basis`)から取る。"""
+    model = sources.stages.get(PROCEDURE_DOC_STAGE)
+    return procedure_output_source(
+        title,
+        states[PROCEDURE_DOC_STAGE],
+        procedure_basis(sources.mode, sources.stages, sources.documents),
+        model,
+        validate_stage(PROCEDURE_DOC_STAGE, model, sources) if model is not None else [],
+        sources.documents.get("requirements", ""),
+    )
+
+
+def missing_approvals(states: Mapping[int, StageState], stages: Iterable[int]) -> list[int]:
+    """`stages`のうち、承認済み(古くない)でない段階(zip を断る理由)。"""
+    return [stage for stage in stages if states.get(stage) != "approved"]
+
+
+def procedure_files(source: ProcedureOutputSource) -> dict[str, str]:
+    """実装手順書の zip のファイル(パス → 本文)。段階8が承認済みでなければ、「未承認」と書いた
+    `index.md`と HTML だけ(zip は承認済みでないと断るので、組み立ての側の守り)。単位の md と
+    AI 向けの版は、手順書のある単位だけ。"""
+    files = {
+        PROCEDURE_INDEX_NAME: to_index_markdown(source),
+        PROCEDURE_HTML_NAME: to_procedure_html(source),
+    }
+    if not source.approved:
+        return files
+    for unit in source.units:
+        if unit.unit_id not in source.procedures:
+            continue
+        files[unit_filename(unit)] = to_unit_markdown(source, unit.unit_id)
+        files[f"{PROCEDURE_AI_DIR}/{unit.unit_id}.md"] = to_ai_markdown(source, unit.unit_id)
+    return files
 
 
 def _is_approved(diagram: UmlDiagram) -> bool:

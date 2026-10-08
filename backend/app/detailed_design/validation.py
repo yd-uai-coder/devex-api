@@ -5,7 +5,7 @@ app/services/design_stage_service.py)に加えて、段階ごとの検証で「�
 止めない(UML図の検証と同じ考え方。app/uml/validation/)。保存は検証の結果によらず通す(編集の
 途中の状態も保存できるようにするため)。
 
-段階ごとの検証は`STAGE_VALIDATORS`に登録する。段階1〜7のすべてを登録している(登録の無い
+段階ごとの検証は`STAGE_VALIDATORS`に登録する。段階1〜8のすべてを登録している(登録の無い
 段階は検証なし)。
 検証には段階の内容のほかに入力の文書の本文が要ることがあるので、
 `StageSources`で渡す(段階1は外部設計書のAPI一覧と照らして、下書きの漏れを警告する)。
@@ -14,7 +14,13 @@ app/services/design_stage_service.py)に加えて、段階ごとの検証で「�
 段階4は、段階1の内容と、構成図の要約を使う。
 段階5は、段階1の内容と、段階4のモジュール一覧(手順の呼び出し先の鍵)を使う。
 段階6は、段階5の手順(関数を呼ぶ手順との紐づけ)を使う。
-段階7は、段階1の処理ID(計画の漏れ)を使う。ファイルの欄は例なので検証しない。
+段階7は、段階1の処理ID(計画の漏れ)と、段階4のモジュール一覧(単位のモジュールの欄)を使う。
+環境・設定のファイルの欄と、横断事項のファイルの欄は例なので検証しない。
+段階8は、段階7の作業単位と、単位が参照する段階3〜6の設計を使う(実装可能性チェック)。
+設計の不足は、重要度(`level`)と直す先の段階(`fix_stage`)を持つ警告にする。段階8の指摘は
+手順書がまだ無くても出る(段階7の単位と設計から決まるため)。
+簡易ドキュメントモードの段階8は、実装計画書の WBS の単位と内部設計書を使う(`procedure_basis`)。
+直す先は段階でなく文書(`fix_document`)で示す。
 """
 
 from collections import Counter
@@ -46,26 +52,67 @@ from app.detailed_design.logic import (
     logic_id,
     logic_key,
 )
-from app.detailed_design.plan import PlanModel, milestone_id, missing_topics, unplanned_functions
+from app.detailed_design.plan import (
+    MAX_UNIT_FUNCTIONS,
+    PlanModel,
+    is_file_path,
+    milestone_id,
+    missing_topics,
+    task_id,
+    unit_ids,
+    unplanned_functions,
+)
 from app.detailed_design.procedure import (
     ProcedureModel,
     is_external_actor,
     number_steps,
     step_id,
 )
+from app.detailed_design.procedure_basis import ProcedureBasis, procedure_basis
+from app.detailed_design.procedure_doc import (
+    PROCEDURE_DOC_STAGE,
+    DesignDocument,
+    DesignIndex,
+    FindingLevel,
+    PlanUnit,
+    ProcedureDocModel,
+    UnitProcedure,
+    spelling_match,
+    unit_refs,
+)
+from app.detailed_design.sequence import (
+    module_dependencies,
+    reachable_callees,
+    stubs_outside_sequence,
+    sut_participant,
+    to_sequence,
+)
+from app.detailed_design.stages import ProjectMode
 from app.detailed_design.structure import ModuleListModel, module_ref_matches
 
 Severity = Literal["error", "warning"]
 
+# 簡易モードの段階8の指摘の直す先(実装計画書・内部設計書)
+_PLAN: DesignDocument = "implementation_plan"
+_DESIGN: DesignDocument = "internal_design"
+
 
 @dataclass(frozen=True)
 class StageIssue:
-    """検証の指摘1件。`target`は指摘の対象(処理ID・機能グループ名など。無ければNone)。"""
+    """検証の指摘1件。`target`は指摘の対象(処理ID・機能グループ名など。無ければNone)。
+
+    段階8(実装可能性チェック)の指摘だけが、重要度`level`・直す先の段階`fix_stage`・
+    指摘の出た作業単位`unit`(単位によらなければNone)を持つ。簡易モードの段階8の指摘は、
+    直す先を文書`fix_document`で示す(`fix_stage`は直す先の段階が無いことを示す8)。"""
 
     severity: Severity
     code: str
     message: str
     target: str | None = None
+    level: FindingLevel | None = None
+    fix_stage: int | None = None
+    unit: str | None = None
+    fix_document: DesignDocument | None = None
 
 
 @dataclass(frozen=True)
@@ -106,6 +153,7 @@ class StageSources:
     - `dfd_diagrams`: 機能グループの DFD の要約(subject → 要約)。段階2・3が使う。
     - `er_diagram`: ER の要約(まだ無ければ None)。段階3が使う。
     - `component_diagram`: 構成図の要約(まだ無ければ None)。段階4が使う。
+    - `mode`: プロジェクトのモード。簡易モードの段階8は、段階でなく4文書から作業単位と設計を読む。
     """
 
     documents: Mapping[str, str] = field(default_factory=dict)
@@ -113,6 +161,7 @@ class StageSources:
     dfd_diagrams: Mapping[str, DfdDiagramSummary] = field(default_factory=dict)
     er_diagram: ErDiagramSummary | None = None
     component_diagram: ComponentDiagramSummary | None = None
+    mode: ProjectMode = "detailed"
 
 
 StageValidator = Callable[[Mapping[str, Any], StageSources], list[StageIssue]]
@@ -464,7 +513,9 @@ def validate_procedures(model: Mapping[str, Any], sources: StageSources) -> list
     エラー: 形が不正 / 処理が0件 / 処理IDが機能一覧に無い・重複 / 手順が0件 /
     先頭の行が分岐 / 手順の呼び出し先が空 / パスの形(`/`を含む)の呼び出し先が、モジュール一覧の
     パスと完全一致しない(関与表の列の鍵のため)。
-    警告: 選定理由が空 / モジュールを呼ぶ手順の関数が空(段階6で関数を選べないため)。
+    警告: 選定理由が空 / モジュールを呼ぶ手順の関数が空(段階6で関数を選べないため)/
+    シーケンス図にするときの指摘(`to_sequence`。戻りを呼び出しとして書いている・入れ子を推測
+    できない・存在しない分岐先・依存先(段階4)に無い呼び出し・呼び出し元が空)。
     """
     try:
         parsed = ProcedureModel.model_validate(model)
@@ -474,6 +525,7 @@ def validate_procedures(model: Mapping[str, Any], sources: StageSources) -> list
     function_ids = {row.id for row in function_list.functions}
     modules = ModuleListModel.model_validate(sources.stages.get(4) or {})
     paths = {row.path.strip() for row in modules.modules}
+    dependencies = module_dependencies(modules)
 
     issues: list[StageIssue] = []
     if not parsed.procedures:
@@ -512,9 +564,11 @@ def validate_procedures(model: Mapping[str, Any], sources: StageSources) -> list
                     f"手順 {target} の呼び出し先「{callee}」が、モジュール一覧のパスにありません。"
                 )
                 issues.append(_error("UNKNOWN_CALLEE", message, target))
-            elif not is_external_actor(callee) and not step.call.strip():
+            elif not is_external_actor(callee) and step.kind != "return" and not step.call.strip():
                 message = f"手順 {target} の呼ぶ関数が空です(段階6で関数を選べません)。"
                 issues.append(_warning("EMPTY_CALL", message, target))
+        for found in to_sequence(procedure, dependencies).issues:
+            issues.append(_warning(found.code, found.message, found.step_id))
     return issues
 
 
@@ -563,12 +617,16 @@ def validate_plan(model: Mapping[str, Any], sources: StageSources) -> list[Stage
     """段階7(横断事項と実装計画)の検証。
 
     エラー: 形が不正 / マイルストーンが0件 / マイルストーン名が空・重複 / タスク名が空 /
-    横断事項の項目が空 / 機能一覧に無い処理ID。
-    ファイルの欄(`modules`)は「作成・変更するファイルの例」なので検証しない(環境・設定の
-    ファイルはモジュール一覧に入らないため)。
-    警告: どのマイルストーン・タスクにも無い処理 / タスクの無いマイルストーン /
+    横断事項の項目が空 / 機能一覧に無い処理ID / 単位の一覧に無い依存先 / 自分か後ろの単位への
+    依存(前の単位だけを指せるので、循環も起きない) / 段階4のモジュール一覧に無いモジュール
+    (単位の参照先の鍵のため)。
+    環境・設定のファイルの欄と横断事項のファイルの欄は例なので検証しない(環境のファイルは
+    モジュール一覧に入らないため)。
+    警告: どの単位にも無い処理 / 複数の単位にある処理 / タスクの無いマイルストーン /
+    種別と処理の食い違い(機能なのに処理が無い・基盤なのに処理がある) / 処理が多すぎる単位 /
+    モジュールの無い機能の単位 / ディレクトリのモジュール(ファイルが決まらない) /
     横断事項の既定の項目(`CROSSCUTTING_TOPICS`)が無い・方針が空 / リスクが0件。
-    指摘の`target`は、マイルストーンは M-ID、横断事項は項目名、漏れた処理は処理ID。
+    指摘の`target`は、マイルストーンは M-ID、単位は単位の ID、横断事項は項目名、漏れた処理は処理ID。
     """
     try:
         parsed = PlanModel.model_validate(model)
@@ -577,14 +635,11 @@ def validate_plan(model: Mapping[str, Any], sources: StageSources) -> list[Stage
     function_list = FunctionListModel.model_validate(sources.stages.get(1) or {})
     function_ids = [row.id for row in function_list.functions]
     known_functions = set(function_ids)
+    module_list = ModuleListModel.model_validate(sources.stages.get(4) or {})
+    paths = {row.path.strip() for row in module_list.modules}
+    order = {uid: index for index, uid in enumerate(unit_ids(parsed))}
 
     issues: list[StageIssue] = []
-
-    def check_refs(label: str, target: str, functions: list[str]) -> None:
-        for function_id in functions:
-            if function_id.strip() not in known_functions:
-                message = f"{label} の処理 {function_id} が、機能一覧にありません。"
-                issues.append(_error("UNKNOWN_FUNCTION", message, target))
 
     for index, row in enumerate(parsed.crosscutting, start=1):
         topic = row.topic.strip()
@@ -601,8 +656,9 @@ def validate_plan(model: Mapping[str, Any], sources: StageSources) -> list[Stage
     if not parsed.milestones:
         issues.append(_error("NO_MILESTONE", "マイルストーンが1件もありません。"))
     names = Counter(m.name.strip() for m in parsed.milestones)
-    for index, milestone in enumerate(parsed.milestones):
-        target = milestone_id(index)
+    units_of: dict[str, list[str]] = {}
+    for m_index, milestone in enumerate(parsed.milestones):
+        target = milestone_id(m_index)
         name = milestone.name.strip()
         label = f"{target}({name})" if name else target
         if not name:
@@ -612,19 +668,328 @@ def validate_plan(model: Mapping[str, Any], sources: StageSources) -> list[Stage
             issues.append(_error("DUPLICATE_MILESTONE", message, target))
         if not milestone.tasks:
             issues.append(_warning("EMPTY_TASKS", f"{label} にタスクがありません。", target))
-        check_refs(label, target, milestone.function_ids)
-        for number, task in enumerate(milestone.tasks, start=1):
-            task_label = f"{label} のタスク{number}"
+        for t_index, task in enumerate(milestone.tasks):
+            uid = task_id(m_index, t_index)
+            functions = [f.strip() for f in task.function_ids if f.strip()]
             if not task.title.strip():
-                issues.append(_error("EMPTY_TASK", f"{task_label} の名前が空です。", target))
-            check_refs(task_label, target, task.function_ids)
+                issues.append(_error("EMPTY_TASK", f"{uid} の名前が空です。", uid))
+            for function_id in functions:
+                units_of.setdefault(function_id, []).append(uid)
+                if function_id not in known_functions:
+                    message = f"{uid} の処理 {function_id} が、機能一覧にありません。"
+                    issues.append(_error("UNKNOWN_FUNCTION", message, uid))
+            issues += _task_kind_issues(uid, task.kind, functions, task.modules)
+            issues += _dependency_issues(uid, task.depends_on, order)
+            issues += _module_issues(uid, task.modules, paths)
 
+    for function_id, units in units_of.items():
+        if len(units) > 1 and function_id in known_functions:
+            message = f"{function_id} が、複数の単位({', '.join(units)})にあります。"
+            issues.append(_warning("DUPLICATE_FUNCTION", message, function_id))
     for function_id in unplanned_functions(parsed, function_ids):
-        message = f"{function_id} が、どのマイルストーン・タスクにもありません。"
+        message = f"{function_id} が、どの単位にもありません。"
         issues.append(_warning("UNPLANNED_FUNCTION", message, function_id))
     if not parsed.risks:
         issues.append(_warning("NO_RISKS", "想定リスクが1件もありません。"))
     return issues
+
+
+def _task_kind_issues(
+    uid: str, kind: str, functions: list[str], modules: list[str]
+) -> list[StageIssue]:
+    """単位の種別と、処理・モジュールの食い違い(警告)。"""
+    issues: list[StageIssue] = []
+    if kind == "feature":
+        if not functions:
+            message = f"{uid} は機能の単位ですが、処理がありません(処理の無い作業は基盤にします)。"
+            issues.append(_warning("KIND_MISMATCH", message, uid))
+        elif len(functions) > MAX_UNIT_FUNCTIONS:
+            message = (
+                f"{uid} に処理が{len(functions)}個あります(1つの単位は原則1処理です。"
+                "分けられないか確かめてください)。"
+            )
+            issues.append(_warning("MANY_FUNCTIONS", message, uid))
+        if not any(m.strip() for m in modules):
+            message = f"{uid} にモジュールがありません(作る・直すファイルが決まりません)。"
+            issues.append(_warning("NO_MODULES", message, uid))
+    elif functions:
+        message = f"{uid} は基盤の単位ですが、処理があります(処理を持つ作業は機能にします)。"
+        issues.append(_warning("KIND_MISMATCH", message, uid))
+    return issues
+
+
+def _dependency_issues(
+    uid: str, depends_on: list[str], order: Mapping[str, int]
+) -> list[StageIssue]:
+    """依存先が単位の一覧に無い・自分か後ろの単位を指す(エラー)。"""
+    issues: list[StageIssue] = []
+    for dependency in (d.strip() for d in depends_on if d.strip()):
+        if dependency not in order:
+            message = f"{uid} の依存先 {dependency} が、単位の一覧にありません。"
+            issues.append(_error("UNKNOWN_DEPENDENCY", message, uid))
+        elif order[dependency] >= order[uid]:
+            # 前の単位だけを指せるようにすると、依存の順と計画の並び順が一致し、循環も起きない
+            message = (
+                f"{uid} の依存先 {dependency} が、自分か後ろの単位です"
+                "(依存先は前に並べます)。"
+            )
+            issues.append(_error("FORWARD_DEPENDENCY", message, uid))
+    return issues
+
+
+def _module_issues(uid: str, modules: list[str], paths: set[str]) -> list[StageIssue]:
+    """モジュールが段階4のモジュール一覧に無い(エラー)・ディレクトリ(警告)。"""
+    issues: list[StageIssue] = []
+    for module in (m.strip() for m in modules if m.strip()):
+        if module not in paths:
+            # 環境・設定のファイルは別の欄に書く(モジュールの欄は手順書が参照する設計の鍵)
+            message = (
+                f"{uid} のモジュール「{module}」が、モジュール一覧にありません"
+                "(環境・設定のファイルなら、その欄に移します)。"
+            )
+            issues.append(_error("UNKNOWN_MODULE", message, uid))
+        elif not is_file_path(module):
+            message = (
+                f"{uid} のモジュール「{module}」はディレクトリで、ファイルが決まりません"
+                "(段階4のモジュール一覧をファイル単位に直します)。"
+            )
+            issues.append(_warning("MODULE_NOT_FILE", message, uid))
+    return issues
+
+
+def validate_procedure_doc(
+    model: Mapping[str, Any], sources: StageSources
+) -> list[StageIssue]:
+    """段階8(実装手順書)の検証 = 決定的な実装可能性チェック。
+
+    エラー(承認を止める): 形が不正 / 同じ単位の手順書が2つある / 手順書の単位が段階7に無い・
+    タスク名が違う(段階7を並べ替え・改名した。作り直させる)。
+    警告(重要度・直す先の段階を持つ。承認は止めない):
+    - 中程度・段階5: 機能の単位の処理に、段階5の手順が無い(`NO_PROCEDURE`)
+    - 中程度・段階3: 手順に DB 操作があるのに、CRUD 図にその処理の操作が無い(`NOT_IN_CRUD`)
+    - 中程度・段階4: 単位のモジュールがディレクトリ(`MODULE_NOT_FILE`)、手順書のモジュールの
+      ファイルがモジュール一覧に無い(`UNKNOWN_FILE`)
+    - 軽微・段階5: 手順の呼ぶ関数が段階6に無く、同じモジュールの段階6の関数と書き方だけが違う
+      (`UNRESOLVED_CALL`。揺れは吸収せず、手順の関数名を段階6にそろえさせる。段階6で選ばなかった
+      別の関数は、段階6が任意なので指摘しない)
+    - 軽微・段階5: 手順書のテスト観点のスタブが、手順のシーケンス図で SUT から呼ばれないモジュールを
+      挙げている(`STUB_OUTSIDE_SEQUENCE`。手順に無い依存。手順か観点のどちらかが足りない)
+    指摘の`target`は、処理ID・手順ID・パス・単位の ID。`unit`は指摘の出た単位の ID。
+    """
+    try:
+        parsed = ProcedureDocModel.model_validate(model)
+    except ValidationError as exc:
+        return [_error("INVALID_MODEL", f"実装手順書の形が正しくありません: {exc}")]
+    basis = procedure_basis(sources.mode, sources.stages, sources.documents)
+    issues, matched = _matched_procedures(parsed, basis)
+    if basis.mode == "simple":
+        return issues + _simple_procedure_issues(basis)
+    index = basis.index
+    function_list = FunctionListModel.model_validate(sources.stages.get(1) or {})
+    triggers = {row.id: row.trigger for row in function_list.functions}
+    for doc, unit in matched:
+        uid = unit.unit_id
+        for file in doc.files:
+            path = file.path.strip()
+            if file.kind == "module" and path and path not in index.module_paths:
+                message = f"{uid} の手順書のファイル「{path}」が、モジュール一覧にありません。"
+                issues.append(_finding("UNKNOWN_FILE", message, path, "major", 4, uid))
+        issues += _stub_issues(doc, unit, index, triggers)
+    for unit in basis.units:
+        issues += _unit_design_issues(unit, index)
+    return issues
+
+
+def _matched_procedures(
+    parsed: ProcedureDocModel, basis: ProcedureBasis
+) -> tuple[list[StageIssue], list[tuple[UnitProcedure, PlanUnit]]]:
+    """手順書を作業単位と突き合わせる(両モード共通)。戻り値は、手順書そのもののエラー
+    (同じ単位が2つ・単位が無い・タスク名が違う)と、単位と合った手順書の組。"""
+    by_id = {unit.unit_id: unit for unit in basis.units}
+    source = basis.labels.plan
+    issues: list[StageIssue] = []
+    matched: list[tuple[UnitProcedure, PlanUnit]] = []
+    counts = Counter(doc.unit_id.strip() for doc in parsed.units)
+    reported: set[str] = set()
+    for doc in parsed.units:
+        uid = doc.unit_id.strip()
+        if counts[uid] > 1:
+            if uid not in reported:
+                reported.add(uid)
+                message = f"{uid} の手順書が{counts[uid]}つあります。"
+                issues.append(_unit_error("DUPLICATE_UNIT", message, uid))
+            continue
+        unit = by_id.get(uid)
+        if unit is None:
+            message = (
+                f"手順書の単位 {uid} が、{source}にありません(手順書を作り直してください)。"
+            )
+            issues.append(_unit_error("UNIT_MISMATCH", message, uid))
+            continue
+        if unit.task.title.strip() != doc.title.strip():
+            message = (
+                f"{uid} の手順書は「{doc.title.strip()}」のものですが、{source}の {uid} は"
+                f"「{unit.task.title.strip()}」です({source}を並べ替えたか改名しました。"
+                "手順書を作り直してください)。"
+            )
+            issues.append(_unit_error("UNIT_MISMATCH", message, uid))
+            continue
+        matched.append((doc, unit))
+    return issues, matched
+
+
+def _simple_procedure_issues(basis: ProcedureBasis) -> list[StageIssue]:
+    """簡易モードの実装可能性チェック(警告。直す先は文書)。
+
+    - 実装計画書: WBS の書式(`WBS_*`)、依存先が一覧に無い・後ろの単位、[機能]に DF が無い、
+      DF が内部設計書に無い、どの単位にも入っていない DF(軽微)
+    - 内部設計書: モジュール一覧が無い(最重要)
+
+    モジュールとファイルは見ない。簡易モードのモジュール一覧は層ごとにまとめた行で、ファイルは
+    層まで照合する(参照の展開。`module_layer`)。層に当たらないファイルも、簡易モードの粒度では
+    一覧に無くて当然なので指摘しない。
+    """
+    book = basis.book
+    issues = [
+        _doc_finding(i.code, i.message, i.target, i.level, i.fix_document, i.unit)
+        for i in basis.wbs_issues
+    ]
+    if not book.has_module_list:
+        message = (
+            "内部設計書に「モジュール一覧」がありません。単位のファイルの層が決まらないので、"
+            "内部設計書を再生成してください。"
+        )
+        issues.append(_doc_finding("NO_MODULE_LIST", message, None, "critical", _DESIGN))
+    units = basis.units
+    order = {unit.unit_id: position for position, unit in enumerate(units)}
+    for unit in units:
+        uid = unit.unit_id
+        for issue in _dependency_issues(uid, unit.task.depends_on, order):
+            issues.append(_doc_finding(issue.code, issue.message, uid, "major", _PLAN, uid))
+        issues += _simple_unit_issues(unit, basis)
+    planned = {f.strip() for unit in units for f in unit.task.function_ids}
+    for flow_id in book.dataflows:
+        if flow_id not in planned:
+            message = f"内部設計書の処理 {flow_id} が、どの単位にも入っていません。"
+            issues.append(_doc_finding("UNPLANNED_DATAFLOW", message, flow_id, "minor", _PLAN))
+    return issues
+
+
+def _simple_unit_issues(unit: PlanUnit, basis: ProcedureBasis) -> list[StageIssue]:
+    """簡易モードの単位1つの、処理(DF)の不足。"""
+    uid = unit.unit_id
+    refs = basis.refs(unit.task)
+    issues: list[StageIssue] = []
+    if unit.task.kind == "feature" and not any(r.kind == "dataflow" for r in refs):
+        message = f"{uid} は機能の単位ですが、処理(DF)がありません。"
+        issues.append(_doc_finding("FEATURE_WITHOUT_DATAFLOW", message, uid, "major", _PLAN, uid))
+    for ref in refs:
+        if ref.kind == "dataflow" and not ref.resolved:
+            message = f"{uid} の処理 {ref.key} が、内部設計書の処理別データフローにありません。"
+            issues.append(_doc_finding("UNKNOWN_DATAFLOW", message, ref.key, "major", _PLAN, uid))
+    return issues
+
+
+def _unit_design_issues(unit: PlanUnit, index: DesignIndex) -> list[StageIssue]:
+    """単位1つの、参照する設計の不足(警告)。基盤の単位は処理を持たないので、モジュールだけを見る。"""
+    uid = unit.unit_id
+    issues: list[StageIssue] = []
+    for ref in unit_refs(unit.task, index):
+        if ref.kind == "procedure":
+            if not ref.resolved:
+                message = f"{uid} の処理 {ref.key} に、段階5の手順がありません。"
+                issues.append(_finding("NO_PROCEDURE", message, ref.key, "major", 5, uid))
+            elif _has_db_step(index, ref.key) and ref.key not in index.crud_functions:
+                message = (
+                    f"{uid} の処理 {ref.key} の手順に DB 操作がありますが、"
+                    "CRUD 図にこの処理の操作がありません。"
+                )
+                issues.append(_finding("NOT_IN_CRUD", message, ref.key, "major", 3, uid))
+        elif ref.kind == "logic":
+            module, function = ref.key.split("::", 1)
+            name = None if ref.resolved else spelling_match(index, module, function)
+            if name is not None:
+                message = (
+                    f"{uid} の手順 {ref.via} の関数「{function}」は、段階6の「{name}」と"
+                    f"書き方だけが違います。段階5の手順の関数名を「{name}」にそろえます。"
+                )
+                issues.append(_finding("UNRESOLVED_CALL", message, ref.via, "minor", 5, uid))
+        elif ref.resolved and not is_file_path(ref.key):
+            message = (
+                f"{uid} のモジュール「{ref.key}」はディレクトリで、作るファイルが決まりません。"
+            )
+            issues.append(_finding("MODULE_NOT_FILE", message, ref.key, "major", 4, uid))
+    return issues
+
+
+def _stub_issues(
+    doc: UnitProcedure, unit: PlanUnit, index: DesignIndex, triggers: Mapping[str, str]
+) -> list[StageIssue]:
+    """テスト観点のスタブの欄が、手順のシーケンス図で SUT から呼ばれないモジュールを挙げていないか。
+    SUT は、単位の処理の図のうち最初に対応した図で見る(対応しなければ判断しない)。SUT 自身の
+    モジュールは候補に含める(スタブの文に名前が出てもよい)。"""
+    uid = unit.unit_id
+    diagrams = [
+        (fid, to_sequence(index.procedures[fid]))
+        for fid in (f.strip() for f in unit.task.function_ids)
+        if fid in index.procedures
+    ]
+    paths = sorted(index.module_paths)
+    issues: list[StageIssue] = []
+    for number, test in enumerate(doc.tests, start=1):
+        if not test.stub.strip():
+            continue
+        for fid, diagram in diagrams:
+            sut = sut_participant(diagram, test.sut, triggers.get(fid, ""))
+            if sut is None:
+                continue
+            allowed = [sut, *reachable_callees(diagram, sut)]
+            outside = stubs_outside_sequence(test.stub, allowed, paths)
+            if outside:
+                message = (
+                    f"{uid} のテスト観点{number}のスタブ({', '.join(outside)})は、{fid} の手順で"
+                    f" SUT({sut})から呼ばれていません(手順に無い依存です。手順に足すか、"
+                    "観点のスタブを直します)。"
+                )
+                issues.append(_finding("STUB_OUTSIDE_SEQUENCE", message, fid, "minor", 5, uid))
+            break
+    return issues
+
+
+def _has_db_step(index: DesignIndex, function_id: str) -> bool:
+    procedure = index.procedures.get(function_id)
+    return procedure is not None and any(step.db.strip() for step in procedure.steps)
+
+
+def _unit_error(code: str, message: str, uid: str) -> StageIssue:
+    """段階8の手順書そのもののエラー(手順書を作り直すので、直す先は段階8)。"""
+    return StageIssue("error", code, message, uid, fix_stage=PROCEDURE_DOC_STAGE, unit=uid)
+
+
+def _finding(
+    code: str,
+    message: str,
+    target: str | None,
+    level: FindingLevel,
+    fix_stage: int,
+    unit: str | None,
+) -> StageIssue:
+    """段階8の実装可能性チェックの警告(重要度と直す先の段階を持つ)。"""
+    return StageIssue("warning", code, message, target, level, fix_stage, unit)
+
+
+def _doc_finding(
+    code: str,
+    message: str,
+    target: str | None,
+    level: FindingLevel,
+    fix_document: DesignDocument,
+    unit: str | None = None,
+) -> StageIssue:
+    """簡易モードの段階8の警告(直す先は文書。段階は無いので`fix_stage`は段階8)。"""
+    return StageIssue(
+        "warning", code, message, target, level, PROCEDURE_DOC_STAGE, unit, fix_document
+    )
 
 
 def _error(code: str, message: str, target: str | None = None) -> StageIssue:
@@ -644,14 +1009,23 @@ STAGE_VALIDATORS: dict[int, StageValidator] = {
     5: validate_procedures,
     6: validate_logics,
     7: validate_plan,
+    8: validate_procedure_doc,
 }
+
+# 内容が無くても検証する段階。段階8の指摘は、手順書の無い単位にも段階7と設計から出るため
+VALIDATED_WITHOUT_MODEL: frozenset[int] = frozenset({PROCEDURE_DOC_STAGE})
 
 
 def validate_stage(
     stage: int, model: Mapping[str, Any] | None, sources: StageSources
 ) -> list[StageIssue]:
-    """段階の内容を検証する。内容が無い(未着手・生成中の初回)ときは指摘なし。"""
+    """段階の内容を検証する。内容が無い(未着手・生成中の初回)ときは指摘なし。
+    ただし`VALIDATED_WITHOUT_MODEL`の段階は、空の内容として検証する。"""
     validator = STAGE_VALIDATORS.get(stage)
-    if validator is None or not model:
+    if validator is None:
         return []
+    if not model:
+        if stage not in VALIDATED_WITHOUT_MODEL:
+            return []
+        model = {}
     return validator(model, sources)

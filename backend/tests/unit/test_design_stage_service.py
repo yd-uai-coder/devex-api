@@ -42,15 +42,21 @@ async def test_routes_save_approve_and_list_stage1(db_session: AsyncSession) -> 
     assert saved.state == "reviewing"
     assert approved.state == "approved"
     assert approved.approved_version == 1
-    assert [s.stage for s in stages] == [1, 2, 3, 4, 5, 6, 7]
+    assert [s.stage for s in stages] == [1, 2, 3, 4, 5, 6, 7, 8]
     assert stages[1].is_open is True
 
 
-async def test_simple_mode_project_has_no_stages(db_session: AsyncSession) -> None:
+async def test_simple_mode_project_has_only_stage8(db_session: AsyncSession) -> None:
+    """簡易モードは段階8だけを持ち(入力は4文書)、他の段階は断る。"""
     project = await create_detailed_project(db_session, mode="simple")
+    service = DesignStageService(db_session)
 
+    stages = await service.list_stages(project)
+
+    assert [(s.stage, s.mode, s.is_open) for s in stages] == [(8, "simple", False)]
+    assert stages[0].missing_inputs == ["doc:internal_design", "doc:implementation_plan"]
     with pytest.raises(DesignStagesNotAvailableError):
-        await DesignStageService(db_session).list_stages(project)
+        await service.save(project, stage=1, expected_version=None, model=MODEL)
 
 
 async def test_save_locked_stage_is_rejected(db_session: AsyncSession) -> None:

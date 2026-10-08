@@ -6,6 +6,7 @@ from app.detailed_design import (
     current_inputs,
     derive_states,
 )
+from app.detailed_design.stages import SIMPLE_DOCUMENTS, SIMPLE_STAGE_INPUTS, stage_inputs
 
 DOCS = {"requirements": 1, "external_design": 1}
 
@@ -111,3 +112,31 @@ def test_regenerated_stage_keeps_its_state_until_inputs_change() -> None:
 
     assert current[1].state == "regenerated"
     assert changed[1].state == "outdated"
+
+
+def test_simple_mode_has_only_stage8_reading_four_documents() -> None:
+    """簡易モードは段階8だけ。4文書がそろうと開き、詳細設計モードの段階の行は読まない。"""
+    assert stage_inputs("simple") == SIMPLE_STAGE_INPUTS
+    assert stage_inputs("detailed") == STAGE_INPUTS
+    docs = dict.fromkeys(SIMPLE_DOCUMENTS, 1)
+    stray = {1: _approved(1, {"doc:external_design": 1})}
+
+    views = derive_states(stray, docs, SIMPLE_STAGE_INPUTS)
+
+    assert list(views) == [8]
+    assert views[8].is_open is True
+    assert views[8].state == "not_started"
+    locked = derive_states({}, {**docs, "implementation_plan": None}, SIMPLE_STAGE_INPUTS)
+    assert locked[8].missing_inputs == ("doc:implementation_plan",)
+
+
+def test_simple_mode_stage8_is_outdated_when_a_document_is_regenerated() -> None:
+    docs = dict.fromkeys(SIMPLE_DOCUMENTS, 1)
+    fingerprint = current_inputs(
+        8, approved_stage_versions={}, doc_versions=docs, inputs=SIMPLE_STAGE_INPUTS
+    )
+    records = {8: _approved(1, fingerprint)}
+
+    assert derive_states(records, docs, SIMPLE_STAGE_INPUTS)[8].state == "approved"
+    regenerated = {**docs, "requirements": 2}
+    assert derive_states(records, regenerated, SIMPLE_STAGE_INPUTS)[8].state == "outdated"

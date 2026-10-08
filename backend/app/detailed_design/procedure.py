@@ -14,11 +14,15 @@ docs/internal_design.md 3.3節「4. 詳細設計モード」。
 - 06(処理ロジックの詳細、段階6)との紐づけは、手順の(呼び出し先, 呼ぶ関数`call`)と、段階6の
   項目の(モジュール, 関数)の一致から導く。手順の行に L-ID を持たせないので、
   段階6で関数を選んでも承認済みの段階5は書き換わらない。
+- 行の種別(`kind`)は、同期の呼び出し・非同期の呼び出し・戻り。シーケンス図(sequence.py)の矢印の
+  種類になる。種別の無い既存の行は同期の呼び出しとして読む。戻りの行は関数を呼ばないので、
+  06 との紐づけや関与表の対象にしない(`calls_function`)。
 """
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from string import ascii_lowercase
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -31,10 +35,14 @@ PROCEDURE_STAGE = 5
 # 段階2の DFD を描くグループの上限と同じ値)
 MAX_PROCEDURE_TARGETS = 5
 
+# 手順の行の種別。call = 同期の呼び出し(戻りを待つ)、async = 非同期の呼び出し(戻りを待たない)、
+# return = 戻り(呼び出し元へ値を返す)
+StepKind = Literal["call", "async", "return"]
+
 
 class ProcedureStep(BaseModel):
     """手順の表の1行。分岐の行(`is_branch`)は、`action`に条件、`branch`に結果を書き、
-    呼び出し元・呼び出し先・関数は空にする。分岐の行は、元の手順の直後に置く。"""
+    呼び出し元・呼び出し先・関数は空にする。分岐の行は、元の手順の直後に置く(種別は使わない)。"""
 
     caller: str = ""
     callee: str = ""
@@ -45,6 +53,7 @@ class ProcedureStep(BaseModel):
     db: str = ""
     branch: str = ""
     is_branch: bool = False
+    kind: StepKind = "call"
 
 
 class Procedure(BaseModel):
@@ -107,6 +116,19 @@ def is_external_actor(callee: str) -> bool:
     return "/" not in callee
 
 
+def calls_function(step: ProcedureStep) -> bool:
+    """モジュールの関数を呼ぶ行か(分岐でも戻りでもなく、呼び出し先がモジュールで、関数が空でない)。
+    06 の紐づけ・段階6の候補・段階8の参照は、この行だけから導く。"""
+    callee = step.callee.strip()
+    return (
+        not step.is_branch
+        and step.kind != "return"
+        and bool(callee)
+        and bool(step.call.strip())
+        and not is_external_actor(callee)
+    )
+
+
 def resolve_callee(callee: str, module_paths: Sequence[str]) -> str:
     """AIの書いた呼び出し先を、モジュール一覧の行のパスにそろえる。
 
@@ -124,20 +146,24 @@ def resolve_callee(callee: str, module_paths: Sequence[str]) -> str:
 def _normalize_steps(
     steps: Sequence[ProcedureStep], module_paths: Sequence[str]
 ) -> list[ProcedureStep]:
-    """下書きの行を整える。前後の空白を除き、分岐の行は呼び出しの欄を空にする。先頭の分岐の行
-    (元の手順が無い)と、全部の欄が空の行は捨てる。"""
+    """下書きの行を整える。前後の空白を除き、分岐の行は呼び出しの欄を空にして種別を同期に戻す。
+    先頭の分岐の行(元の手順が無い)と、全部の欄が空の行は捨てる。"""
     rows: list[ProcedureStep] = []
     for step in steps:
-        values = {name: str(value).strip() for name, value in step if name != "is_branch"}
+        values = {
+            name: str(value).strip() for name, value in step if name not in ("is_branch", "kind")
+        }
         if not any(values.values()):
             continue
+        kind = step.kind
         if step.is_branch:
             if not rows:
                 continue
             values.update(caller="", callee="", call="")
+            kind = "call"
         else:
             values["callee"] = resolve_callee(values["callee"], module_paths)
-        rows.append(ProcedureStep(**values, is_branch=step.is_branch))
+        rows.append(ProcedureStep(**values, is_branch=step.is_branch, kind=kind))
     return rows
 
 

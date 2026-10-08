@@ -8,6 +8,8 @@
   `merge_procedure`(`resolve_callee`)がそろえ、そろわないものは検証のエラーで人に直させる。
 - 手順番号は書かせない(並び順と分岐の印からシステムが振る。段階1の処理IDと同じ考え方)。
 - 06(処理ロジックの詳細)との紐づけは書かせない。段階6が(呼び出し先, 関数)の一致から導く。
+- 行の種別(同期・非同期・戻り)を書かせる。シーケンス図の矢印になり、戻りを呼び出しとして書く
+  誤り(入れ子が崩れる)を減らす。
 """
 
 from collections.abc import Sequence
@@ -18,7 +20,7 @@ from pydantic import BaseModel, Field
 from app.detailed_design.data_flow import ProcessSummaryRow
 from app.detailed_design.data_model import CrudCell, DfdAccess
 from app.detailed_design.function_list import FunctionRow
-from app.detailed_design.procedure import ProcedureDraft, ProcedureStep
+from app.detailed_design.procedure import ProcedureDraft, ProcedureStep, StepKind
 from app.detailed_design.prompt_rules import NAMING_RULES
 from app.detailed_design.structure import ModuleRow
 
@@ -44,6 +46,12 @@ class GeneratedStep(BaseModel):
     db: str = Field(description="DB 操作(例: reservations R)。無ければ —")
     branch: str = Field(description="分岐・例外。分岐の行はその結果(例: NotFoundError → 404)")
     is_branch: bool = Field(description="分岐の行なら true(元の手順の直後に置く)")
+    kind: StepKind = Field(
+        default="call",
+        description="行の種別。call = 同期の呼び出し(戻りを待つ)、async = 非同期の呼び出し"
+        "(バックグラウンドの起動など、戻りを待たない)、return = 戻り(呼び出し元へ値を返す。"
+        "呼び出し先には、値を受け取る呼び出し元を書く)。分岐の行は call",
+    )
 
 
 class ProcedureGenerationOutput(BaseModel):
@@ -68,6 +76,9 @@ PROCEDURE_SYSTEM_PROMPT = (
     "- 分岐・例外は、元の手順の直後に is_branch=true の行として置き、元の手順の branch 列には"
     "『1a へ』のように書く。分岐の行は action に条件、branch に結果を書き、caller・callee・call は"
     "空にする\n"
+    "- kind は呼び出しなら call、戻りを待たない起動なら async にする。利用者や呼び出し元へ値を"
+    "返す行は return にし、呼び出し先にはその受け取り手(呼び出し元)を書く。戻りの行は call を空に"
+    "する。戻りは、呼ばれた側が値を返すことを明示したいときだけ書けばよい(書かなければ図で補う)\n"
     "- 手順番号は書かない(システムが振る)。分岐の行の番号は、元の手順の番号に a, b を付けたもの"
     "になる\n"
     "- DB 操作は『テーブル名 C/R/U/D』の形で書き、【CRUD図】【DFDの読み書き】と食い違わない"

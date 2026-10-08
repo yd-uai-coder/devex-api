@@ -1,9 +1,11 @@
-"""E2E用の偽LLM(`E2eFakeLLM`)の、詳細設計モードの段階1〜7の出力の契約テスト。
+"""E2E用の偽LLM(`E2eFakeLLM`)の、詳細設計モードの段階1〜8の出力の契約テスト。
 
 ブラウザの E2E(devex-ui の `e2e/detailed-design-flow.spec.ts`)と同じ順に、偽LLM で段階1〜7を
-生成し、図を配置して承認し、段階を承認して、zip を作る。偽LLM の出力が本物の検証(段階の
-`validate_stage`・図の構造検証)を通ることを、ブラウザを使わずに固定する。E2E が落ちたとき、原因が
-画面にあるのか偽LLM の出力にあるのかを、このテストで切り分けられる。
+生成し、図を配置して承認し、段階を承認して、zip を作る。続けて段階8の全単位の手順書を生成し、
+承認して、実装手順書の zip を作る(E2E は段階8の生成までで、承認と zip はこのテストだけが通す)。
+偽LLM の出力が本物の検証(段階の `validate_stage`・図の構造検証)を通ることを、ブラウザを使わずに
+固定する。E2E が落ちたとき、原因が画面にあるのか偽LLM の出力にあるのかを、このテストで
+切り分けられる。
 
 SUT: E2eFakeLLM の構造化出力(app/ai/llm/fake.py)と、それを受ける生成・検証・承認・出力の経路
      (DesignStageGenerationService・DesignStageService・UmlDiagramService・
@@ -93,7 +95,7 @@ async def _approve_stage(session: AsyncSession, project: Project, stage: int) ->
     await stages.approve(project, stage=stage, expected_version=row.version)
 
 
-async def test_e2e_fake_outputs_pass_stages_1_to_7_and_bundle(db_session: AsyncSession) -> None:
+async def test_e2e_fake_outputs_pass_stages_1_to_8_and_bundle(db_session: AsyncSession) -> None:
     llm = E2eFakeLLM()
     project = await _create_project(db_session, llm)
     stages = DesignStageService(db_session)
@@ -142,7 +144,10 @@ async def test_e2e_fake_outputs_pass_stages_1_to_7_and_bundle(db_session: AsyncS
     await _generate(db_session, project, 7, llm)
     await _approve_stage(db_session, project, 7)
 
-    assert [s.state for s in await stages.list_stages(project)] == ["approved"] * 7
+    # 段階8(実装手順書)は開いているが、まだ生成も保存もしていない
+    assert [s.state for s in await stages.list_stages(project)] == ["approved"] * 7 + [
+        "not_started"
+    ]
     bundle = await DetailedDesignExportService(db_session).bundle(project)
     names = zipfile.ZipFile(io.BytesIO(bundle.content)).namelist()
     assert {
@@ -152,3 +157,14 @@ async def test_e2e_fake_outputs_pass_stages_1_to_7_and_bundle(db_session: AsyncS
         "implementation_plan.md",
     } <= set(names)
     assert any(name.startswith("diagrams/") for name in names)
+
+    # 段階8: 段階7の全単位(M-01-T01〜T03)の手順書を生成して承認し、実装手順書の zip を作る
+    units = ["M-01-T01", "M-01-T02", "M-01-T03"]
+    await _generate(db_session, project, 8, llm, unit_ids=units)
+    drafted = await stages.read(project.id, 8)
+    assert drafted.model is not None
+    assert [u["unit_id"] for u in drafted.model["units"]] == units
+    await _approve_stage(db_session, project, 8)
+    procedure = await DetailedDesignExportService(db_session).bundle_procedure(project)
+    names = zipfile.ZipFile(io.BytesIO(procedure.content)).namelist()
+    assert {"index.md", "implementation_procedure.html", "ai/M-01-T02.md"} <= set(names)

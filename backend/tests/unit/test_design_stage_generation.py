@@ -848,7 +848,8 @@ async def test_stage5_route_generates_pending_procedure_and_can_be_approved(
     stage5 = await service.read(project_id, 5)
 
     assert accepted.generation_status == "generating"
-    assert tasks.tasks[0].args[-2:] == (None, None)  # 対象の指定なし → 実行時に手順の無い処理を選ぶ
+    # 対象の指定なし → 実行時に手順の無い処理を選ぶ
+    assert tasks.tasks[0].args[3:] == (None, None, None)
     assert STAGE_GENERATORS[5] is generate_procedures
     assert llm.structured_output_calls == [ProcedureGenerationOutput]
     [prompt] = prompts
@@ -889,7 +890,7 @@ async def test_stage5_regenerates_only_requested_procedure(db_session: AsyncSess
     stage5 = await DesignStageService(db_session).read(project_id, 5)
 
     assert first.structured_output_calls == [ProcedureGenerationOutput]
-    assert tasks.tasks[0].args[-2] == ["F-01"]
+    assert tasks.tasks[0].args[3] == ["F-01"]
     assert stage5.state == "regenerated"
     assert stage5.model is not None
     f01, f02 = stage5.model["procedures"]
@@ -1017,7 +1018,7 @@ async def test_stage6_route_generates_pending_logic_and_can_be_approved(
     stage6 = await service.read(project_id, 6)
 
     assert accepted.generation_status == "generating"
-    assert tasks.tasks[0].args[-2:] == (None, None)
+    assert tasks.tasks[0].args[3:] == (None, None, None)
     assert STAGE_GENERATORS[6] is generate_logics
     assert llm.structured_output_calls == [LogicGenerationOutput]
     [prompt] = prompts
@@ -1061,7 +1062,7 @@ async def test_stage6_regenerates_only_requested_logic(db_session: AsyncSession)
     )
     stage6 = await DesignStageService(db_session).read(project_id, 6)
 
-    assert tasks.tasks[0].args[-1] == [(ROUTE, "create_reservation")]
+    assert tasks.tasks[0].args[4] == [(ROUTE, "create_reservation")]
     assert stage6.state == "regenerated"
     assert stage6.model is not None
     target, other = stage6.model["logics"]

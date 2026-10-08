@@ -40,7 +40,7 @@ class DesignStage(Base):
     __tablename__ = "design_stages"
     __table_args__ = (
         UniqueConstraint("project_id", "stage", name="uq_design_stages_project_stage"),
-        CheckConstraint("stage BETWEEN 1 AND 7", name="ck_design_stages_stage_range"),
+        CheckConstraint("stage BETWEEN 1 AND 8", name="ck_design_stages_stage_range"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)

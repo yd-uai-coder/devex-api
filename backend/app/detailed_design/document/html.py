@@ -9,8 +9,9 @@ docs/external_design.md 2.7節「詳細設計書の出力」。HTML は読むた
   `js`のクラスを付けたときだけ)。
 
 文字はすべて`html.escape`で書く。例外は図の SVG だけで、これはそのまま埋め込む。SVG は自前の
-出力エンジン(app/uml/export/svg.py)が書いたもので、要素の名前などの文字はエンジンの中で
-エスケープ済みのため(ここでもう一度エスケープすると、図ではなく SVG の文字列が表示される)。
+出力エンジン(app/uml/export/svg.py、05 のシーケンス図は app/detailed_design/sequence_svg.py)が
+書いたもので、要素の名前などの文字はエンジンの中でエスケープ済みのため(ここでもう一度エスケープ
+すると、図ではなく SVG の文字列が表示される)。
 
 段階7の実装計画は、別の HTML(`to_plan_html`)にする。CSS は詳細設計書と同じものを使う。
 """
@@ -25,6 +26,8 @@ from app.detailed_design.document.source import (
     RenderedDiagram,
 )
 from app.detailed_design.document.views import (
+    UNIT_HEADERS,
+    UNIT_KIND_LABELS,
     CrudMark,
     anchor,
     crud_matrix,
@@ -36,10 +39,20 @@ from app.detailed_design.document.views import (
     logic_ids,
     logic_views,
     main_step_count,
+    procedure_sequence,
     procedure_steps,
+    step_kind_label,
 )
-from app.detailed_design.plan import PLAN_STAGE, Milestone, milestone_id
+from app.detailed_design.plan import (
+    PLAN_STAGE,
+    Milestone,
+    milestone_functions,
+    milestone_id,
+    task_id,
+)
 from app.detailed_design.procedure import step_id
+from app.detailed_design.sequence import SequenceDiagram
+from app.detailed_design.sequence_svg import to_sequence_svg
 
 UNAPPROVED_TEXT = (
     "未承認 ── 段階{stage}が承認されていません。承認すると、この章が組み立てられます。"
@@ -230,11 +243,11 @@ def to_html(source: DocumentSource, chapters: Sequence[Chapter] = CHAPTERS) -> s
         f'<nav class="toc">{toc}</nav></header>'
     )
     body = "".join(_chapter(source, c) for c in chapters)
-    return _page(f"詳細設計書: {source.title}", header + body)
+    return page(f"詳細設計書: {source.title}", header + body)
 
 
-def _page(title: str, content: str) -> str:
-    """自己完結の HTML の1ページ(詳細設計書と実装計画で共通)。"""
+def page(title: str, content: str) -> str:
+    """自己完結の HTML の1ページ(詳細設計書・実装計画・実装手順書で共通)。"""
     return (
         '<!doctype html>\n<html lang="ja"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -457,6 +470,7 @@ def _procedures(source: DocumentSource) -> str:
             [
                 e(s.number),
                 "" if s.step.is_branch else f"{e(s.step.caller)} → {mono(s.step.callee)}",
+                e(step_kind_label(s.step)),
                 mono(s.step.call)
                 + (f" {badge(s.logic_id, f'詳細 {s.logic_id} ↓')}" if s.logic_id else ""),
                 e(s.step.data),
@@ -481,6 +495,7 @@ def _procedures(source: DocumentSource) -> str:
                     [
                         "No",
                         "呼び出し元 → 呼び出し先",
+                        "種別",
                         "関数",
                         "渡すデータ",
                         "処理内容",
@@ -492,10 +507,22 @@ def _procedures(source: DocumentSource) -> str:
                     label=f"{p.function_id} の手順",
                     row_attrs=attrs,
                 )
-                + note,
+                + note
+                + _sequence_figure(p.function_id, procedure_sequence(p, source.modules)),
             )
         )
     return "".join(parts)
+
+
+def _sequence_figure(function_id: str, diagram: SequenceDiagram) -> str:
+    """05 の処理のシーケンス図(手順の表から導いた SVG。参加者が無ければ出さない)。"""
+    if not diagram.participants:
+        return ""
+    return (
+        '<p class="muted">シーケンス図(手順の表から導いた図。直すのは表)</p>'
+        f'<div class="figure" role="img" aria-label="{e(function_id)} のシーケンス図">'
+        f"{to_sequence_svg(diagram)}</div>"
+    )
 
 
 def _logics(source: DocumentSource) -> str:
@@ -576,22 +603,34 @@ _BODIES = {
 
 
 def _milestone(index: int, milestone: Milestone) -> str:
-    """マイルストーン1つの見出し(M-ID のアンカー)とタスクの表。"""
+    """マイルストーン1つの見出し(M-ID のアンカー)と単位の表(行ごとに単位の ID のアンカー)。
+    依存先は単位の ID のバッジで、その単位の行へ移る。"""
     mid = milestone_id(index)
     heading = f"{mid} {milestone.name}({milestone.priority})"
     goal = f"<p>ゴール: {e(milestone.goal)}</p>" if milestone.goal else ""
+    ids = [task_id(index, t_index) for t_index in range(len(milestone.tasks))]
     rows = [
-        [e(t.area), e(t.title), _modules(t.modules), e(", ".join(t.function_ids))]
-        for t in milestone.tasks
+        [
+            mono(uid),
+            e(UNIT_KIND_LABELS[t.kind]),
+            e(t.title),
+            e(", ".join(t.function_ids)),
+            "".join(badge(d.strip()) for d in t.depends_on if d.strip()),
+            _modules(t.modules),
+            _modules(t.config_files),
+        ]
+        for uid, t in zip(ids, milestone.tasks, strict=True)
     ]
+    row_attrs = [f' id="{e(anchor(uid))}"' for uid in ids]
     return f'<h3 id="{e(anchor(mid))}">{e(heading)}</h3>{goal}' + table(
-        ["区分", "タスク", "作成・変更するファイル(例)", "処理"], rows, label=f"{mid} のタスク"
+        UNIT_HEADERS, rows, label=f"{mid} の単位", row_attrs=row_attrs
     )
 
 
 def to_plan_html(source: DocumentSource) -> str:
-    """実装計画の HTML の全文(段階7。未承認なら「未承認」とだけ書く)。M-ID はアンカーを持ち、
-    マイルストーン一覧と処理の割り当ての M-ID からマイルストーンのタスクへ移れる。"""
+    """実装計画の HTML の全文(段階7。未承認なら「未承認」とだけ書く)。M-ID と単位の ID は
+    アンカーを持ち、マイルストーン一覧の M-ID からマイルストーンへ、処理の割り当て・依存の
+    単位の ID から単位の行へ移れる。"""
     plan = source.plan
     header = (
         '<header style="display:grid;gap:12px"><div class="muted">Devex ／ 実装計画書</div>'
@@ -601,7 +640,7 @@ def to_plan_html(source: DocumentSource) -> str:
     )
     title = f"実装計画書: {source.title}"
     if source.status(PLAN_STAGE) != "approved" or plan is None:
-        return _page(title, header + f'<p class="status">{e(PLAN_UNAPPROVED_TEXT)}</p>')
+        return page(title, header + f'<p class="status">{e(PLAN_UNAPPROVED_TEXT)}</p>')
 
     def section(number: str, heading: str, body: str) -> str:
         return (
@@ -618,7 +657,7 @@ def to_plan_html(source: DocumentSource) -> str:
                 e(m.name),
                 e(m.priority),
                 e(m.goal),
-                e(", ".join(m.function_ids)),
+                e(", ".join(milestone_functions(m))),
             ]
             for i, m in enumerate(plan.milestones)
         ],
@@ -626,12 +665,12 @@ def to_plan_html(source: DocumentSource) -> str:
     )
     details = "".join(_milestone(i, m) for i, m in enumerate(plan.milestones))
     assignment = table(
-        ["処理ID", "名称", "マイルストーン"],
+        ["処理ID", "名称", "単位"],
         [
             [
                 e(row.function_id),
                 e(row.name),
-                "".join(badge(m) for m in row.milestones) or '<span class="status">未計画</span>',
+                "".join(badge(u) for u in row.units) or '<span class="status">未計画</span>',
             ]
             for row in function_plans(plan, source.function_list)
         ],
@@ -646,7 +685,7 @@ def to_plan_html(source: DocumentSource) -> str:
     risks = table(
         ["リスク", "対策"], [[e(r.risk), e(r.mitigation)] for r in plan.risks], label="想定リスク"
     )
-    return _page(
+    return page(
         title,
         header
         + section("1", "マイルストーン", overview + details)

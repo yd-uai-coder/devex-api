@@ -10,7 +10,16 @@ from app.detailed_design.document import (
     RenderedDiagram,
     document_source,
 )
+from app.detailed_design.procedure_basis import procedure_basis
+from app.detailed_design.procedure_doc_drafting import (
+    GeneratedFinding,
+    GeneratedTestPoint,
+    GeneratedUnitFile,
+    ProcedureDocGenerationOutput,
+)
+from app.detailed_design.procedure_output import ProcedureOutputSource, procedure_output_source
 from app.detailed_design.stages import StageState
+from app.detailed_design.validation import StageIssue
 from app.models.project import Project
 from app.models.user import User
 from app.repositories.generated_document import GeneratedDocumentRepository
@@ -267,14 +276,17 @@ def plan_model(
     module: str = "app/api/routes/reservations.py",
 ) -> dict:
     """段階7の検証を通る横断事項と実装計画(既定の横断事項4項目・マイルストーン1つ・リスク1件)。
-    `function_list_model()`の F-01 と`module_list_model()`のパスを参照する。`function_ids`に
-    機能一覧に無い処理IDを渡すと、検証のエラーになる。`module`(ファイルの例)は検証しない。"""
+
+    マイルストーンには、基盤の単位 M-01-T01(環境・設定のファイル`Dockerfile`)と、それに依存する
+    機能の単位 M-01-T02(F-01、モジュール`module`)を置く。`function_list_model()`の F-01 と
+    `module_list_model()`のパスを参照する。`function_ids`に機能一覧に無い処理IDを、`module`に
+    モジュール一覧に無いパスを渡すと、検証のエラーになる。"""
     return {
         "crosscutting": [
             {
                 "topic": "例外と HTTP",
                 "policy": "ドメイン例外を共通の形に変換する",
-                "modules": [module],
+                "modules": ["app/api/routes/reservations.py"],
             },
             {"topic": "認証", "policy": "JWT で利用者を確かめる", "modules": []},
             {"topic": "トランザクション", "policy": "commit はサービスだけ", "modules": []},
@@ -285,14 +297,23 @@ def plan_model(
                 "name": "予約の登録",
                 "goal": "予約を登録できる",
                 "priority": "Must",
-                "function_ids": ["F-01"] if function_ids is None else function_ids,
                 "tasks": [
                     {
-                        "area": "バックエンド",
-                        "title": "予約の API を作る",
-                        "modules": [module],
+                        "kind": "base",
+                        "title": "開発環境を用意する",
+                        "function_ids": [],
+                        "depends_on": [],
+                        "modules": [],
+                        "config_files": ["Dockerfile"],
+                    },
+                    {
+                        "kind": "feature",
+                        "title": "予約を登録する",
                         "function_ids": ["F-01"] if function_ids is None else function_ids,
-                    }
+                        "depends_on": ["M-01-T01"],
+                        "modules": [module],
+                        "config_files": [],
+                    },
                 ],
             }
         ],
@@ -384,3 +405,99 @@ async def create_document_project(session: AsyncSession) -> Project:
     await stages.save(project, stage=7, expected_version=None, model=plan_model())
     await stages.approve(project, stage=7, expected_version=1)
     return project
+
+
+def procedure_doc_model(
+    *,
+    unit_id: str = "M-01-T02",
+    title: str = "予約を登録する",
+    module: str = "app/api/routes/reservations.py",
+) -> dict:
+    """`plan_model()`の機能の単位 M-01-T02 の手順書(段階8。検証を通る)。ファイルはモジュール
+    `module`とテスト1本。`unit_id`・`title`を段階7と違うものにすると検証のエラー(UNIT_MISMATCH)、
+    `module`をモジュール一覧に無いパスにすると警告(UNKNOWN_FILE)になる。"""
+    return {
+        "units": [
+            {
+                "unit_id": unit_id,
+                "title": title,
+                "purpose": "予約を登録できるようにする",
+                "files": [
+                    {"path": module, "kind": "module", "responsibility": "予約の API"},
+                    {"path": "tests/test_reservations.py", "kind": "test"},
+                ],
+                "notes": [],
+                "tests": [
+                    {
+                        "viewpoint": "予約を登録できる",
+                        "sut": "create_reservation",
+                        "driver": "API を呼ぶテスト",
+                        "stub": "スタブ不要",
+                    }
+                ],
+                "gwt": [],
+                "verify": ["テストが通る"],
+                "findings": [
+                    {
+                        "level": "critical",
+                        "target": "07章 例外と HTTP",
+                        "message": "重複したときの応答が無い",
+                        "fix_stage": 7,
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def procedure_doc_output(**overrides) -> ProcedureDocGenerationOutput:
+    """段階8の手順書1つ分の構造化出力(FakeLLM が返す)。`plan_model()`の M-01-T02 のモジュールを
+    書き、最重要の指摘を1件持つ。`overrides`で欄を差し替える。"""
+    values = {
+        "purpose": "予約を登録できる",
+        "files": [
+            GeneratedUnitFile(
+                path="app/api/routes/reservations.py",
+                kind="module",
+                responsibility="予約の API",
+                basis="段階4",
+            )
+        ],
+        "notes": ["マイグレーションを1本足す"],
+        "tests": [
+            GeneratedTestPoint(viewpoint="登録できる", sut="POST", driver="結合", stub="スタブ不要")
+        ],
+        "gwt": ["Given 未登録 / When 登録 / Then 1件増える"],
+        "verify": ["テストが通る"],
+        "findings": [
+            GeneratedFinding(level="critical", target="段階3", message="項目が無い", fix_stage=3)
+        ],
+    }
+    return ProcedureDocGenerationOutput(**(values | overrides))
+
+
+# 要件定義書の 1.4節(MoSCoW)。手順書の対象外(Should / Could / Won't)を読むテストで使う
+REQUIREMENTS_WITH_SCOPE = (
+    "# 要件定義書\n\n## 1.4 機能要件(MoSCoW優先度)\n\n"
+    "- **Must have(必須)**: 予約の登録\n- **Should have(重要)**: 予約の履歴\n"
+    "- **Could have(あると良い)**: \n- **Won't have(見送り)**: 決済\n\n## 1.5 非機能要件\n"
+)
+
+
+def sample_procedure_source(
+    *,
+    state: StageState = "approved",
+    model: dict | None = None,
+    issues: tuple[StageIssue, ...] = (),
+) -> ProcedureOutputSource:
+    """手順書の出力の入力(段階1〜7は`document_stage_models()`、段階8は`procedure_doc_model()`)。
+    M-01-T01(基盤)は手順書が無く、M-01-T02(機能)は最重要の AI の指摘を1件持つ。md・HTML の
+    組み立てのテストで使う。`issues`で段階8の検証の指摘を足せる。"""
+    return procedure_output_source(
+        "予約システム",
+        state,
+        procedure_basis("detailed", document_stage_models(), {}),
+        procedure_doc_model() if model is None else model,
+        issues,
+        REQUIREMENTS_WITH_SCOPE,
+    )

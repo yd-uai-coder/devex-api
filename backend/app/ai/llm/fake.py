@@ -41,6 +41,14 @@ from app.detailed_design.plan_drafting import (
     GeneratedTask,
     PlanGenerationOutput,
 )
+from app.detailed_design.procedure_doc_drafting import (
+    GeneratedFinding,
+    GeneratedSimpleFinding,
+    GeneratedTestPoint,
+    GeneratedUnitFile,
+    ProcedureDocGenerationOutput,
+    SimpleProcedureDocGenerationOutput,
+)
 from app.detailed_design.procedure_drafting import GeneratedStep, ProcedureGenerationOutput
 from app.detailed_design.structure_drafting import GeneratedModuleRow, ModuleListGenerationOutput
 from app.schemas.generation import HearingCompletionCheck
@@ -80,8 +88,8 @@ _DOC_TYPE_LABELS: dict[str, str] = {
     "implementation_plan": "実装計画書",
 }
 
-# 内部設計書は、内部設計書プロンプトが指示する固定形式の見出し(3.2節のテーブル・処理別データフロー)
-# を含めて返す。
+# 内部設計書は、内部設計書プロンプトが指示する固定形式の見出し(3.2節のテーブル・3.3節のAPI一覧・
+# モジュール一覧・処理別データフロー・3.4節)を含めて返す。簡易モードの実装手順書が読むため。
 _INTERNAL_DESIGN_REPLY = (
     "# 内部設計書(E2E Fake)\n\n"
     "## 3.1 技術スタック選定・アーキテクチャ方針\n- api / service / repository の3層構成\n\n"
@@ -89,10 +97,36 @@ _INTERNAL_DESIGN_REPLY = (
     "### テーブル: reservations\n| カラム名 | データ型 | 制約 | 説明 |\n|---|---|---|---|\n"
     "| id | UUID | PK | 予約ID |\n\n"
     "## 3.3 バックエンド処理・モジュール設計\n- api → service → repository\n\n"
+    "| メソッド | パス | 概要 |\n|---|---|---|\n"
+    "| POST | /api/v1/reservations | 予約を登録する(ルート → サービス) |\n\n"
+    "### モジュール一覧\n| パス | 層 | 責務 | 主な依存先 |\n|---|---|---|---|\n"
+    "| app/main.py | 起動 | アプリの組み立て | app/api/reservations.py |\n"
+    "| app/api/reservations.py | api | 予約のルート | app/services/reservation.py |\n"
+    "| app/services/reservation.py | service | 予約の検証と保存 | — |\n\n"
     "### 処理別データフロー\n\n"
     "#### DF-1: POST /api/v1/reservations\n| 元 | データ | 変換 | 先 |\n|---|---|---|---|\n"
     "| 利用者 | 予約リクエスト | 検証して保存 | reservations |\n"
-    "- データ項目: 予約リクエスト(item_id, start_at)\n"
+    "- データ項目: 予約リクエスト(item_id, start_at)\n\n"
+    "## 3.4 例外処理・エラーハンドリング・ログ設計\n"
+    "- エラーは {code, message} の形で返す\n"
+)
+
+# 実装計画書は、実装計画書プロンプトが指示する固定形式の WBS(4.2節。縦割り・ID 付き)で返す。
+# 簡易モードの実装手順書が作業単位として読むため、_INTERNAL_DESIGN_REPLY の DF・モジュールに
+# そろえる。
+_IMPLEMENTATION_PLAN_REPLY = (
+    "# 実装計画書(E2E Fake)\n\n"
+    "## 4.1 開発フェーズ分割・マイルストーン\n### フェーズ1(M-01) ── 【Must】\n\n"
+    "## 4.2 タスク分解（WBS）\n"
+    "### M-01: 予約の登録 ── 【Must】\n- ゴール: 備品を予約できる\n"
+    "- [ ] M-01-T01 [基盤] 開発環境を用意する\n"
+    "  - 処理: なし\n  - 依存: なし\n  - モジュール: app/main.py\n"
+    "  - 環境・設定: docker-compose.yml\n"
+    "- [ ] M-01-T02 [機能] 予約を登録する\n"
+    "  - 処理: DF-1\n  - 依存: M-01-T01\n"
+    "  - モジュール: app/api/reservations.py, app/services/reservation.py\n"
+    "  - 環境・設定: なし\n\n"
+    "## 4.3 開発環境・CI/CD・事前準備事項\n- Docker Compose で API と DB を起動する\n"
 )
 
 # 外部設計書は、詳細設計モードの段階1(機能一覧)がAPI一覧(2.6節)を読むため、外部設計書
@@ -300,6 +334,7 @@ _UML_OUTPUTS[ProcedureGenerationOutput] = ProcedureGenerationOutput(
             db="—",
             branch="—",
             is_branch=False,
+            kind="return",
         ),
     ],
 )
@@ -319,7 +354,7 @@ _UML_OUTPUTS[LogicGenerationOutput] = LogicGenerationOutput(
 )
 
 # 詳細設計モードの段階7(横断事項と実装計画)の下書き。段階1の2処理(F-01・F-02)と、
-# 段階4のモジュール一覧のパスにそろえる
+# 段階4のモジュール一覧のパスにそろえる。基盤の単位 M-01-T01 の後に、処理ごとの機能の単位を置く
 _UML_OUTPUTS[CrossCuttingGenerationOutput] = CrossCuttingGenerationOutput(
     crosscutting=[
         GeneratedCrossCutting(
@@ -334,19 +369,106 @@ _UML_OUTPUTS[PlanGenerationOutput] = PlanGenerationOutput(
             name="[E2E Fake] 予約の登録と一覧",
             goal="予約を登録して一覧で確かめられる",
             priority="Must",
-            function_ids=["F-01", "F-02"],
             tasks=[
                 GeneratedTask(
-                    area="バックエンド",
-                    title="予約の API とサービスを作る",
+                    kind="base",
+                    title="開発環境を用意する",
+                    function_ids=[],
+                    depends_on=[],
+                    modules=[],
+                    config_files=["Dockerfile", "docker-compose.yml"],
+                ),
+                GeneratedTask(
+                    kind="feature",
+                    title="予約を登録する",
+                    function_ids=["F-01"],
+                    depends_on=["M-01-T01"],
                     modules=["app/api/routes/reservations.py", "app/services/reservation.py"],
-                    function_ids=["F-01", "F-02"],
+                    config_files=[],
+                ),
+                GeneratedTask(
+                    kind="feature",
+                    title="予約の一覧を見る",
+                    function_ids=["F-02"],
+                    depends_on=["M-01-T02"],
+                    modules=["app/api/routes/reservations.py", "app/services/reservation.py"],
+                    config_files=[],
                 ),
             ],
         )
     ],
     environment="[E2E Fake] Python 3.13・PostgreSQL・GitHub Actions",
     risks=[GeneratedRisk(risk="[E2E Fake] 予約の重複", mitigation="一意制約で防ぐ")],
+)
+
+# 段階8(実装手順書)の手順書。どの単位にも同じ手順書を返す。ファイルは段階4のモジュール一覧
+# (詳細設計モード)・内部設計書のモジュール一覧(簡易モード)のパスにそろえる。指摘は軽微な1件だけに
+# する(最重要があると、画面で承認の前に確認が挟まるため)。
+_PROCEDURE_DOC_TESTS = [
+    GeneratedTestPoint(
+        viewpoint="[E2E Fake] 予約を登録すると一覧に出る",
+        sut="POST /api/v1/reservations",
+        driver="結合テスト(HTTP クライアントで呼ぶ)",
+        stub="スタブ不要 ── テスト用の DB を使う",
+    )
+]
+_UML_OUTPUTS[ProcedureDocGenerationOutput] = ProcedureDocGenerationOutput(
+    purpose="[E2E Fake] 予約を登録して一覧で確かめられる",
+    files=[
+        GeneratedUnitFile(
+            path="app/services/reservation.py",
+            kind="module",
+            responsibility="[E2E Fake] 予約の登録と一覧",
+            basis="段階4",
+        ),
+        GeneratedUnitFile(
+            path="app/api/routes/reservations.py",
+            kind="module",
+            responsibility="[E2E Fake] 予約の API",
+            basis="段階4",
+        ),
+    ],
+    notes=["[E2E Fake] サービスを先に書き、ルートから呼ぶ"],
+    tests=_PROCEDURE_DOC_TESTS,
+    gwt=["[E2E Fake] Given 予約が無い / When 登録する / Then 一覧に1件出る"],
+    verify=["[E2E Fake] テストが通る"],
+    findings=[
+        GeneratedFinding(
+            level="minor",
+            target="07章 ログ",
+            message="[E2E Fake] 登録のログの項目が決まっていない",
+            fix_stage=7,
+        )
+    ],
+)
+_UML_OUTPUTS[SimpleProcedureDocGenerationOutput] = SimpleProcedureDocGenerationOutput(
+    purpose="[E2E Fake] 予約を登録できる",
+    files=[
+        GeneratedUnitFile(
+            path="app/services/reservation.py",
+            kind="module",
+            responsibility="[E2E Fake] 予約の検証と保存",
+            basis="内部設計書 3.3",
+        ),
+        GeneratedUnitFile(
+            path="app/api/reservations.py",
+            kind="module",
+            responsibility="[E2E Fake] 予約のルート",
+            basis="内部設計書 3.3",
+        ),
+    ],
+    notes=["[E2E Fake] サービスを先に書き、ルートから呼ぶ"],
+    tests=_PROCEDURE_DOC_TESTS,
+    gwt=["[E2E Fake] Given 予約が無い / When 登録する / Then 1件保存される"],
+    verify=["[E2E Fake] テストが通る"],
+    findings=[
+        GeneratedSimpleFinding(
+            level="minor",
+            target="3.4",
+            message="[E2E Fake] 登録のログの項目が決まっていない",
+            fix_document="internal_design",
+        )
+    ],
 )
 
 _HEARING_REPLY = "[E2E Fake] 承知しました。次に、想定している主なユーザー層を教えてください。"
@@ -432,6 +554,8 @@ class E2eFakeLLM:
                     return _INTERNAL_DESIGN_REPLY
                 if doc_type == "external_design":
                     return _EXTERNAL_DESIGN_REPLY
+                if doc_type == "implementation_plan":
+                    return _IMPLEMENTATION_PLAN_REPLY
                 label = _DOC_TYPE_LABELS[doc_type]
                 return f"# {label}(E2E Fake)\n\nこれはE2Eテスト用に生成されたダミーの{label}です。"
         if "レビュアー" in system_text:
