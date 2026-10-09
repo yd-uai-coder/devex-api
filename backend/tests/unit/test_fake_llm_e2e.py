@@ -3,42 +3,55 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from app.ai.llm.fake import E2eFakeLLM
 from app.detailed_design.plan import unit_ids
 from app.detailed_design.simple_procedure import parse_wbs
-from app.schemas.generation import HearingCompletionCheck
+from app.hearing import POINT_DEFS, JudgedPoint, initial_states, is_sufficient, merge_judgement
+from app.schemas.hearing import HearingPointsJudgement
 from app.services.doc_generator_service import _DOC_TYPE_PROMPTS, _SELF_DIAGNOSIS_SYSTEM_PROMPT
 
 
-async def _completion(llm: E2eFakeLLM, *, human_message_count: int) -> HearingCompletionCheck:
+async def _judge(llm: E2eFakeLLM, *, human_message_count: int) -> HearingPointsJudgement:
     messages = [SystemMessage(content="dummy")]
-    messages += [HumanMessage(content=f"turn {i}") for i in range(human_message_count)]
-    messages.append(HumanMessage(content="completion check prompt"))  # 末尾は常に判定プロンプト自身
-    structured = llm.with_structured_output(HearingCompletionCheck)
+    messages += [HumanMessage(content=f"[#{i + 1}] turn {i}") for i in range(human_message_count)]
+    messages.append(HumanMessage(content="points judge prompt"))  # 末尾は常に判定プロンプト自身
+    structured = llm.with_structured_output(HearingPointsJudgement)
     result = await structured.ainvoke(messages)
-    assert isinstance(result, HearingCompletionCheck)
+    assert isinstance(result, HearingPointsJudgement)
     return result
 
 
-async def test_insufficient_with_only_intake_message() -> None:
-    result = await _completion(E2eFakeLLM(), human_message_count=1)
+def _sufficient(result: HearingPointsJudgement) -> bool:
+    """chat_serviceと同じく、表に取り込んでからコードで完了を判定する(根拠の番号はidとみなす)。"""
+    judged = [
+        JudgedPoint(p.key, p.status, p.summary, tuple(str(n) for n in p.evidence))
+        for p in result.points
+    ]
+    return is_sufficient(merge_judgement(initial_states(), judged), result.scale)
 
-    assert result.is_sufficient is False
+
+async def test_insufficient_with_only_intake_message() -> None:
+    result = await _judge(E2eFakeLLM(), human_message_count=1)
+
+    assert _sufficient(result) is False
 
 
 async def test_insufficient_after_one_chat_turn() -> None:
-    result = await _completion(E2eFakeLLM(), human_message_count=2)
+    result = await _judge(E2eFakeLLM(), human_message_count=2)
 
-    assert result.is_sufficient is False
+    assert _sufficient(result) is False
 
 
 async def test_insufficient_after_two_chat_turns() -> None:
-    result = await _completion(E2eFakeLLM(), human_message_count=3)
+    result = await _judge(E2eFakeLLM(), human_message_count=3)
 
-    assert result.is_sufficient is False
+    assert _sufficient(result) is False
 
 
 async def test_sufficient_after_three_chat_turns() -> None:
-    result = await _completion(E2eFakeLLM(), human_message_count=4)
+    result = await _judge(E2eFakeLLM(), human_message_count=4)
 
-    assert result.is_sufficient is True
+    assert _sufficient(result) is True
+    assert len(result.points) == len(POINT_DEFS)
+    # 根拠は番号の付いた発言のうち最後のもの
+    assert all(p.evidence == [4] for p in result.points)
 
 
 async def test_each_doc_type_prompt_produces_its_own_distinct_reply() -> None:

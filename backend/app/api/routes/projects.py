@@ -12,7 +12,7 @@ from app.api.responses import content_disposition
 from app.core.errors import AppError, BadRequestError
 from app.schemas.document import DocType, GeneratedDocumentRead
 from app.schemas.generation import HearingCompletionCheck
-from app.schemas.hearing import ChatHistoryRead, HearingMessageRequest
+from app.schemas.hearing import ChatHistoryRead, HearingMessageRequest, HearingPointsRead
 from app.schemas.project import ProjectDetail, ProjectMode, ProjectRead
 from app.services.chat_service import ChatService
 from app.services.doc_generator_service import DocGeneratorService, generate_documents
@@ -136,6 +136,14 @@ async def get_hearing_completion(
     ここではLLMを呼ばない)。is_sufficient=Trueでも生成へは自動で進まない(チャットにまとめを
     出し、ユーザーの明示的な承認を得てから/generateを呼ぶ想定)。"""
     return ChatService(session).stored_completion(current_project)
+
+
+@router.get("/{project_id}/hearing-points", response_model=HearingPointsRead)
+async def get_hearing_points(
+    session: SessionDep, current_project: CurrentProjectDep
+) -> HearingPointsRead:
+    """チャット画面の観点の表を返す(判定はチャットの送信時に行い、ここではLLMを呼ばない)。"""
+    return await ChatService(session).points_view(current_project)
 
 
 @router.post("/{project_id}/generate", status_code=status.HTTP_202_ACCEPTED)

@@ -1,19 +1,43 @@
 import json
 import time
 import uuid
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 
 import structlog
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.llm.gemini import extract_text_content, get_gemini_llm
+from app.hearing import (
+    POINT_DEFS,
+    JudgedPoint,
+    PointState,
+    Scale,
+    build_summary,
+    initial_states,
+    is_required,
+    is_sufficient,
+    merge_judgement,
+    missing_labels,
+    number_messages,
+    questions_for_reply,
+    scale_after,
+    to_state,
+)
 from app.models.chat_history import ChatHistory
+from app.models.hearing_point import HearingPoint
 from app.models.project import Project
 from app.models.prompt_template import PromptTemplate
 from app.repositories.chat_history import ChatHistoryRepository
+from app.repositories.hearing_point import HearingPointRepository
 from app.repositories.prompt_template import PromptTemplateRepository
 from app.schemas.generation import HearingCompletionCheck
+from app.schemas.hearing import (
+    EvidenceRead,
+    HearingPointRead,
+    HearingPointsJudgement,
+    HearingPointsRead,
+)
 from app.services.errors import GenerationFailedError
 from app.services.llm_retry import as_llm_error, invoke_with_retry, prompt_char_count
 
@@ -34,34 +58,26 @@ _HEARING_SYSTEM_PROMPT = (
     "設計書は画面のボタンから生成します。"
 )
 
-_COMPLETION_CHECK_PROMPT = (
-    "これまでの対話を読み、要件ヒアリングとして次の5条件を満たしているか厳格に判定してください。\n"
-    "(1) 目的・課題が明確である\n"
-    "(2) コア機能が最低1つ以上「誰が・何を・なぜ」のレベルで具体化されている\n"
-    "(3) 想定ユーザー像が把握できている\n"
-    "(4) MVPスコープ(今回作る/作らない)の認識合わせができている\n"
-    "(5) 技術的な強い制約・希望の有無を確認できている(環境設定が未入力の場合のみ必須)\n"
-    "判定ルール:\n"
-    "・各条件は、対話中の【ユーザーの発言】に明確な根拠がある場合にのみ「満たした」とみなす。"
-    "AIが提案・推測しただけの内容や、ユーザーが未回答の内容は根拠として認めない。\n"
-    "・AIの直近の発言がユーザーへの質問を含み、ユーザーがまだ回答していない場合は、"
-    "その質問に関わる条件は未達とする。\n"
-    "・「【確認したい事】」としてAIが挙げた項目のうち、ユーザーの回答が得られていないものが"
-    "1つでも残っている場合は未達とする。\n"
-    "・1つでも判断に迷う条件があれば、is_sufficientはfalseとする(早すぎる完了判定は、"
-    "ユーザーに不十分な内容で設計書を生成させてしまうため、遅すぎる判定より不利益が大きい)。\n"
-    "5条件をすべて満たした場合のみis_sufficient=trueとし、ユーザーへ提示するための構造化された要約"
-    "(summary)を書いてください。"
-    "不十分な場合は、summaryは簡潔な現状整理とし、missing_pointsに不足している観点を必ず具体的に列挙してください。"
+_POINTS_JUDGE_PROMPT = (
+    "これまでの対話を読み、下の観点の表の各観点について、状態・決めたこと・根拠を判定してください。"
+    "ユーザー側の発言の先頭にある[#n]が、その発言の番号です。\n"
+    "状態:\n"
+    "・decided: ユーザーが自分の言葉で決めた\n"
+    "・adopted: AIが出した提案・選択肢に、ユーザーが同意した\n"
+    "・not_applicable: この観点はこのシステムには要らない、とユーザーが答えた\n"
+    "・open: まだ決まっていない(聞いていない、答えていない、「決めていない」と答えた)\n"
+    "判定の規則:\n"
+    "・根拠(evidence)は、その観点を決めたユーザー側の発言の番号だけを挙げる。AIの発言は根拠にしない。\n"
+    "・AIが提案・推測しただけで、ユーザーが答えていない観点はopenにする。\n"
+    "・今の状態がopen以外の観点は、ユーザーが言い直した場合だけ変える。\n"
+    "・summaryは、決めたことを1文で簡潔に書く(openなら空でよい)。\n"
+    "・scaleは、規模の観点が決まったときだけ、personal(自分と数人)/internal(社内)/"
+    "public(誰でも登録できるサービス)のどれかにする。\n"
+    "観点の表(キー|観点|場面で聞く問いの例|今の状態|決めたこと):\n"
+    "{table}"
 )
 
-_MIN_USER_TURNS_FOR_COMPLETION = 3
-
-# ユーザー発話の回数が足りないときに完了判定へ足す不足点。対話の観点ではないので、
-# 返信の生成に渡す「まだ確認できていない観点」には含めない
-_TOO_FEW_TURNS_POINT = "対話がまだ十分に進んでいません"
-
-# 完了判定が十分になったときの返信。LLMで書かせず、判定のsummaryをそのまま見せることで、
+# 完了判定が十分になったときの返信。LLMで書かせず、観点の表から組み立てたまとめを見せることで、
 # チャットのまとめと画面の生成ボタンが同じ判定から同時に出るようにする
 _SUMMARY_REPLY_TEMPLATE = (
     "ヒアリングの内容をまとめました。\n\n{summary}\n\n"
@@ -93,6 +109,7 @@ class ChatService:
         self._session = session
         self._chat_histories = ChatHistoryRepository(session)
         self._prompt_templates = PromptTemplateRepository(session)
+        self._hearing_points = HearingPointRepository(session)
 
 
     async def list_history(self, project_id: uuid.UUID) -> list[ChatHistory]:
@@ -102,15 +119,17 @@ class ChatService:
     async def stream_reply(
         self, project: Project, *, user_message: str, llm=None
     ) -> AsyncIterator[str]:
-        """ユーザーメッセージを永続化し、先にヒアリング完了判定を行ってから、その結果に応じたAI応答を
+        """ユーザーメッセージを永続化し、先に観点の表の判定を行ってから、その結果に応じたAI応答を
         ストリーミングで返す。応答本文の断片を順次yieldし、完了後にAI応答全体をchat_historiesへ、
-        判定の結果をprojects.hearing_checkへ保存する。
+        観点の状態をhearing_pointsへ、完了判定の結果をprojects.hearing_checkへ保存する。
 
-        - 十分なら、LLMで返信を作らず、判定のsummaryを決まった形で返す(まとめと生成ボタンを
-          同じ判定から同時に出すため)。
-        - 足りなければ、判定のmissing_pointsを渡して通常の返信を作る(AIがそこを聞くように)。
-        - 判定に失敗したら「足りない」として通常の返信を作り、保存済みの判定は消す(古い判定で
-          生成ボタンが残らないように)。チャット自体は止めない。
+        - 完了は、必須の観点がすべて未決以外かどうかをコードが決める(app/hearing/points.py)。
+        - 十分なら、LLMで返信を作らず、観点の表から組み立てたまとめを決まった形で返す(まとめと
+          生成ボタンを同じ判定から同時に出すため)。
+        - 足りなければ、未決の必須の観点を渡して通常の返信を作る(AIがそこを聞くように)。
+        - 判定に失敗したら、観点の表は前のまま残し、保存済みの完了判定は消す(古い判定で生成ボタンが
+          残らないように。表があって完了判定が無い状態を、画面は「表が直近の発言を反映していない」と
+          読む)。チャット自体は止めない。
 
         completed(生成済み)のプロジェクトへ新規メッセージが送られた場合はrevising(修正中)へ
         遷移させる(ユーザーがヒアリング内容を修正し、再生成する意思を示したものとみなす)。
@@ -122,24 +141,29 @@ class ChatService:
         # 「or」の理由：テスト時に本物のGemini APIを叩かせないための差し替え(DI)
         llm = llm or get_gemini_llm()
         try:
-            check: HearingCompletionCheck | None = await self.check_completion(project, llm=llm)
+            states = await self.judge_points(project, llm=llm)
         except GenerationFailedError:
             logger.warning("hearing_check_failed")
-            check = None
-        project.hearing_check = check.model_dump() if check is not None else None
-
-        if check is not None and check.is_sufficient:
-            reply = _SUMMARY_REPLY_TEMPLATE.format(summary=check.summary.strip())
-            yield reply
-            await self._chat_histories.add(project_id=project.id, sender="ai", message=reply)
-            await self._session.commit()
-            return
+            states = None
+        if states is None:
+            project.hearing_check = None
+            questions = questions_for_reply(
+                await self._load_states(project), _as_scale(project.hearing_scale)
+            )
+        else:
+            check = _completion_from(states, project.hearing_scale)
+            project.hearing_check = check.model_dump()
+            if check.is_sufficient:
+                reply = _SUMMARY_REPLY_TEMPLATE.format(summary=check.summary.strip())
+                yield reply
+                await self._chat_histories.add(project_id=project.id, sender="ai", message=reply)
+                await self._session.commit()
+                return
+            questions = questions_for_reply(states, _as_scale(project.hearing_scale))
 
         history = await self._chat_histories.list_for_project(project.id)
         template = await self._load_template(project)
-        points = check.missing_points if check is not None else []
-        missing_points = [point for point in points if point != _TOO_FEW_TURNS_POINT]
-        messages = _build_messages(history, project, template, missing_points=missing_points)
+        messages = _build_messages(history, project, template, missing_points=questions)
 
         started = time.monotonic()
         chunks: list[str] = []
@@ -165,42 +189,97 @@ class ChatService:
         await self._chat_histories.add(project_id=project.id, sender="ai", message=full_reply)
         await self._session.commit()
 
-    async def check_completion(self, project: Project, *, llm=None) -> HearingCompletionCheck:
-        """これまでの対話履歴から、ヒアリングが完了条件(5条件)を満たしたかどうかを判定する。
-        十分と判定した場合でも、呼び出し側(ルート層)が構造化サマリを提示し、ユーザーの明示的な
-        承認を得てから設計書生成(doc_generator_service)へ進める(即座には生成しない)。
+    async def judge_points(self, project: Project, *, llm=None) -> dict[str, PointState]:
+        """これまでの対話から、観点ごとの状態と根拠をLLMに判定させ、観点の表に取り込んで保存する
+        (hearing_points・projects.hearing_scale。commitは呼び出し側)。取り込んだ後の表を返す。
+
+        LLMには利用者側の発言に番号を付けて見せ、返った番号をchat_historiesのidに直す。根拠の
+        無い「決定」は取り込まない(merge_judgement)。完了かどうかはLLMに聞かない。
 
         単発呼び出し(ストリーミングではない)のため、一時的な失敗はinvoke_with_retryでリトライする
         """
         history = await self._chat_histories.list_for_project(project.id)
         template = await self._load_template(project)
+        previous = await self._load_states(project)
+        numbered = number_messages([(str(entry.id), entry.sender) for entry in history])
+        numbers = {message_id: number for message_id, number, _ in numbered}
         messages = [
-            *_build_messages(history, project, template),
-            HumanMessage(content=_COMPLETION_CHECK_PROMPT),
+            *_build_messages(history, project, template, numbers=numbers),
+            HumanMessage(content=_POINTS_JUDGE_PROMPT.format(table=_points_table(previous))),
         ]
 
         llm = llm or get_gemini_llm()
-        structured_llm = llm.with_structured_output(HearingCompletionCheck)
+        structured_llm = llm.with_structured_output(HearingPointsJudgement)
 
-        async def _call() -> HearingCompletionCheck:
+        async def _call() -> HearingPointsJudgement:
             result = await structured_llm.ainvoke(messages)
-            assert isinstance(result, HearingCompletionCheck)
+            assert isinstance(result, HearingPointsJudgement)
             return result
 
         result = await invoke_with_retry(_call, messages=messages)
-        user_turns = sum(1 for entry in history if entry.sender == "user")
-        if result.is_sufficient and user_turns < _MIN_USER_TURNS_FOR_COMPLETION:
-            # LLMが早期にtrueと判定しても、実発話が少なすぎる間は完了させない
-            return HearingCompletionCheck(
-                is_sufficient=False,
-                summary=result.summary,
-                missing_points=[*result.missing_points, _TOO_FEW_TURNS_POINT],
+        ids_by_number = {number: message_id for message_id, number in numbers.items()}
+        judged = [
+            JudgedPoint(
+                key=point.key,
+                status=point.status,
+                summary=point.summary,
+                evidence=tuple(
+                    dict.fromkeys(ids_by_number[n] for n in point.evidence if n in ids_by_number)
+                ),
             )
-        return result
+            for point in result.points
+        ]
+        states = merge_judgement(previous, judged)
+        project.hearing_scale = scale_after(
+            states, _as_scale(project.hearing_scale), result.scale
+        )
+        await self._hearing_points.save_states(project.id, states.values())
+        return states
+
+    async def points_view(self, project: Project) -> HearingPointsRead:
+        """チャット画面の観点の表(LLMは呼ばない)。表がまだ無いプロジェクトは、全観点を未決で返す。"""
+        rows = await self._hearing_points.list_for_project(project.id)
+        states = _states_from_rows(rows)
+        scale = _as_scale(project.hearing_scale)
+        history = await self._chat_histories.list_for_project(project.id)
+        labels = {
+            message_id: label
+            for message_id, _, label in number_messages(
+                [(str(entry.id), entry.sender) for entry in history]
+            )
+        }
+        stale = bool(rows) and project.hearing_check is None
+        return HearingPointsRead(
+            scale=scale,
+            legacy=not rows and project.hearing_check is not None,
+            stale=stale,
+            is_sufficient=bool(rows) and not stale and is_sufficient(states, scale),
+            points=[
+                HearingPointRead(
+                    key=d.key,
+                    kind=d.kind,
+                    label=d.label,
+                    question=d.question,
+                    required=is_required(d.key, scale),
+                    status=states[d.key].status,
+                    summary=states[d.key].summary,
+                    evidence=[
+                        EvidenceRead(message_id=uuid.UUID(message_id), label=labels[message_id])
+                        for message_id in states[d.key].evidence
+                        if message_id in labels
+                    ],
+                )
+                for d in POINT_DEFS
+            ],
+        )
+
+    async def _load_states(self, project: Project) -> dict[str, PointState]:
+        return _states_from_rows(await self._hearing_points.list_for_project(project.id))
 
     def stored_completion(self, project: Project) -> HearingCompletionCheck:
         """直近の発言で行ったヒアリング完了判定の結果を返す(LLMは呼ばない)。まだ判定していない、
-        または直近の判定に失敗したプロジェクトは「十分でない」とする。"""
+        または直近の判定に失敗したプロジェクトは「十分でない」とする。観点の表を持たない以前の
+        プロジェクトは、保存してある5条件の判定をそのまま返す。"""
         if project.hearing_check is None:
             return HearingCompletionCheck(is_sufficient=False, summary="", missing_points=[])
         return HearingCompletionCheck.model_validate(project.hearing_check)
@@ -244,6 +323,7 @@ def _build_messages(
         template: PromptTemplate | None = None,
         *,
         missing_points: Sequence[str] = (),
+        numbers: Mapping[str, int] | None = None,
 ) -> list[BaseMessage]:
     """chat_historiesの行(sender+message)を、LangChainのメッセージ列に変換する。
 
@@ -256,8 +336,11 @@ def _build_messages(
     として注入する。ヒアリング完了判定の5条件目「技術的な制約・希望の確認」の材料として、
     表示の有無に関わらずLLMには常に渡す。
 
-    missing_points(直前の完了判定で足りなかった観点)は、返信の生成のときだけシステムプロンプトに
+    missing_points(観点の表で未決の必須の観点)は、返信の生成のときだけシステムプロンプトに
     足す。AIが次に何を聞くべきかを、完了判定と同じ基準にそろえるため。
+
+    numbers(発言のid→番号)は、観点の判定のときだけ渡す。利用者側の発言の先頭に`[#n]`を付け、
+    LLMが根拠を番号で返せるようにする。開発環境の希望は初期入力の番号で見せる(初期入力の一部のため)。
     """
     system_prompt = _HEARING_SYSTEM_PROMPT
     if template is not None:
@@ -266,14 +349,56 @@ def _build_messages(
         lines = "\n".join(f"- {point}" for point in missing_points)
         system_prompt += f"\n\n[まだ確認できていない観点]\n{lines}"
     messages: list[BaseMessage] = [SystemMessage(content=system_prompt)]
+    numbers = numbers or {}
+
+    def _prefix(entry_id: str | None) -> str:
+        number = numbers.get(entry_id) if entry_id is not None else None
+        return f"[#{number}] " if number is not None else ""
+
     environment = (project.intake or {}).get("environment")
     if environment:
+        intake_id = next((str(e.id) for e in history if e.sender == "intake"), None)
         messages.append(
-            HumanMessage(content=f"[開発環境の希望]\n{json.dumps(environment, ensure_ascii=False)}")
+            HumanMessage(
+                content=f"{_prefix(intake_id)}[開発環境の希望]\n"
+                f"{json.dumps(environment, ensure_ascii=False)}"
+            )
         )
     for entry in history:
         if entry.sender == "ai":
             messages.append(AIMessage(content=entry.message))
         elif entry.sender in ("user", "intake", "attachment"):
-            messages.append(HumanMessage(content=entry.message))
+            messages.append(HumanMessage(content=_prefix(str(entry.id)) + entry.message))
     return messages
+
+
+def _as_scale(value: str | None) -> Scale | None:
+    return value if value in ("personal", "internal", "public") else None  # type: ignore[return-value]
+
+
+def _states_from_rows(rows: Sequence[HearingPoint]) -> dict[str, PointState]:
+    """hearing_pointsの行を観点の表に直す(行の無い観点・知らないキーの行は除いて、未決で埋める)。"""
+    states = initial_states()
+    for row in rows:
+        state = to_state(row.point_key, row.status, row.summary, row.evidence or ())
+        if state is not None:
+            states[state.key] = state
+    return states
+
+
+def _points_table(states: Mapping[str, PointState]) -> str:
+    """判定のプロンプトに埋める観点の表(1行1観点)。"""
+    return "\n".join(
+        f"{d.key}|{d.label}|{d.question}|{states[d.key].status}|{states[d.key].summary}"
+        for d in POINT_DEFS
+    )
+
+
+def _completion_from(states: Mapping[str, PointState], scale: str | None) -> HearingCompletionCheck:
+    """観点の表から完了判定を作る(LLMは呼ばない)。十分ならまとめを付ける。"""
+    sufficient = is_sufficient(states, _as_scale(scale))
+    return HearingCompletionCheck(
+        is_sufficient=sufficient,
+        summary=build_summary(states, _as_scale(scale)) if sufficient else "",
+        missing_points=missing_labels(states, _as_scale(scale)),
+    )

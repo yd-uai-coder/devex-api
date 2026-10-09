@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from app.models.data_item import DataItem
     from app.models.design_stage import DesignStage
     from app.models.generated_document import GeneratedDocument
+    from app.models.hearing_point import HearingPoint
     from app.models.intake_file import IntakeFile
     from app.models.uml_diagram import UmlDiagram
     from app.models.uml_generation_run import UmlGenerationRun
@@ -43,6 +44,9 @@ class Project(Base):
     # hearing_check: 直近のヒアリング完了判定の結果(is_sufficient/summary/missing_points)。
     # 発言のたびに判定し直して保存し、完了判定の取得はこれを返す(画面を開き直しても変わらない)
     hearing_check: Mapped[dict | None] = mapped_column(PortableJSON, nullable=True)
+    # hearing_scale: ヒアリングで決まった規模('personal'/'internal'/'public')。観点の必須を
+    # 切り替える。未決の間はNone(必須は「個人・小規模」の列で数える。app/hearing/points.py)
+    hearing_scale: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # template_id：テンプレートの永続化
     template_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("prompt_templates.id"), nullable=True
@@ -74,6 +78,9 @@ class Project(Base):
         back_populates="project", cascade="all, delete-orphan"
     )
     uml_generation_runs: Mapped[list["UmlGenerationRun"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    hearing_points: Mapped[list["HearingPoint"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
     design_stages: Mapped[list["DesignStage"]] = relationship(

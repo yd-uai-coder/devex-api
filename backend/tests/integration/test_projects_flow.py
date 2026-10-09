@@ -2,7 +2,8 @@ import pytest
 from httpx import AsyncClient
 from tests.fixtures.fake_llm import FakeLLM
 
-from app.schemas.generation import HearingCompletionCheck
+from app.hearing import POINT_DEFS
+from app.schemas.hearing import HearingPointsJudgement, JudgedPointOut
 from app.services import chat_service as chat_service_module
 from app.services import doc_generator_service as doc_generator_service_module
 
@@ -36,10 +37,28 @@ def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> FakeLLM:
     fake = FakeLLM(
         content="[Fake] 次に、想定している主なユーザー層を教えてください。",
         stream_chunks=["[Fake] 次に、", "想定している主なユーザー層を教えてください。"],
-        # 完了判定はチャットの送信ごとに1回呼ばれる(下のテストは最大3往復)
+        # 観点の判定はチャットの送信ごとに1回呼ばれる(下のテストは3往復)。2往復目までは目的だけ、
+        # 3往復目で全観点が決まる(発言の番号: 初期入力=1、利用者の発言=2〜4)
         structured_sequence=[
-            HearingCompletionCheck(is_sufficient=True, summary="[Fake] 要約です", missing_points=[])
-            for _ in range(3)
+            *[
+                HearingPointsJudgement(
+                    points=[
+                        JudgedPointOut(
+                            key="purpose", status="decided", summary="在庫の可視化", evidence=[1]
+                        )
+                    ]
+                )
+                for _ in range(2)
+            ],
+            HearingPointsJudgement(
+                scale="internal",
+                points=[
+                    JudgedPointOut(
+                        key=d.key, status="decided", summary=f"[Fake] {d.label}", evidence=[4]
+                    )
+                    for d in POINT_DEFS
+                ],
+            ),
         ],
     )
     monkeypatch.setattr(chat_service_module, "get_gemini_llm", lambda: fake)
@@ -72,8 +91,7 @@ async def test_full_projects_flow_create_chat_generate_download(
     project_id = create_response.json()["id"]
     assert create_response.json()["status"] == "interviewing"
 
-    # ヒアリング完了判定には最低発話数(ユーザー発話3件)が必要なため、3往復送る。
-    # 判定は送信のたびに返信の前に行われ、GETはその結果を返す(2往復目までは足りない)
+    # 判定は送信のたびに返信の前に行われ、GETはその結果を返す(2往復目までは必須の観点が足りない)
     chat_responses = []
     for index, message in enumerate(
         (
@@ -96,8 +114,16 @@ async def test_full_projects_flow_create_chat_generate_download(
             )
             assert pending.json()["is_sufficient"] is False
     assert "text/event-stream" in chat_responses[-1].headers["content-type"]
-    # 十分になった送信の返信は、判定のまとめ(LLMの返信ではない)
-    assert "[Fake] 要約です" in chat_responses[-1].text
+    # 十分になった送信の返信は、観点の表から組み立てたまとめ(LLMの返信ではない)
+    assert "規模: 社内" in chat_responses[-1].text
+    assert "[Fake] 可用性" in chat_responses[-1].text
+
+    points_response = await client.get(
+        f"/api/v1/projects/{project_id}/hearing-points", headers=headers
+    )
+    assert points_response.status_code == 200
+    assert points_response.json()["is_sufficient"] is True
+    assert points_response.json()["points"][0]["evidence"][0]["label"] == "発言3"
 
     history_response = await client.get(f"/api/v1/projects/{project_id}/chat", headers=headers)
     assert history_response.status_code == 200

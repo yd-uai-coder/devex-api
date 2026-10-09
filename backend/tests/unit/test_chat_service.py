@@ -4,24 +4,40 @@ from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, Sys
 from sqlalchemy.ext.asyncio import AsyncSession
 from tests.fixtures.fake_llm import FakeLLM
 
-from app.api.routes.projects import create_project, get_hearing_completion
+from app.api.routes.projects import create_project, get_hearing_completion, get_hearing_points
+from app.hearing import POINT_DEFS, PointState, initial_states
 from app.models.chat_history import ChatHistory
 from app.models.project import Project
 from app.models.prompt_template import PromptTemplate
 from app.models.user import User
 from app.repositories.chat_history import ChatHistoryRepository
+from app.repositories.hearing_point import HearingPointRepository
 from app.schemas.generation import HearingCompletionCheck
+from app.schemas.hearing import HearingPointsJudgement, JudgedPointOut
 from app.services.chat_service import (
-    _COMPLETION_CHECK_PROMPT,
     _HEARING_SYSTEM_PROMPT,
-    _MIN_USER_TURNS_FOR_COMPLETION,
+    _POINTS_JUDGE_PROMPT,
     ChatService,
     _build_messages,
 )
 from app.services.errors import GenerationFailedError
 
-# stream_replyは返信の前に完了判定を呼ぶ。返信の振る舞いを見るテストでは「足りない」を返させる
-_INSUFFICIENT = HearingCompletionCheck(is_sufficient=False, summary="現状整理", missing_points=[])
+# stream_replyは返信の前に観点の判定を呼ぶ。返信の振る舞いを見るテストでは、何も決まらない
+# (必須が未決のまま = 足りない)結果を返させる
+_INSUFFICIENT = HearingPointsJudgement()
+
+
+def _all_decided(evidence: int, *, scale: str = "personal") -> HearingPointsJudgement:
+    """全観点を、番号evidenceの発言を根拠に「ユーザーが決定」とする判定の結果。"""
+    return HearingPointsJudgement(
+        scale=scale,  # type: ignore[arg-type]
+        points=[
+            JudgedPointOut(
+                key=d.key, status="decided", summary=f"{d.label}の決定", evidence=[evidence]
+            )
+            for d in POINT_DEFS
+        ],
+    )
 
 
 async def _create_project(session: AsyncSession) -> Project:
@@ -92,22 +108,32 @@ async def test_stream_reply_persists_user_and_ai_messages(db_session: AsyncSessi
 class _RecordingLLM:
     """astream()に渡されたmessagesを記録するだけのスタブ(FakeLLMはmessagesを無視するため)。"""
 
-    def __init__(self, check: HearingCompletionCheck = _INSUFFICIENT) -> None:
+    def __init__(self, judgement: HearingPointsJudgement = _INSUFFICIENT) -> None:
         self.stream_messages: list[list] = []
-        self._check = check
+        self.judge_messages: list[list] = []
+        self._judgement = judgement
 
     async def astream(self, messages):
         self.stream_messages.append(messages)
         yield AIMessageChunk(content="こんにちは")
 
-    def with_structured_output(self, _schema):
-        return FakeLLM(structured=self._check).with_structured_output(HearingCompletionCheck)
+    def with_structured_output(self, schema):
+        recorder = self
+
+        class _Structured:
+            async def ainvoke(self, messages):
+                recorder.judge_messages.append(messages)
+                return FakeLLM(structured=recorder._judgement).with_structured_output(
+                    schema
+                ).invoke(messages)
+
+        return _Structured()
 
 
-async def test_stream_reply_does_not_send_completion_check_prompt(
+async def test_stream_reply_does_not_send_points_judge_prompt(
     db_session: AsyncSession,
 ) -> None:
-    """チャット応答の生成に完了判定プロンプトを混ぜない(混ぜるとLLMが判定JSONを返してしまう)。"""
+    """チャット応答の生成に観点の判定のプロンプトを混ぜない(混ぜるとLLMが判定JSONを返してしまう)。"""
     project = await _create_project(db_session)
     llm = _RecordingLLM()
 
@@ -117,7 +143,7 @@ async def test_stream_reply_does_not_send_completion_check_prompt(
         pass
 
     sent = llm.stream_messages[0]
-    assert all(m.content != _COMPLETION_CHECK_PROMPT for m in sent)
+    assert all("観点の表(キー|観点" not in str(m.content) for m in sent)
     assert isinstance(sent[-1], HumanMessage)
     assert sent[-1].content == "はじめまして"
 
@@ -207,77 +233,92 @@ async def test_stream_reply_skips_signature_only_chunks(db_session: AsyncSession
 
     assert chunks == ["本文"]
 
-async def _add_user_turns(session: AsyncSession, project: Project, count: int) -> None:
+async def _add_history(session: AsyncSession, project: Project, *senders: str) -> list[ChatHistory]:
     repo = ChatHistoryRepository(session)
-    for i in range(count):
-        await repo.add(project_id=project.id, sender="user", message=f"発話{i}")
+    return [
+        await repo.add(project_id=project.id, sender=sender, message=f"{sender}{i}")
+        for i, sender in enumerate(senders)
+    ]
 
 
-async def test_check_completion_returns_structured_result(db_session: AsyncSession) -> None:
+async def test_judge_points_saves_states_with_message_ids(db_session: AsyncSession) -> None:
+    """LLMが返した発言の番号を、chat_historiesのidに直して保存する(結べない番号は捨てる)。"""
     project = await _create_project(db_session)
-    await _add_user_turns(db_session, project, _MIN_USER_TURNS_FOR_COMPLETION)
-    expected = HearingCompletionCheck(
-        is_sufficient=True, summary="備品予約システムの要件が整理できました。", missing_points=[]
+    intake, _, user1 = await _add_history(db_session, project, "intake", "ai", "user")
+    judgement = HearingPointsJudgement(
+        points=[
+            JudgedPointOut(key="purpose", status="decided", summary="工数を減らす", evidence=[1]),
+            JudgedPointOut(key="users", status="decided", summary="SE", evidence=[2, 2, 9]),
+            JudgedPointOut(key="tech", status="decided", summary="推測", evidence=[9]),
+        ]
     )
-    fake_llm = FakeLLM(structured=expected)
-    service = ChatService(db_session)
+    fake_llm = FakeLLM(structured=judgement)
 
-    result = await service.check_completion(project, llm=fake_llm)
+    states = await ChatService(db_session).judge_points(project, llm=fake_llm)
 
-    assert result == expected
-    assert fake_llm.structured_output_calls == [HearingCompletionCheck]
+    assert fake_llm.structured_output_calls == [HearingPointsJudgement]
+    assert states["purpose"] == PointState("purpose", "decided", "工数を減らす", (str(intake.id),))
+    assert states["users"].evidence == (str(user1.id),)
+    # 根拠が利用者側の発言に結べない決定は取り込まない
+    assert states["tech"].status == "open"
+    rows = {
+        r.point_key: r
+        for r in await HearingPointRepository(db_session).list_for_project(project.id)
+    }
+    assert len(rows) == len(POINT_DEFS)
+    assert rows["purpose"].evidence == [str(intake.id)]
 
-async def test_check_completion_overrides_to_insufficient_when_too_few_user_turns(
+
+async def test_judge_points_shows_numbered_messages_and_current_table(
     db_session: AsyncSession,
 ) -> None:
-    """LLMが楽観的にis_sufficient=Trueを返しても、ユーザー発話が下限に満たなければFalseに上書きされる。"""
     project = await _create_project(db_session)
-    await _add_user_turns(db_session, project, _MIN_USER_TURNS_FOR_COMPLETION - 1)
-    fake_llm = FakeLLM(
-        structured=HearingCompletionCheck(is_sufficient=True, summary="要約", missing_points=[])
-    )
+    project.intake = {"environment": {"backend": "FastAPI"}}
+    await _add_history(db_session, project, "intake", "ai", "user")
+    llm = _RecordingLLM()
+
+    await ChatService(db_session).judge_points(project, llm=llm)
+
+    sent = llm.judge_messages[0]
+    human = [str(m.content) for m in sent if isinstance(m, HumanMessage)]
+    assert human[0].startswith("[#1] [開発環境の希望]")  # 開発環境の希望は初期入力の番号で見せる
+    assert human[1] == "[#1] intake0"
+    assert human[2] == "[#2] user2"
+    assert all(not str(m.content).startswith("[#") for m in sent if isinstance(m, AIMessage))
+    assert human[-1].startswith(_POINTS_JUDGE_PROMPT.split("{table}")[0][:20])
+    assert "purpose|目的・課題|" in human[-1]
+
+
+async def test_judge_points_sets_scale_only_when_scale_point_is_settled(
+    db_session: AsyncSession,
+) -> None:
+    project = await _create_project(db_session)
+    await _add_history(db_session, project, "user")
     service = ChatService(db_session)
 
-    result = await service.check_completion(project, llm=fake_llm)
-
-    assert result.is_sufficient is False
-    assert result.summary == "要約"
-    assert "対話がまだ十分に進んでいません" in result.missing_points
-
-
-async def test_check_completion_does_not_count_non_user_senders(db_session: AsyncSession) -> None:
-    """intake/attachment/aiはユーザーの実発話ではないため、ガードの件数には含めない。"""
-    project = await _create_project(db_session)
-    repo = ChatHistoryRepository(db_session)
-    for sender in ("intake", "attachment", "ai", "ai", "ai"):
-        await repo.add(project_id=project.id, sender=sender, message="x")
-    fake_llm = FakeLLM(
-        structured=HearingCompletionCheck(is_sufficient=True, summary="要約", missing_points=[])
+    await service.judge_points(
+        project, llm=FakeLLM(structured=HearingPointsJudgement(scale="public"))
     )
+    assert project.hearing_scale is None
 
-    result = await ChatService(db_session).check_completion(project, llm=fake_llm)
-
-    assert result.is_sufficient is False
-
-
-async def test_check_completion_keeps_llm_insufficient_verdict(db_session: AsyncSession) -> None:
-    """ガードは「trueをfalseにする」一方向のみ。LLM自身のfalse判定・missing_pointsはそのまま返す。"""
-    project = await _create_project(db_session)
-    await _add_user_turns(db_session, project, _MIN_USER_TURNS_FOR_COMPLETION)
-    expected = HearingCompletionCheck(
-        is_sufficient=False, summary="現状整理", missing_points=["想定ユーザー"]
+    await service.judge_points(
+        project,
+        llm=FakeLLM(
+            structured=HearingPointsJudgement(
+                scale="internal",
+                points=[
+                    JudgedPointOut(key="scale", status="decided", summary="社内", evidence=[1])
+                ],
+            )
+        ),
     )
-
-    result = await ChatService(db_session).check_completion(
-        project, llm=FakeLLM(structured=expected)
-    )
-
-    assert result == expected
+    assert project.hearing_scale == "internal"
 
 
 async def test_get_hearing_completion_route_returns_stored_check(db_session: AsyncSession) -> None:
     """GET /projects/{id}/hearing-completion は、チャットの送信時に保存した判定をそのまま返す
-    (LLMを呼ばないので、get_gemini_llmを差し替えなくてよい)。"""
+    (LLMを呼ばないので、get_gemini_llmを差し替えなくてよい。観点の表を持たない以前の
+    プロジェクトの5条件の判定も、同じくそのまま返す)。"""
     project = await _create_project(db_session)
     expected = HearingCompletionCheck(
         is_sufficient=True, summary="備品予約システムの要件が整理できました。", missing_points=[]
@@ -302,11 +343,10 @@ async def test_get_hearing_completion_route_is_insufficient_before_any_check(
 async def test_stream_reply_presents_summary_without_llm_reply_when_sufficient(
     db_session: AsyncSession,
 ) -> None:
-    """判定が十分なら、LLMで返信を作らず、判定のsummaryを決まった形で返して判定を保存する。"""
+    """必須の観点がそろったら、LLMで返信を作らず、観点の表から組み立てたまとめを返して判定を
+    保存する(発言の回数の下限は無い。1回目の発言でも、必須がそろえば十分)。"""
     project = await _create_project(db_session)
-    await _add_user_turns(db_session, project, _MIN_USER_TURNS_FOR_COMPLETION - 1)
-    check = HearingCompletionCheck(is_sufficient=True, summary="備品予約の要件です。")
-    llm = _RecordingLLM(check)
+    llm = _RecordingLLM(_all_decided(1, scale="internal"))
 
     chunks = [
         chunk
@@ -317,23 +357,22 @@ async def test_stream_reply_presents_summary_without_llm_reply_when_sufficient(
 
     assert llm.stream_messages == []
     assert len(chunks) == 1
-    assert "備品予約の要件です。" in chunks[0]
+    assert "- 規模: 社内" in chunks[0]
+    assert "- 可用性: 可用性の決定" in chunks[0]
     assert "この内容で設計書を生成する" in chunks[0]
-    assert project.hearing_check == check.model_dump()
+    assert project.hearing_check is not None
+    assert project.hearing_check["is_sufficient"] is True
+    assert project.hearing_check["missing_points"] == []
     history = await ChatHistoryRepository(db_session).list_for_project(project.id)
     assert (history[-1].sender, history[-1].message) == ("ai", chunks[0])
 
 
-async def test_stream_reply_passes_missing_points_to_reply_when_insufficient(
+async def test_stream_reply_passes_open_required_points_to_reply_when_insufficient(
     db_session: AsyncSession,
 ) -> None:
-    """足りなければ通常の返信を作り、判定の不足点をシステムプロンプトに足す
-    (発話の回数が足りないことを示す点は、対話の観点ではないので渡さない)。"""
+    """足りなければ通常の返信を作り、未決の必須の観点を(規模から順に)システムプロンプトに足す。"""
     project = await _create_project(db_session)
-    check = HearingCompletionCheck(
-        is_sufficient=True, summary="要約", missing_points=["想定ユーザー"]
-    )
-    llm = _RecordingLLM(check)
+    llm = _RecordingLLM()
 
     async for _ in ChatService(db_session).stream_reply(
         project, user_message="はじめまして", llm=llm
@@ -341,34 +380,88 @@ async def test_stream_reply_passes_missing_points_to_reply_when_insufficient(
         pass
 
     system_prompt = llm.stream_messages[0][0].content
-    assert "[まだ確認できていない観点]\n- 想定ユーザー" in system_prompt
-    assert "対話がまだ十分に進んでいません" not in system_prompt
+    assert "[まだ確認できていない観点]\n- 規模(例: " in system_prompt
     assert project.hearing_check is not None
     assert project.hearing_check["is_sufficient"] is False
+    assert project.hearing_check["missing_points"][0] == "規模"
 
 
-async def test_stream_reply_continues_and_clears_check_when_check_fails(
+async def test_stream_reply_keeps_table_and_clears_check_when_judgement_fails(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """判定に失敗しても返信は続け、古い判定で生成ボタンが残らないよう保存済みの判定を消す。"""
+    """判定に失敗しても返信は続ける。観点の表は前のまま残し、古い判定で生成ボタンが残らないよう
+    保存済みの完了判定は消す。返信には、残した表の未決の必須を渡す。"""
     project = await _create_project(db_session)
+    states = initial_states()
+    states["scale"] = PointState("scale", "decided", "個人", ("x",))
+    await HearingPointRepository(db_session).save_states(project.id, states.values())
     project.hearing_check = HearingCompletionCheck(is_sufficient=True, summary="古い").model_dump()
 
-    async def _failing_check(self, project, *, llm=None):  # noqa: ANN001
+    async def _failing_judge(self, project, *, llm=None):  # noqa: ANN001
         raise GenerationFailedError("失敗")
 
-    monkeypatch.setattr(ChatService, "check_completion", _failing_check)
-    fake_llm = FakeLLM(stream_chunks=["続けます"])
+    monkeypatch.setattr(ChatService, "judge_points", _failing_judge)
+    llm = _RecordingLLM()
 
     chunks = [
         chunk
         async for chunk in ChatService(db_session).stream_reply(
-            project, user_message="はじめまして", llm=fake_llm
+            project, user_message="はじめまして", llm=llm
         )
     ]
 
-    assert chunks == ["続けます"]
+    assert chunks == ["こんにちは"]
     assert project.hearing_check is None
+    assert "- 目的・課題(例: " in llm.stream_messages[0][0].content
+    view = await ChatService(db_session).points_view(project)
+    assert view.stale is True
+    assert view.is_sufficient is False
+    assert view.points[0].status == "decided"
+
+
+async def test_points_view_of_new_project_lists_all_points_as_open(
+    db_session: AsyncSession,
+) -> None:
+    project = await _create_project(db_session)
+
+    view = await get_hearing_points(db_session, project)
+
+    assert (view.legacy, view.stale, view.is_sufficient, view.scale) == (False, False, False, None)
+    assert [p.key for p in view.points] == [d.key for d in POINT_DEFS]
+    assert all(p.status == "open" for p in view.points)
+    # 規模が未決の間は「個人・小規模」の列で必須を示す
+    assert {p.key for p in view.points if p.required} >= {"scale", "tech", "security"}
+    assert not next(p for p in view.points if p.key == "daily_flow").required
+
+
+async def test_points_view_marks_project_with_only_old_check_as_legacy(
+    db_session: AsyncSession,
+) -> None:
+    project = await _create_project(db_session)
+    project.hearing_check = HearingCompletionCheck(is_sufficient=True, summary="5条件").model_dump()
+
+    view = await ChatService(db_session).points_view(project)
+
+    assert view.legacy is True
+    assert view.is_sufficient is False
+
+
+async def test_points_view_after_judgement_labels_evidence(db_session: AsyncSession) -> None:
+    project = await _create_project(db_session)
+    await _add_history(db_session, project, "intake", "ai")
+    llm = _RecordingLLM(_all_decided(2))
+
+    async for _ in ChatService(db_session).stream_reply(project, user_message="以上", llm=llm):
+        pass
+    view = await ChatService(db_session).points_view(project)
+
+    assert (view.legacy, view.stale, view.is_sufficient, view.scale) == (
+        False,
+        False,
+        True,
+        "personal",
+    )
+    assert [e.label for e in view.points[0].evidence] == ["発言1"]
 
 
 def test_hearing_prompt_leaves_summary_and_documents_to_the_system() -> None:
