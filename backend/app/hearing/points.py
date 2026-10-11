@@ -239,6 +239,16 @@ def open_required(states: Mapping[str, PointState], scale: Scale | None) -> list
     ]
 
 
+def open_optional(states: Mapping[str, PointState], scale: Scale | None) -> list[PointDef]:
+    """任意で未決の観点(定義の順)。必須がそろった後に、利用者が続けると選んだときに聞く。"""
+    return [
+        d
+        for d in POINT_DEFS
+        if not is_required(d.key, scale)
+        and (states[d.key].status if d.key in states else "open") == "open"
+    ]
+
+
 def is_sufficient(states: Mapping[str, PointState], scale: Scale | None) -> bool:
     """ヒアリングの完了: 必須の観点がすべて未決以外(対象外でもよい)。"""
     return not open_required(states, scale)
@@ -248,7 +258,12 @@ def questions_for_reply(
     states: Mapping[str, PointState], scale: Scale | None, *, limit: int = 3
 ) -> list[str]:
     """返信の LLM に渡す「まだ確認できていない観点」。未決の必須を定義の順に最大`limit`件。"""
-    return [f"{d.label}(例: {d.question})" for d in open_required(states, scale)[:limit]]
+    return describe_points(open_required(states, scale)[:limit])
+
+
+def describe_points(defs: Iterable[PointDef]) -> list[str]:
+    """観点を「名前(例: 場面で聞く問い)」の形にする(返信の LLM に渡す)。"""
+    return [f"{d.label}(例: {d.question})" for d in defs]
 
 
 def to_state(

@@ -1,27 +1,47 @@
 import json
-import time
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
+from dataclasses import dataclass
 
 import structlog
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.llm.gemini import extract_text_content, get_gemini_llm
+from app.ai.llm.gemini import get_gemini_llm
 from app.hearing import (
+    CARD_LIMIT,
     POINT_DEFS,
+    Card,
+    CardAnswerError,
+    CardOption,
     JudgedPoint,
+    PointDef,
     PointState,
     Scale,
+    apply_card_answers,
     build_summary,
+    card_as_text,
+    card_targets,
+    card_to_dict,
+    cards_from_json,
+    carry_over_cards,
+    compose_answer_message,
+    describe_points,
     initial_states,
+    is_point_key,
     is_required,
     is_sufficient,
+    mark_selected,
     merge_judgement,
     missing_labels,
     number_messages,
-    questions_for_reply,
+    open_optional,
+    point_def,
+    resolve_answers,
+    sanitize_cards,
     scale_after,
+    scale_card,
+    scale_of_answer,
     to_state,
 )
 from app.models.chat_history import ChatHistory
@@ -33,13 +53,22 @@ from app.repositories.hearing_point import HearingPointRepository
 from app.repositories.prompt_template import PromptTemplateRepository
 from app.schemas.generation import HearingCompletionCheck
 from app.schemas.hearing import (
+    CardAnswer,
     EvidenceRead,
     HearingPointRead,
     HearingPointsJudgement,
     HearingPointsRead,
+    HearingReplyOut,
 )
-from app.services.errors import GenerationFailedError
-from app.services.llm_retry import as_llm_error, invoke_with_retry, prompt_char_count
+from app.services.errors import (
+    DocGenerationInProgressError,
+    GenerationFailedError,
+    HearingPointNotFoundError,
+    HearingPointNotOpenError,
+    InvalidCardAnswerError,
+    LLMQuotaExceededError,
+)
+from app.services.llm_retry import invoke_with_retry
 
 logger = structlog.get_logger(__name__)
 
@@ -77,8 +106,49 @@ _POINTS_JUDGE_PROMPT = (
     "{table}"
 )
 
+# 観点の表の画面から「対象外」にした観点の、決めたことの文
+_SKIPPED_BY_USER_SUMMARY = "後で決める(画面で対象外にした)"
+
+# 「任意項目についてヒアリングを続ける」で、利用者の発言として残す文(判定のLLMは呼ばない)
+_CONTINUE_OPTIONAL_MESSAGE = "任意の項目についてもヒアリングを続けてください"
+
+# 最初の発話の後ろにコードが足す文。規模は後の必須を切り替えるので、最初にカードで聞く
+_OPENING_SCALE_CARD_LINE = "まず、下のカードで、使う人の規模を選んでください。"
+
 # 完了判定が十分になったときの返信。LLMで書かせず、観点の表から組み立てたまとめを見せることで、
 # チャットのまとめと画面の生成ボタンが同じ判定から同時に出るようにする
+# 返信のLLMに、選択肢カードの書き方と、カードにしてよい観点を伝える(返信の生成のときだけ足す)
+_CARD_INSTRUCTIONS = (
+    "\n\n[選択肢カード]\n"
+    "下の観点について、問いを1つだけ聞いてください。ほかの観点の質問はしないでください。\n"
+    "・選択肢で答えやすい観点なら、選択肢カード(cards)を1枚だけ返し、本文では質問せず、"
+    "短い前置きだけを書く。\n"
+    "・目的やコア機能のように自由に答える方がよい観点なら、カードは返さず、本文でその観点の"
+    "質問を1つだけ書く。\n"
+    "・問いは場面で聞く(例: 「夜中や休日に止まっていたら、どのくらいで困りますか」)。"
+    "専門用語(可用性・RTO など)で聞かない。\n"
+    "・選択肢は2〜4個。各選択肢の結果(result)には、選んだときのコスト・手間・後から変えられるかを"
+    "1文で書く。\n"
+    "・おすすめ(recommended)は1つだけ選び、その理由(reason)を、これまでの対話の内容に結びつけて"
+    "1文で書く。\n"
+    "聞く観点(キー: 観点(問いの例)):\n"
+    "{targets}"
+)
+# 規模のカードと、前の返信で答えなかったカードの付け直しは、システムがカードを出す。そのときの指示
+_CODE_CARD_NOTE = (
+    "\n\n[選択肢カード]\n{label}は、システムが選択肢カードで聞きます。本文では質問せず、"
+    "カード(cards)も返さず、短い前置きだけを書いてください。"
+)
+# 未決の必須の観点が残っている間、返信のAIが完了を宣言しないようにする(完了はシステムが観点の
+# 表から判定し、そろえばまとめと生成ボタンを出す。AIが先に「そろった」と書くと、画面と食い違う)
+_MISSING_POINTS_NOTE = (
+    "この一覧が残っている間は、要件がそろった・設計書を生成できる・生成ボタンを押す、などとは"
+    "書かないでください。一覧の観点を聞いてください。"
+)
+# 返信に問いもカードも無いときに、コードが足す次の問い
+_NEXT_QUESTION_TEMPLATE = "次に、{label}について教えてください。(例: {question})"
+_EMPTY_REPLY_WITH_CARDS = "次の点を、カードから選ぶか、チャットで答えてください。"
+
 _SUMMARY_REPLY_TEMPLATE = (
     "ヒアリングの内容をまとめました。\n\n{summary}\n\n"
     "この内容でよければ「この内容で設計書を生成する」を押してください。"
@@ -91,8 +161,8 @@ _OPENING_TURN_PROMPT = (
     "1. 1行目:「以上を元に詳細のヒアリングを進めていきます。」という一文だけを書く\n"
     "2. 次の行に見出し「【確認したい事】」を書く\n"
     "3. これから対話の中で確認していきたい点を3つ、「・」で始まる箇条書きで簡潔に列挙する\n"
-    "4. 1行空けて、「まず、」に続けて箇条書きの1つ目について具体的な質問を1つだけ書く\n"
     "この形式以外の前置きや締めの言葉は書かないでください。"
+    "最初の問いの聞き方は、システムプロンプトの[選択肢カード]の指示に従ってください。"
 )
 
 
@@ -117,16 +187,31 @@ class ChatService:
         return await self._chat_histories.list_for_project(project_id)
 
     async def stream_reply(
-        self, project: Project, *, user_message: str, llm=None
-    ) -> AsyncIterator[str]:
-        """ユーザーメッセージを永続化し、先に観点の表の判定を行ってから、その結果に応じたAI応答を
-        ストリーミングで返す。応答本文の断片を順次yieldし、完了後にAI応答全体をchat_historiesへ、
-        観点の状態をhearing_pointsへ、完了判定の結果をprojects.hearing_checkへ保存する。
+        self,
+        project: Project,
+        *,
+        user_message: str,
+        card_answers: Sequence[CardAnswer] = (),
+        continue_optional: bool = False,
+        llm=None,
+    ) -> AsyncIterator["str | ReplyCards"]:
+        """ユーザーメッセージ(と選択肢カードへの回答)を永続化し、先に観点の表の判定を行ってから、
+        その結果に応じたAI応答を返す。返信の本文(str)を返した後、選択肢カードがあれば
+        `ReplyCards`を返す。AI応答はchat_historiesへ、観点の状態はhearing_pointsへ、完了判定の
+        結果はprojects.hearing_checkへ保存する。
 
+        - カードへの回答は、LLMを呼ばずにコードが「AIの提案を採用」と記録する。選んだ内容と
+          文は1つの発言にまとめ、その発言を根拠にする(app/hearing/cards.py)。
         - 完了は、必須の観点がすべて未決以外かどうかをコードが決める(app/hearing/points.py)。
         - 十分なら、LLMで返信を作らず、観点の表から組み立てたまとめを決まった形で返す(まとめと
           生成ボタンを同じ判定から同時に出すため)。
-        - 足りなければ、未決の必須の観点を渡して通常の返信を作る(AIがそこを聞くように)。
+        - 足りなければ、未決の必須の観点とカードにしてよい観点を渡し、本文とカードを構造化出力で
+          1回で作る(本文はまとめて1回で返す。トークンごとには流さない)。
+        - 前の発言のカードのうち答えなかったもの(観点がまだ未決)は、次の返信にコードが付け直す。
+          カードが1枚も無く、聞くべき観点が残っているときは、次の問いをコードが本文に足す
+          (設問の取りこぼしと、問いの無い返信で止まったように見えるのを防ぐ)。
+        - 必須がそろった後は、利用者が任意の観点を続けると選んだとき(continue_optional、または
+          任意の観点のカードに答えたとき)だけ、未決の任意の観点を聞く。それ以外はまとめを返す。
         - 判定に失敗したら、観点の表は前のまま残し、保存済みの完了判定は消す(古い判定で生成ボタンが
           残らないように。表があって完了判定が無い状態を、画面は「表が直近の発言を反映していない」と
           読む)。チャット自体は止めない。
@@ -136,58 +221,174 @@ class ChatService:
         """
         if project.status == "completed":
             project.status = "revising"
-        await self._chat_histories.add(project_id=project.id, sender="user", message=user_message)
+        # 判定のLLMを呼ぶか: 利用者が文を書いたとき、またはまだ判定が済んでいないとき(作成時の
+        # 判定の失敗・直近の判定の失敗・以前の判定のプロジェクト)。カードの回答だけ・「任意を
+        # 続ける」だけの送信は、読むべき新しい文が無いので呼ばない(選んだ観点はコードが記録する)
+        judged = project.hearing_check is not None and bool(
+            await self._hearing_points.list_for_project(project.id)
+        )
+        needs_judge = bool(user_message.strip()) or not judged
+        previous_cards, answered = await self._record_user_turn(
+            project, user_message, card_answers, continue_optional=continue_optional
+        )
 
         # 「or」の理由：テスト時に本物のGemini APIを叩かせないための差し替え(DI)
         llm = llm or get_gemini_llm()
-        try:
-            states = await self.judge_points(project, llm=llm)
-        except GenerationFailedError:
-            logger.warning("hearing_check_failed")
-            states = None
+        states: dict[str, PointState] | None
+        if needs_judge:
+            try:
+                states = await self.judge_points(project, llm=llm)
+            except GenerationFailedError:
+                logger.warning("hearing_check_failed")
+                states = None
+        else:
+            states = await self._load_states(project)
         if states is None:
             project.hearing_check = None
-            questions = questions_for_reply(
-                await self._load_states(project), _as_scale(project.hearing_scale)
-            )
+            states = await self._load_states(project)
         else:
             check = _completion_from(states, project.hearing_scale)
             project.hearing_check = check.model_dump()
             if check.is_sufficient:
-                reply = _SUMMARY_REPLY_TEMPLATE.format(summary=check.summary.strip())
-                yield reply
-                await self._chat_histories.add(project_id=project.id, sender="ai", message=reply)
-                await self._session.commit()
-                return
-            questions = questions_for_reply(states, _as_scale(project.hearing_scale))
+                scale = _as_scale(project.hearing_scale)
+                optional = open_optional(states, scale)
+                wants_optional = continue_optional or any(
+                    not is_required(card.point_key, scale) for card, _ in answered
+                )
+                if not (wants_optional and optional):
+                    reply = _SUMMARY_REPLY_TEMPLATE.format(summary=check.summary.strip())
+                    await self._chat_histories.add(
+                        project_id=project.id, sender="ai", message=reply
+                    )
+                    await self._session.commit()
+                    yield reply
+                    return
 
+        # 次に聞く問いは1つ。前の返信で答えなかったカード(観点がまだ未決)があれば、それを付け直す
+        carried = carry_over_cards(previous_cards, answered, states, lambda: str(uuid.uuid4()))[:1]
+        targets = _next_targets(states, _as_scale(project.hearing_scale))
+        if carried:
+            targets = [point_def(carried[0].point_key)]
+        message, cards = await self._compose_reply(
+            project,
+            questions=describe_points(targets),
+            targets=targets,
+            code_card=carried[0] if carried else None,
+            llm=llm,
+        )
+        message = _ensure_question(message, cards, targets)
+        await self._chat_histories.add(
+            project_id=project.id,
+            sender="ai",
+            message=message,
+            cards=[card_to_dict(card) for card in cards] or None,
+        )
+        await self._session.commit()
+        yield message
+        if cards:
+            yield ReplyCards(cards=[card_to_dict(card) for card in cards])
+
+    async def _record_user_turn(
+        self,
+        project: Project,
+        user_message: str,
+        card_answers: Sequence[CardAnswer],
+        *,
+        continue_optional: bool = False,
+    ) -> tuple[list[Card], list[tuple[Card, int]]]:
+        """利用者の発言を保存する。カードへの回答があれば、選んだ内容を発言の本文に足し、カードに
+        選択を書き込み、選ばれた観点を「AIの提案を採用」にする(根拠はこの発言)。
+
+        選べるのは最新のAIの発言のカードのうち未回答のものだけ(古い画面から送られた回答は拒む)。
+        返り値は(最新のAIの発言のカード、今回の回答)。答えなかったカードの付け直しに使う。
+        「任意を続ける」だけの送信は、決まった文を利用者の発言として残す。
+        """
+        answered: list[tuple[Card, int]] = []
+        history = await self._chat_histories.list_for_project(project.id)
+        latest_ai = next((e for e in reversed(history) if e.sender == "ai"), None)
+        cards = cards_from_json(latest_ai.cards) if latest_ai is not None else []
+        if card_answers:
+            try:
+                answered = resolve_answers(cards, {a.card_id: a.option for a in card_answers})
+            except CardAnswerError as exc:
+                raise InvalidCardAnswerError(str(exc)) from exc
+
+        text = compose_answer_message(answered, user_message)
+        if not text and continue_optional:
+            text = _CONTINUE_OPTIONAL_MESSAGE
+        entry = await self._chat_histories.add(project_id=project.id, sender="user", message=text)
+        if not answered or latest_ai is None:
+            return cards, answered
+        # JSONの列は中身の書き換えを検知しないため、新しいリストを代入する
+        latest_ai.cards = [card_to_dict(card) for card in mark_selected(cards, answered)]
+        states = apply_card_answers(await self._load_states(project), answered, str(entry.id))
+        await self._hearing_points.save_states(project.id, states.values())
+        if (scale := scale_of_answer(answered)) is not None:
+            project.hearing_scale = scale
+        return cards, answered
+
+    async def _compose_reply(
+        self,
+        project: Project,
+        *,
+        questions: Sequence[str],
+        targets: Sequence[PointDef],
+        code_card: Card | None = None,
+        extra_prompt: str | None = None,
+        llm,
+    ) -> tuple[str, list[Card]]:
+        """返信の本文と選択肢カード(最大1枚)を、構造化出力の1回で作る。
+
+        カードをシステムが出すとき(前の返信のカードの付け直し`code_card`、規模のカード)は、LLMには
+        前置きの本文だけを書かせる。LLMのカードは、聞く観点のものだけを確かめてから使う
+        (sanitize_cards)。単発呼び出しのため、一時的な失敗はinvoke_with_retryでリトライする。
+        """
+        if code_card is None and any(d.key == "scale" for d in targets):
+            code_card = scale_card(str(uuid.uuid4()))
+        llm_targets = [] if code_card is not None else list(targets)
         history = await self._chat_histories.list_for_project(project.id)
         template = await self._load_template(project)
-        messages = _build_messages(history, project, template, missing_points=questions)
-
-        started = time.monotonic()
-        chunks: list[str] = []
-        try:
-            async for chunk in llm.astream(messages):
-                piece = extract_text_content(chunk.content)
-                if not piece:
-                    continue
-                chunks.append(piece)
-                yield piece
-        except Exception as exc:
-            # 再試行はしない(送信済みの断片があるため。llm_retry.pyのdocstring参照)。
-            # 失敗の種類だけを共通の例外に揃え、ルートがSSEの`event: error`で伝える
-            raise as_llm_error(exc) from exc
-
-        logger.debug(
-            "llm_call_succeeded",
-            prompt_chars=prompt_char_count(messages),
-            latency_ms=round((time.monotonic() - started) * 1000, 1),
+        messages = _build_messages(
+            history,
+            project,
+            template,
+            missing_points=questions,
+            card_targets=llm_targets,
+            code_card_label=code_card.label if code_card is not None else None,
         )
+        if extra_prompt is not None:
+            messages.append(HumanMessage(content=extra_prompt))
+        structured_llm = llm.with_structured_output(HearingReplyOut)
 
-        full_reply = "".join(chunks)
-        await self._chat_histories.add(project_id=project.id, sender="ai", message=full_reply)
-        await self._session.commit()
+        async def _call() -> HearingReplyOut:
+            result = await structured_llm.ainvoke(messages)
+            assert isinstance(result, HearingReplyOut)
+            return result
+
+        result = await invoke_with_retry(_call, messages=messages)
+        if code_card is not None:
+            cards = [code_card]
+        else:
+            cards = sanitize_cards(
+                (
+                    Card(
+                        id=str(uuid.uuid4()),
+                        point_key=card.point_key,
+                        question=card.question,
+                        options=tuple(CardOption(o.label, o.result) for o in card.options),
+                        recommended=card.recommended,
+                        reason=card.reason,
+                    )
+                    for card in result.cards
+                ),
+                [d.key for d in llm_targets],
+            )
+        message = result.message.strip()
+        if not message:
+            if not cards:
+                raise GenerationFailedError("ヒアリングの返信が空でした")
+            message = _EMPTY_REPLY_WITH_CARDS
+        return message, cards
 
     async def judge_points(self, project: Project, *, llm=None) -> dict[str, PointState]:
         """これまでの対話から、観点ごとの状態と根拠をLLMに判定させ、観点の表に取り込んで保存する
@@ -273,6 +474,31 @@ class ChatService:
             ],
         )
 
+    async def mark_point_not_applicable(self, project: Project, key: str) -> HearingPointsRead:
+        """観点の表の画面から、未決の観点を「対象外(後で決める)」にする(LLMは呼ばない)。
+
+        判定のAIが決められない観点で、ヒアリングが先へ進めなくなるのを避けるための利用者の操作。
+        根拠の発言は持たない(利用者が画面で決めたため)。後でチャットで答えれば、判定のAIが
+        言い直しとして上書きできる。完了判定はその場で表から作り直すので、必須がそろえば
+        生成のボタンが出る。
+        """
+        if not is_point_key(key):
+            raise HearingPointNotFoundError("観点が見つかりません")
+        if project.status == "generating":
+            raise DocGenerationInProgressError("設計書の生成中は観点を変えられません")
+        states = await self._load_states(project)
+        if states[key].status != "open":
+            raise HearingPointNotOpenError("未決の観点だけを対象外にできます")
+        states[key] = PointState(point_def(key).key, "not_applicable", _SKIPPED_BY_USER_SUMMARY)
+        await self._hearing_points.save_states(project.id, states.values())
+        if key == "scale":
+            project.hearing_scale = None  # 規模を対象外にしたら、個人・小規模の列で数える
+        if project.status == "completed":
+            project.status = "revising"
+        project.hearing_check = _completion_from(states, project.hearing_scale).model_dump()
+        await self._session.commit()
+        return await self.points_view(project)
+
     async def _load_states(self, project: Project) -> dict[str, PointState]:
         return _states_from_rows(await self._hearing_points.list_for_project(project.id))
 
@@ -290,23 +516,38 @@ class ChatService:
         内容を踏まえた理解の要約と確認質問から始まる」)。プロジェクト作成直後に一度だけ
         呼ばれる想定。失敗時は例外を伝播させる(致命的でない扱いは呼び出し側=ルート層で行う)。
 
-        単発呼び出し(ストリーミングではない)のため、check_completionと同様
-        invoke_with_retryでリトライする。"""
-        history = await self._chat_histories.list_for_project(project.id)
-        template = await self._load_template(project)
-        messages = [
-            *_build_messages(history, project, template),
-            HumanMessage(content=_OPENING_TURN_PROMPT),
-        ]
+        先に、初期入力・添付資料・開発環境の希望を観点の判定にかけ、書いてある観点を表に埋める
+        (書いてあることを聞き直さないため)。判定に失敗しても最初の発話は作る(最初の送信で
+        判定し直す)。最初の発話には、判定後の表で次に聞く観点の問いを1つ付ける(規模が未決なら
+        規模のカード)。単発呼び出しのため、invoke_with_retryでリトライする。"""
         llm = llm or get_gemini_llm()
-
-        async def _call() -> str:
-            result = await llm.ainvoke(messages)
-            return extract_text_content(result.content)
-
-        reply = await invoke_with_retry(_call, messages=messages)
-        await self._chat_histories.add(project_id=project.id, sender="ai", message=reply)
+        try:
+            states = await self.judge_points(project, llm=llm)
+            project.hearing_check = _completion_from(states, project.hearing_scale).model_dump()
+        except (GenerationFailedError, LLMQuotaExceededError):
+            logger.warning("opening_hearing_check_failed")
+            states = await self._load_states(project)
+        targets = _next_targets(states, _as_scale(project.hearing_scale))
+        reply, cards = await self._compose_reply(
+            project,
+            questions=describe_points(targets),
+            targets=targets,
+            extra_prompt=_OPENING_TURN_PROMPT,
+            llm=llm,
+        )
+        if any(card.point_key == "scale" for card in cards):
+            reply = f"{reply.rstrip()}\n\n{_OPENING_SCALE_CARD_LINE}"
+        reply = _ensure_question(reply, cards, targets)
+        await self._chat_histories.add(
+            project_id=project.id,
+            sender="ai",
+            message=reply,
+            cards=[card_to_dict(card) for card in cards] or None,
+        )
         await self._session.commit()
+        # 判定でプロジェクトの列(規模・完了判定)を更新したので、commit で失効した属性を読み直す
+        # (呼び出し側がそのまま応答のスキーマに詰めるため)
+        await self._session.refresh(project)
         return reply
 
     async def _load_template(self, project: Project) -> PromptTemplate | None:
@@ -323,6 +564,8 @@ def _build_messages(
         template: PromptTemplate | None = None,
         *,
         missing_points: Sequence[str] = (),
+        card_targets: Sequence[PointDef] = (),
+        code_card_label: str | None = None,
         numbers: Mapping[str, int] | None = None,
 ) -> list[BaseMessage]:
     """chat_historiesの行(sender+message)を、LangChainのメッセージ列に変換する。
@@ -339,6 +582,10 @@ def _build_messages(
     missing_points(観点の表で未決の必須の観点)は、返信の生成のときだけシステムプロンプトに
     足す。AIが次に何を聞くべきかを、完了判定と同じ基準にそろえるため。
 
+    card_targets(聞く観点)・code_card_label(システムがカードを出す観点の名前)も、返信の生成の
+    ときだけ渡す。AIの発言に選択肢カードがあれば、その問いと選択肢を文にして発言の後ろに足す
+    (何を聞いたかを、判定・返信のLLMが読めるように)。
+
     numbers(発言のid→番号)は、観点の判定のときだけ渡す。利用者側の発言の先頭に`[#n]`を付け、
     LLMが根拠を番号で返せるようにする。開発環境の希望は初期入力の番号で見せる(初期入力の一部のため)。
     """
@@ -347,7 +594,14 @@ def _build_messages(
         system_prompt += f"\n\n[選択されたテンプレート: {template.name}]\n{template.system_prompt}"
     if missing_points:
         lines = "\n".join(f"- {point}" for point in missing_points)
-        system_prompt += f"\n\n[まだ確認できていない観点]\n{lines}"
+        system_prompt += (
+            f"\n\n[まだ確認できていない観点]\n{lines}\n{_MISSING_POINTS_NOTE}"
+        )
+    if card_targets:
+        targets = "\n".join(f"- {d.key}: {d.label}(例: {d.question})" for d in card_targets)
+        system_prompt += _CARD_INSTRUCTIONS.format(targets=targets)
+    if code_card_label is not None:
+        system_prompt += _CODE_CARD_NOTE.format(label=code_card_label)
     messages: list[BaseMessage] = [SystemMessage(content=system_prompt)]
     numbers = numbers or {}
 
@@ -366,10 +620,38 @@ def _build_messages(
         )
     for entry in history:
         if entry.sender == "ai":
-            messages.append(AIMessage(content=entry.message))
+            cards = cards_from_json(entry.cards)
+            content = "\n\n".join([entry.message, *(card_as_text(card) for card in cards)])
+            messages.append(AIMessage(content=content))
         elif entry.sender in ("user", "intake", "attachment"):
             messages.append(HumanMessage(content=_prefix(str(entry.id)) + entry.message))
     return messages
+
+
+def _next_targets(states: Mapping[str, PointState], scale: Scale | None) -> list[PointDef]:
+    """次に聞く観点(1つ)。必須が未決なら必須から(規模が未決なら規模)、必須がそろっていれば
+    未決の任意から(任意を続けるときだけここに来る)。"""
+    if not is_sufficient(states, scale):
+        return card_targets(states, scale)
+    return open_optional(states, scale)[:CARD_LIMIT]
+
+
+def _ensure_question(message: str, cards: Sequence[Card], targets: Sequence[PointDef]) -> str:
+    """カードが無く、聞くべき観点が残っているのに、返信の本文に問いが無いときは、次の問いを足す。
+    返信のAIが問いを書き忘れると、利用者には次に何を答えるかが見えず、止まったように見えるため。"""
+    if cards or not targets or "？" in message or "?" in message:
+        return message
+    point = targets[0]
+    question = _NEXT_QUESTION_TEMPLATE.format(label=point.label, question=point.question)
+    return f"{message}\n\n{question}"
+
+
+@dataclass(frozen=True)
+class ReplyCards:
+    """stream_replyが返信の本文の後に返す、選択肢カード(`card_to_dict`の形)。ルートはSSEの
+    `event: cards`で送る。"""
+
+    cards: list[dict]
 
 
 def _as_scale(value: str | None) -> Scale | None:

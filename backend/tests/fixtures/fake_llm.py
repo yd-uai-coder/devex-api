@@ -33,6 +33,7 @@ class FakeLLM:
         structured: BaseModel | None = None,
         structured_sequence: list[BaseModel | dict[str, Any] | Exception] | None = None,
         stream_chunks: list[str | list[str | dict[Any, Any]]] | None = None,
+        structured_by_schema: dict[type[BaseModel], BaseModel] | None = None,
     ) -> None:
         # content: invoke()が返すAIMessageの本文(固定1件)
         # structured: with_structured_output().invoke()が返す構造化レスポンス(固定1件)
@@ -41,11 +42,14 @@ class FakeLLM:
         # 戻り値として返す ── MAX_TOKENSでの打ち切り等、生の応答を模したいテスト用)
         # stream_chunks: astream()が順にyieldする本文断片の列
         # (未指定ならcontentを1チャンクとして返す。)
+        # structured_by_schema: スキーマごとの構造化レスポンス(1つの送信で判定と返信のように
+        # 別のスキーマを続けて呼ぶ用途。ここに無いスキーマはstructured/structured_sequenceを使う)
         self._content = content
         self._content_sequence = content_sequence
         self._structured = structured
         self._structured_sequence = structured_sequence
         self._stream_chunks = stream_chunks
+        self._structured_by_schema = structured_by_schema or {}
         self.structured_output_calls: list[type[BaseModel]] = []
         self.invoke_messages: list[Any] = []
 
@@ -73,6 +77,8 @@ class FakeLLM:
     ) -> _FakeStructuredLLM:
         """構造化出力用のサブクライアントを返す。呼ばれた schema を記録する。"""
         self.structured_output_calls.append(schema)
+        if schema in self._structured_by_schema:
+            return _FakeStructuredLLM(self._structured_by_schema[schema], include_raw=include_raw)
         return _FakeStructuredLLM(
             self._structured, self._structured_sequence, include_raw=include_raw
         )

@@ -6,7 +6,6 @@ from typing import TypeVar
 import structlog
 from langchain_core.messages import BaseMessage
 
-from app.core.errors import AppError
 from app.services.errors import GenerationFailedError, LLMQuotaExceededError, LLMTokenLimitError
 
 T = TypeVar("T")
@@ -32,13 +31,12 @@ async def invoke_with_retry[T](
 ) -> T:
     """LLM呼び出しをラップし、クォータ超過は即座に諦め、それ以外の一時的エラーは規定回数までリトライする。
 
-    chat_service.py(完了判定)・doc_generator_service.py(4文書生成+自己診断)の双方が同じ
+    chat_service.py(観点の判定・返信)・doc_generator_service.py(4文書生成+自己診断)の双方が同じ
     リトライ・クォータ判定ロジックを必要とするため、この共有モジュールに集約した
     (docs/implementation_plan.md 4.4節リスク1「指数バックオフ」の実装箇所)。
 
-    ストリーミング応答(chat_service.ChatService.stream_reply)には適用していない ──
-    ストリームは途中までクライアントへ送信済みの可能性があり、最初からやり直すのは安全でないため
-    (この場合はストリームの失敗をそのまま伝播させ、クライアント側の再送に委ねる)。
+    ヒアリングの返信も、本文と選択肢カードを構造化出力の1回で作るため(トークンごとには流さず、
+    クライアントへ何も送っていない段階で呼ぶため)、ここでリトライしてよい。
 
     呼び出し成功時はDEBUGでレイテンシ・プロンプト文字数を、一時的失敗・クォータ超過は
     WARNINGを、規定回数リトライしても失敗した場合はERROR(スタックトレース付き)を記録する。
@@ -92,18 +90,6 @@ async def invoke_with_retry[T](
     raise GenerationFailedError(
         "AIからの応答生成に失敗しました。時間をおいて再度お試しください。"
     ) from last_error
-
-
-def as_llm_error(exc: Exception) -> Exception:
-    """再試行しないLLM呼び出し(ストリーミング)の失敗を、invoke_with_retryと同じ共通の例外に
-    揃える(トークン上限 / クォータ超過 / それ以外の失敗)。既にAppErrorならそのまま返す。"""
-    if isinstance(exc, AppError):
-        return exc
-    if _is_input_token_limit_error(exc):
-        return LLMTokenLimitError("AIへの入力が大きすぎるため処理できませんでした。")
-    if _is_quota_error(exc):
-        return LLMQuotaExceededError("本日の利用上限に達しました。時間をおいて再度お試しください。")
-    return GenerationFailedError("AIからの応答生成に失敗しました。時間をおいて再度お試しください。")
 
 
 def _is_quota_error(exc: Exception) -> bool:

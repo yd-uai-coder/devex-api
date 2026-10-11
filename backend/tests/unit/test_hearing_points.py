@@ -11,6 +11,7 @@ from app.hearing import (
     JudgedPoint,
     PointState,
     build_summary,
+    describe_points,
     effective_scale,
     initial_states,
     is_required,
@@ -18,6 +19,7 @@ from app.hearing import (
     merge_judgement,
     missing_labels,
     number_messages,
+    open_optional,
     open_required,
     questions_for_reply,
     scale_after,
@@ -155,3 +157,16 @@ def test_number_messages_numbers_user_side_messages_and_labels_them() -> None:
         ("u1", 3, "発言1"),
         ("u2", 4, "発言2"),
     ]
+
+
+def test_open_optional_lists_open_points_not_required_for_scale() -> None:
+    states = initial_states()
+    states["schedule"] = PointState("schedule", "decided", "1人", ("m",))
+
+    personal = [d.key for d in open_optional(states, "personal")]
+    assert personal == ["daily_flow", "future", "operability", "migration", "environment"]
+    assert [d.key for d in open_optional(states, "public")] == []
+    assert describe_points(open_optional(states, "internal")) == [
+        "将来の拡張(例: 後で足したいと思っているものはありますか)"
+    ]
+

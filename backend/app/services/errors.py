@@ -276,3 +276,23 @@ class DocGenerationInProgressError(ConflictError):
     二重で塞ぐ)。"""
 
     code: ClassVar[str | None] = "DOC_GENERATION_IN_PROGRESS"
+
+
+class InvalidCardAnswerError(BadRequestError):
+    """選択肢カードへの回答が、最新のAIの発言のカードに当たらない場合に送出する(古いカード・
+    回答済みのカード・範囲の外の選択肢)。画面が古いまま送ったときに起きうる。"""
+
+    code: ClassVar[str | None] = "INVALID_CARD_ANSWER"
+
+
+class HearingPointNotFoundError(NotFoundError):
+    """観点の表に無いキーの観点を変えようとした場合に送出する。"""
+
+    code: ClassVar[str | None] = "HEARING_POINT_NOT_FOUND"
+
+
+class HearingPointNotOpenError(ConflictError):
+    """未決でない観点を、画面から対象外にしようとした場合に送出する(決まった観点を画面の操作で
+    上書きしない。言い直しはチャットで行う)。"""
+
+    code: ClassVar[str | None] = "HEARING_POINT_NOT_OPEN"
