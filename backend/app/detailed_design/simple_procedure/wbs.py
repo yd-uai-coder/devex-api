@@ -14,6 +14,7 @@ docs/internal_design.md 3.3節「5. 実装手順書」の簡易モード。
       - 環境・設定: docker-compose.yml
     - [ ] M-01-T02 [機能] 予約を登録する
       - 処理: DF-1
+      - 要件: FR-001
       - 依存: M-01-T01
 
 - 単位の ID は、詳細設計モードと同じく並び順から導く(`task_id`)。書かれた ID が並び順と
@@ -22,6 +23,8 @@ docs/internal_design.md 3.3節「5. 実装手順書」の簡易モード。
   見出し・区切りの揺れ(全角のコロン・太字・`──`と`--`)は許す。
 - 処理(DF)・依存先・モジュールが設計にあるかは、ここでは見ない(内部設計書と突き合わせる
   段階8の検証が見る)。
+- 「要件」(「要件ID」も可)の値は要件ID の形にそろえる(`fr-1` → `FR-001`)。形の違う値は
+  捨てて指摘にする。要件定義書に在るかは段階8の検証が見る。
 """
 
 import re
@@ -37,6 +40,7 @@ from app.detailed_design.plan import (
     task_id,
 )
 from app.detailed_design.procedure_doc import DesignDocument, FindingLevel
+from app.detailed_design.requirement_trace import normalize_req_id
 from app.uml.generation.sections import extract_section
 
 WBS_SECTION = "4.2"
@@ -52,7 +56,9 @@ _TASK = re.compile(
     r"^[-*]\s*\[[ xX]\]\s*\**\s*(M-\d+-T\d+)\s*\**\s*[\[［【]\s*(機能|基盤)\s*[\]］】]\s*(.+)$"
 )
 _CHECKBOX = re.compile(r"^[-*]\s*\[[ xX]\]")
-_ATTRIBUTE = re.compile(r"^[-*]\s*\**(処理|依存|モジュール|環境・設定)\**\s*[:：]\s*(.*)$")
+_ATTRIBUTE = re.compile(
+    r"^[-*]\s*\**(処理|要件(?:ID)?|依存|モジュール|環境・設定)\**\s*[:：]\s*(.*)$"
+)
 _EMPTY_VALUES = {"なし", "無し", "—", "-", "－", "n/a"}
 _KINDS: dict[str, UnitKind] = {"機能": "feature", "基盤": "base"}
 _PRIORITIES: dict[str, Priority] = {"must": "Must", "should": "Should", "could": "Could"}
@@ -87,6 +93,7 @@ class _Task:
     depends_on: list[str]
     modules: list[str]
     config_files: list[str]
+    req_ids: list[str]
 
 
 @dataclass
@@ -133,7 +140,7 @@ def parse_wbs(markdown: str) -> WbsParse:
                 task = None
                 continue
             written_id, kind, title = match.groups()
-            task = _Task(written_id, _KINDS[kind], _plain(title), [], [], [], [])
+            task = _Task(written_id, _KINDS[kind], _plain(title), [], [], [], [], [])
             current.tasks.append(task)
             continue
         if _CHECKBOX.match(line):
@@ -142,7 +149,7 @@ def parse_wbs(markdown: str) -> WbsParse:
             task = None
             continue
         if (match := _ATTRIBUTE.match(line)) is not None and task is not None:
-            _set_attribute(task, match.group(1), match.group(2))
+            issues += _set_attribute(task, match.group(1), match.group(2))
             continue
         if (match := _GOAL.match(line)) is not None and current is not None and task is None:
             current.goal = _plain(match.group(1))
@@ -182,8 +189,11 @@ def _milestone(line: str, issues: list[WbsIssue]) -> tuple[_Milestone | None, bo
     return _Milestone(_plain(name), _PRIORITIES.get(normalized, "Must"), "", []), False
 
 
-def _set_attribute(task: _Task, name: str, value: str) -> None:
+def _set_attribute(task: _Task, name: str, value: str) -> list[WbsIssue]:
+    """欄1行を読む。戻り値は読めなかった値の指摘(要件ID の形の違い)。"""
     values = _values(value)
+    if name.startswith("要件"):
+        return _set_req_ids(task, values)
     if name == "処理":
         task.function_ids += values
     elif name == "依存":
@@ -192,6 +202,21 @@ def _set_attribute(task: _Task, name: str, value: str) -> None:
         task.modules += values
     else:
         task.config_files += values
+    return []
+
+
+def _set_req_ids(task: _Task, values: list[str]) -> list[WbsIssue]:
+    issues: list[WbsIssue] = []
+    for value in values:
+        req_id = normalize_req_id(value)
+        if req_id is None:
+            message = (
+                f"タスク「{task.title}」の要件「{value}」が要件ID(FR-001 など)の形ではありません。"
+            )
+            issues.append(WbsIssue("WBS_FORMAT", message, "minor", target=value))
+        else:
+            task.req_ids = _unique([*task.req_ids, req_id])
+    return issues
 
 
 def _to_plan(milestones: list[_Milestone], environment: str) -> tuple[PlanModel, list[WbsIssue]]:
@@ -222,6 +247,7 @@ def _to_plan(milestones: list[_Milestone], environment: str) -> tuple[PlanModel,
                         depends_on=[renames.get(d, d) for d in task.depends_on],
                         modules=task.modules,
                         config_files=task.config_files,
+                        req_ids=task.req_ids,
                     )
                     for task in milestone.tasks
                 ],

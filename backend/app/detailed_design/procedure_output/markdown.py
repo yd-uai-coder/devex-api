@@ -4,7 +4,7 @@ docs/external_design.md 2.8節「出力」。作成方針
 (appendix/devex_implementation_procedure_guideline.md)5・9・12・17章の形で、次の3つを作る。
 
 - `to_index_markdown`: `implementation_procedure/index.md`(実装概要・実装前提・単位の一覧・
-  未定義の一覧・完了条件)。段階8が承認済みでなければ「未承認」とだけ書く(詳細設計書の章と同じ)。
+  要件との対応・未定義の一覧・完了条件)。段階8が承認済みでなければ「未承認」とだけ書く(詳細設計書の章と同じ)。
 - `to_unit_markdown`: 単位ごとの md(人向け)。参照する設計は ID(見出し)だけを書き、中身を
   書き写さない。段階5の手順のシーケンス図だけは添える。
 - `to_ai_markdown`: AI 向けの版(`ai/<単位ID>.md`と、画面の「AI 向けにコピー」)。人向けと同じ
@@ -24,6 +24,7 @@ from app.detailed_design.procedure_doc_refs import ExpandedRef, UnitContext
 from app.detailed_design.procedure_output.source import (
     LEVEL_LABELS,
     ORIGIN_LABELS,
+    REQUIREMENTS_MISSING_TEXT,
     ProcedureOutputSource,
     UnitFinding,
     count_by_level,
@@ -32,6 +33,7 @@ from app.detailed_design.procedure_output.source import (
     unit_filename,
     unit_findings,
 )
+from app.documents.requirements.model import SOURCE_LABEL
 
 PROCEDURE_UNAPPROVED_TEXT = (
     "未承認(段階8が承認されていません。承認すると、実装手順書が組み立てられます)"
@@ -43,11 +45,21 @@ UNIT_LIST_HEADERS: tuple[str, ...] = (
     "単位",
     "種別",
     "対象の処理",
+    "要件",
     "依存",
     "作成・変更するファイル(依存順)",
     "確認方法",
     "未定義",
 )
+
+# 「要件との対応」と「非機能要件・制約」の表(HTML も同じ)
+TRACE_HEADERS: tuple[str, ...] = ("要件ID", "優先度", "要件", "処理", "単位")
+TRACE_NOTE = (
+    "要件定義書の機能要件(Won't を除く)ごとに、担う処理と作業単位。"
+    "Must の要件に単位が無ければ、未定義の一覧に指摘が出る。"
+)
+CONSTRAINTS_HEADING = "非機能要件・制約(要件定義書)"
+CONSTRAINT_HEADERS: tuple[str, ...] = ("要件ID", "大項目・種類", "要件", "出どころ")
 
 # 単位の完了条件(すべての単位に共通。作成方針12章)
 COMPLETION_CRITERIA: tuple[str, ...] = (
@@ -95,8 +107,9 @@ def to_index_markdown(source: ProcedureOutputSource) -> str:
     lines += _overview(source)
     lines += _premises(source)
     lines += _unit_list(source)
+    lines += _trace(source)
     lines += _finding_list(source)
-    lines += ["## 5. 完了条件", "", "各単位の完了条件(すべての単位に共通):", ""]
+    lines += ["## 6. 完了条件", "", "各単位の完了条件(すべての単位に共通):", ""]
     lines += [f"- [ ] {c}" for c in (*COMPLETION_CRITERIA, DECIDED_CRITERION)]
     return "\n".join(lines).rstrip() + "\n"
 
@@ -124,6 +137,43 @@ def _premises(source: ProcedureOutputSource) -> list[str]:
     lines = ["## 2. 実装前提・制約", "", f"### {labels.environment}", ""]
     lines += [source.environment.strip() or "—", "", f"### {labels.rules}", ""]
     lines += [f"- {rule}" for rule in source.rules] or ["—"]
+    lines += ["", f"### {CONSTRAINTS_HEADING}", ""]
+    if not source.requirements_available:
+        lines.append(REQUIREMENTS_MISSING_TEXT)
+    elif source.constraints:
+        lines += md_table(CONSTRAINT_HEADERS, constraint_table_rows(source))
+    else:
+        lines.append("—")
+    return [*lines, ""]
+
+
+def constraint_table_rows(source: ProcedureOutputSource) -> list[list[str]]:
+    """非機能要件・制約の表の行(HTML も同じ)。"""
+    return [
+        [row.id, row.category, row.text, SOURCE_LABEL[row.source]] for row in source.constraints
+    ]
+
+
+def trace_table_rows(source: ProcedureOutputSource) -> list[list[str]]:
+    """「要件との対応」の表の行(HTML も同じ)。処理・単位が無ければ「なし」。"""
+    return [
+        [
+            t.req_id,
+            t.priority,
+            t.text,
+            ", ".join(t.functions) or "なし",
+            ", ".join(t.units) or "なし",
+        ]
+        for t in source.trace
+    ]
+
+
+def _trace(source: ProcedureOutputSource) -> list[str]:
+    lines = ["## 4. 要件との対応", ""]
+    if not source.requirements_available:
+        return [*lines, REQUIREMENTS_MISSING_TEXT, ""]
+    lines += [TRACE_NOTE, ""]
+    lines += md_table(TRACE_HEADERS, trace_table_rows(source)) if source.trace else ["—"]
     return [*lines, ""]
 
 
@@ -134,7 +184,16 @@ def _unit_list(source: ProcedureOutputSource) -> list[str]:
         name = f"{unit.unit_id} {unit.task.title}"
         if procedure is None:
             rows.append(
-                [name, _kind(unit), _functions(unit), _depends(unit), NOT_GENERATED_TEXT, "", ""]
+                [
+                    name,
+                    _kind(unit),
+                    _functions(unit),
+                    _requirements(source, unit),
+                    _depends(unit),
+                    NOT_GENERATED_TEXT,
+                    "",
+                    "",
+                ]
             )
             continue
         rows.append(
@@ -142,6 +201,7 @@ def _unit_list(source: ProcedureOutputSource) -> list[str]:
                 f"[{name}](./{unit_filename(unit)})",
                 _kind(unit),
                 _functions(unit),
+                _requirements(source, unit),
                 _depends(unit),
                 "、".join(f"`{f.path}`" for f in procedure.files) or "—",
                 " / ".join(procedure.verify),
@@ -161,7 +221,7 @@ def _unit_list(source: ProcedureOutputSource) -> list[str]:
 
 def _finding_list(source: ProcedureOutputSource) -> list[str]:
     lines = [
-        "## 4. 未定義・要決定の一覧(実装可能性チェックの結果)",
+        "## 5. 未定義・要決定の一覧(実装可能性チェックの結果)",
         "",
         f"{source.labels.fix_guide}手順書の上では決めない。",
         "",
@@ -259,6 +319,11 @@ def to_ai_markdown(source: ProcedureOutputSource, unit_id: str) -> str:
     lines += ["## 今回の実装単位", ""]
     functions = ", ".join(unit.task.function_ids) or "なし"
     lines += [f"{unit.unit_id} {unit.task.title}(種別: {_kind(unit)} / 処理: {functions})", ""]
+    requirements = source.unit_requirements(unit.unit_id)
+    if requirements:
+        lines += ["実現する要件:", ""]
+        lines += [f"- {r}: {source.requirement_texts.get(r, '—')}" for r in requirements]
+        lines.append("")
     lines += [f"目的: {procedure.purpose.strip() or '—'}", ""]
     depends = _depends(unit)
     lines += [f"前提: {f'{depends} まで実装済み' if depends else 'なし'}", ""]
@@ -331,6 +396,10 @@ def _functions(unit: PlanUnit) -> str:
     return ", ".join(unit.task.function_ids) or "—"
 
 
+def _requirements(source: ProcedureOutputSource, unit: PlanUnit) -> str:
+    return ", ".join(source.unit_requirements(unit.unit_id)) or "—"
+
+
 def _depends(unit: PlanUnit) -> str:
     return ", ".join(d.strip() for d in unit.task.depends_on if d.strip())
 
@@ -338,7 +407,7 @@ def _depends(unit: PlanUnit) -> str:
 def _unit_meta(source: ProcedureOutputSource, unit: PlanUnit) -> str:
     return (
         f"種別: {_kind(unit)} / マイルストーン: {unit.milestone} {source.milestone_name(unit)}"
-        f" / 依存: {_depends(unit) or 'なし'}"
+        f" / 要件: {_requirements(source, unit)} / 依存: {_depends(unit) or 'なし'}"
     )
 
 

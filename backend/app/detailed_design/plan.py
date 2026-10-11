@@ -65,6 +65,8 @@ class PlanTask(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
     modules: list[str] = Field(default_factory=list)
     config_files: list[str] = Field(default_factory=list)
+    # 要件ID。簡易モードの WBS の「要件」欄だけが埋める(詳細設計モードは段階1の処理から導く)
+    req_ids: list[str] = Field(default_factory=list)
 
 
 class Milestone(BaseModel):
@@ -180,6 +182,7 @@ def normalize_plan(model: PlanModel, module_paths: Sequence[str]) -> PlanModel:
                 depends_on=_clean(task.depends_on),
                 modules=_modules(task.modules, module_paths),
                 config_files=_clean(task.config_files),
+                req_ids=_clean(task.req_ids),
             )
             for task in milestone.tasks
             if task.title.strip()

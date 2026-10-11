@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.detailed_design.function_list import FunctionListModel, FunctionRow
 from app.detailed_design.plan import PLAN_STAGE, PlanModel, PlanTask, normalize_plan
 from app.detailed_design.procedure_doc import (
     DesignIndex,
@@ -27,6 +28,7 @@ from app.detailed_design.procedure_doc import (
     unit_refs,
 )
 from app.detailed_design.procedure_doc_refs import UnitContext, unit_context
+from app.detailed_design.requirement_trace import unit_req_ids
 from app.detailed_design.simple_procedure import (
     SimpleDesignBook,
     WbsIssue,
@@ -120,6 +122,16 @@ class ProcedureBasis:
         if self.mode == "simple":
             return simple_unit_context(unit, self.book, self.plan.environment)
         return unit_context(unit, self.stages)
+
+    def functions(self) -> list[FunctionRow] | None:
+        """段階1の処理(要件の追跡の元)。簡易モードは段階1が無いので None。"""
+        if self.mode == "simple":
+            return None
+        return FunctionListModel.model_validate(self.stages.get(1) or {}).functions
+
+    def unit_req_ids(self) -> dict[str, list[str]]:
+        """作業単位 → 要件ID。詳細設計モードは単位の処理から、簡易モードは WBS の「要件」欄。"""
+        return unit_req_ids(self.units, self.functions())
 
 
 def procedure_basis(

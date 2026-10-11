@@ -46,6 +46,8 @@ async def test_e2e_fake_outputs_pass_simple_stage8_and_bundle(db_session: AsyncS
     # 段階8だけが開き、作業単位は偽の実装計画書の WBS から読める(文書の指摘は無い)
     [stage8] = await stages.list_stages(project)
     assert (stage8.stage, stage8.mode, stage8.is_open, stage8.issues) == (8, "simple", True, [])
+    # 単位の要件は WBS の「要件」欄(要件定義書の Must の FR-001 を担う単位がある)
+    assert stage8.unit_req_ids == {"M-01-T01": [], "M-01-T02": ["FR-001"]}
 
     # 全単位を生成する(画面の「生成」と同じく、受け付けてから実行する)
     units = ["M-01-T01", "M-01-T02"]

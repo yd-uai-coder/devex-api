@@ -284,6 +284,7 @@ def _functions(source: DocumentSource) -> str:
             e(f.kind),
             mono(f.trigger),
             e(", ".join(f.screens)),
+            e(", ".join(f.req_ids)),
             e(f.group),
             e(f.summary),
         ]
@@ -291,7 +292,7 @@ def _functions(source: DocumentSource) -> str:
     ]
     note = '<p class="muted">青い処理ID は、05 に手順がある処理。</p>' if with_procedure else ""
     return note + table(
-        ["処理ID", "名称", "種別", "トリガー", "関連画面", "機能グループ", "概要"],
+        ["処理ID", "名称", "種別", "トリガー", "関連画面", "要件", "機能グループ", "概要"],
         rows,
         label="機能一覧",
     )

@@ -293,6 +293,7 @@ def procedure_source(
         model,
         validate_stage(PROCEDURE_DOC_STAGE, model, sources) if model is not None else [],
         sources.documents.get("requirements", ""),
+        sources.document_models.get("requirements"),
     )
 
 

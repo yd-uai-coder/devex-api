@@ -129,6 +129,7 @@ from app.detailed_design.procedure_drafting import (
     build_procedure_messages,
     to_procedure_draft,
 )
+from app.detailed_design.requirement_trace import api_req_ids
 from app.detailed_design.stages import Fingerprint
 from app.detailed_design.structure import STRUCTURE_SUBJECT, ModuleListModel, merge_modules
 from app.detailed_design.structure_drafting import (
@@ -205,12 +206,14 @@ StageGenerator = Callable[[StageGenerationContext], Awaitable[dict]]
 
 
 async def generate_function_list(context: StageGenerationContext) -> dict:
-    """段階1: 外部設計書から処理を下書きし、前の版と突き合わせて処理IDと機能グループを決める。"""
+    """段階1: 外部設計書から処理を下書きし、前の版と突き合わせて処理IDと機能グループを決める。
+    API の処理の要件ID は、外部設計書の model の 2.6 の行から写す。"""
     messages = build_function_list_messages(context.sources.documents.get("external_design", ""))
     output = await invoke_structured(context.llm, FunctionListGenerationOutput, messages)
     previous = context.previous
     previous_model = FunctionListModel.model_validate(previous) if previous else None
-    return merge_draft(to_drafts(output), previous_model).model_dump(mode="json")
+    requirements = api_req_ids(context.sources.document_models.get("external_design"))
+    return merge_draft(to_drafts(output), previous_model, requirements).model_dump(mode="json")
 
 
 async def generate_data_flow(context: StageGenerationContext) -> dict:

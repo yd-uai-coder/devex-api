@@ -557,12 +557,23 @@ def test_internal_design_prompt_asks_for_fixed_format_headings_for_uml_generatio
 def test_implementation_plan_prompt_asks_for_vertical_units_with_ids() -> None:
     """実装計画書プロンプトが、WBSを縦割り・ID付きの決まった書式で書くよう指示していること
     (簡易モードの実装手順書が、この書式を作業単位として決定的に読むため)。"""
+    from app.detailed_design.simple_procedure import parse_wbs
     from app.services.doc_generator_service import _DOC_TYPE_PROMPTS
 
     prompt = _DOC_TYPE_PROMPTS["implementation_plan"]
 
     assert "### M-<2桁の連番>: <マイルストーン名> ── 【Must/Should/Could】" in prompt
     assert "- [ ] M-<2桁>-T<2桁> [機能] <タスク名>" in prompt
-    for field in ("処理: DF-<連番>", "依存: M-<2桁>-T<2桁>", "モジュール: <パス>", "環境・設定:"):
+    for field in (
+        "処理: DF-<連番>",
+        "要件: FR-<3桁>",
+        "依存: M-<2桁>-T<2桁>",
+        "モジュール: <パス>",
+        "環境・設定:",
+    ):
         assert field in prompt
+    # 例の WBS も、決まった書式どおりに読める(要件の欄を含む)
+    example = prompt.split("```\n")[1]
+    tasks = parse_wbs("## 4.2 タスク分解（WBS）\n" + example).plan.milestones[0].tasks
+    assert [task.req_ids for task in tasks] == [[], ["FR-001"]]
     assert "タスクに番号を付けない" not in prompt

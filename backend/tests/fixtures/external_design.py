@@ -12,7 +12,13 @@ from app.documents.external_design.drafting import (
     build_external_design_messages,
     to_draft,
 )
-from app.documents.requirements.drafting import RequirementsGenerationOutput
+from app.documents.requirements import build_model as build_requirements_model
+from app.documents.requirements import render_requirements
+from app.documents.requirements.drafting import (
+    RequirementsGenerationOutput,
+    build_requirements_messages,
+)
+from app.documents.requirements.drafting import to_draft as to_requirements_draft
 
 
 def external_design_output(
@@ -64,3 +70,20 @@ async def e2e_fake_external_design_md(llm: E2eFakeLLM) -> str:
     output = await llm.with_structured_output(ExternalDesignGenerationOutput).ainvoke(messages)
     assert isinstance(output, ExternalDesignGenerationOutput)
     return render_external_design(build_model(to_draft(output), None, None))
+
+
+async def e2e_fake_upstream(llm: E2eFakeLLM) -> dict[str, tuple[str, dict]]:
+    """E2E 用の偽 LLM の要件定義書と外部設計書を、生成と同じく model → md にしたもの
+    (文書の種類 → (md, model))。外部設計書は要件定義書の要件ID を写す(要件の追跡が読む)。"""
+    messages = build_requirements_messages("", {}, None, None)
+    output = await llm.with_structured_output(RequirementsGenerationOutput).ainvoke(messages)
+    assert isinstance(output, RequirementsGenerationOutput)
+    requirements = build_requirements_model(to_requirements_draft(output), None, {}, None)
+    messages = build_external_design_messages(render_requirements(requirements), None)
+    external = await llm.with_structured_output(ExternalDesignGenerationOutput).ainvoke(messages)
+    assert isinstance(external, ExternalDesignGenerationOutput)
+    design = build_model(to_draft(external), None, requirements)
+    return {
+        "requirements": (render_requirements(requirements), requirements.model_dump(mode="json")),
+        "external_design": (render_external_design(design), design.model_dump(mode="json")),
+    }

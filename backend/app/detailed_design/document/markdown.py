@@ -96,11 +96,20 @@ def _chapter_body(source: DocumentSource, chapter: Chapter) -> list[str]:
 def _functions(source: DocumentSource) -> list[str]:
     assert source.function_list is not None
     rows = [
-        [f.id, f.name, f.kind, f.trigger, ", ".join(f.screens), f.group, f.summary]
+        [
+            f.id,
+            f.name,
+            f.kind,
+            f.trigger,
+            ", ".join(f.screens),
+            ", ".join(f.req_ids),
+            f.group,
+            f.summary,
+        ]
         for f in source.function_list.functions
     ]
     return md_table(
-        ["処理ID", "名称", "種別", "トリガー", "関連画面", "機能グループ", "概要"], rows
+        ["処理ID", "名称", "種別", "トリガー", "関連画面", "要件", "機能グループ", "概要"], rows
     )
 
 

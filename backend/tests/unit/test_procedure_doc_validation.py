@@ -61,10 +61,13 @@ def test_unit_not_in_plan_is_mismatch() -> None:
     issues = validate_procedure_doc(procedure_doc_model(unit_id="M-02-T01"), _sources())
 
     assert [(i.code, i.severity, i.fix_stage) for i in issues] == [("UNIT_MISMATCH", "error", 8)]
+    # 直し方は画面の操作(今の単位へ付け替えるか消す)で案内する
+    assert "「段階7に無い手順書」で、今の単位へ付け替えるか消してください" in issues[0].message
 
 
 def test_renamed_task_is_mismatch() -> None:
-    """段階7を並べ替えると ID が同じでもタスク名が変わる。自動で付け替えず、作り直させる。"""
+    """段階7を並べ替えると ID が同じでもタスク名が変わる。自動で付け替えず、人に付け替えか削除を
+    選ばせる。"""
     issues = validate_procedure_doc(procedure_doc_model(title="開発環境を用意する"), _sources())
 
     assert _codes(issues) == ["UNIT_MISMATCH"]

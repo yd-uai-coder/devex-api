@@ -269,6 +269,7 @@ class DesignStageService:
                 model,
                 validate_stage(PROCEDURE_DOC_STAGE, model, sources),
                 sources.documents.get("requirements", ""),
+                sources.document_models.get("requirements"),
             )
         except ValidationError as exc:
             raise DesignUnitProcedureNotFoundError(
@@ -359,6 +360,8 @@ class DesignStageService:
         - ER: 段階3の ER(全体1枚)の要約。
         - 構成図: 段階4の構成図(全体1枚)の要約。
 
+        - 文書の model: 要件定義書・外部設計書の表示中の版の model(要件の追跡が読む)。
+
         簡易モード(段階8だけ)は、文書だけを渡す(図は段階8の入力にならない)。
         """
         texts = {
@@ -371,8 +374,15 @@ class DesignStageService:
             for stage, row in rows.items()
             if views[stage].state == "approved" and row.model
         }
+        models = {
+            doc_type: document.model
+            for doc_type, document in documents.items()
+            if document is not None and document.model
+        }
         if project.mode != "detailed":
-            return StageSources(documents=texts, stages=approved, mode="simple")
+            return StageSources(
+                documents=texts, stages=approved, mode="simple", document_models=models
+            )
         project_id = project.id
         diagrams = await self._diagrams.list_by_notation(project_id, "dfd")
         er = await self._diagrams.get_by_subject(
@@ -384,6 +394,7 @@ class DesignStageService:
         return StageSources(
             documents=texts,
             stages=approved,
+            document_models=models,
             dfd_diagrams={diagram.subject: _dfd_summary(diagram) for diagram in diagrams},
             er_diagram=_er_summary(er) if er is not None else None,
             component_diagram=_component_summary(component) if component is not None else None,
@@ -493,11 +504,10 @@ def _approved_versions(
 
 def _to_read(view: StageView, row: DesignStage | None, sources: StageSources) -> DesignStageRead:
     # 段階8の作業単位(詳細設計モードは段階7、簡易モードは実装計画書の WBS)。画面の単位の一覧が使う
-    plan = (
-        _basis(sources).plan.model_dump(mode="json")
-        if view.stage == PROCEDURE_DOC_STAGE and view.is_open
-        else None
+    basis = (
+        _basis(sources) if view.stage == PROCEDURE_DOC_STAGE and view.is_open else None
     )
+    plan = basis.plan.model_dump(mode="json") if basis is not None else None
     if row is not None:
         issues = validate_stage(view.stage, row.model, sources)
     elif view.is_open:
@@ -520,6 +530,7 @@ def _to_read(view: StageView, row: DesignStage | None, sources: StageSources) ->
         issues=[StageIssueRead.model_validate(issue, from_attributes=True) for issue in issues],
         dfd_accesses=_dfd_access_reads(sources) if view.stage == DATA_MODEL_STAGE else [],
         plan=plan,
+        unit_req_ids=basis.unit_req_ids() if basis is not None else {},
     )
 
 

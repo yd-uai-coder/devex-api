@@ -75,3 +75,11 @@ def test_markdown_marks_unapproved_and_skipped_chapters() -> None:
     assert "省略(段階6を飛ばしました)" in text
     assert "テーブル定義" not in text
     assert "→ 詳細:" not in text  # 省略なら 05 から 06 へ紐づけない
+
+
+def test_markdown_functions_have_requirement_column() -> None:
+    """01 の機能一覧は、関連画面の後ろに処理の要件ID の列を持つ。"""
+    text = to_markdown(sample_document_source())
+
+    assert "| 処理ID | 名称 | 種別 | トリガー | 関連画面 | 要件 | 機能グループ | 概要 |" in text
+    assert "| SCR-001 | FR-001 | reservations |" in text

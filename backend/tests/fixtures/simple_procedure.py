@@ -35,6 +35,7 @@ PLAN_MD = """# 4. 実装計画書
   - 環境・設定: docker-compose.yml, .env.example
 - [ ] M-01-T02 [機能] 予約を登録する
   - 処理: DF-1
+  - 要件: FR-001
   - 依存: M-01-T01
   - モジュール: `app/api/reservations.py`, app/services/reservation.py
   - 環境・設定: なし
@@ -43,6 +44,7 @@ PLAN_MD = """# 4. 実装計画書
 - ゴール: 自分の予約を一覧で確かめられる
 - [ ] M-02-T01 [機能] 予約の一覧を返す
   - 処理: DF-2
+  - 要件: FR-002
   - 依存: M-01-T02
   - モジュール: app/api/reservations.py
 
@@ -135,6 +137,42 @@ REQUIREMENTS_MD = """# 1. 要件定義書
 """
 
 
+# 要件定義書の model(`PLAN_MD`の「要件」欄とそろえる。Must の FR-001 と Should の FR-002)
+REQUIREMENTS_MODEL: dict = {
+    "purpose": "備品を予約する",
+    "rows": [
+        {"id": "FR-001", "kind": "FR", "priority": "Must", "text": "予約の登録", "source": "user"},
+        {
+            "id": "FR-002",
+            "kind": "FR",
+            "priority": "Should",
+            "text": "予約の一覧",
+            "source": "user",
+        },
+        {"id": "FR-003", "kind": "FR", "priority": "Won't", "text": "決済", "source": "assumed"},
+        {
+            "id": "NFR-001",
+            "kind": "NFR",
+            "category": "セキュリティ",
+            "text": "通信は HTTPS",
+            "source": "adopted",
+        },
+        {
+            "id": "CON-001",
+            "kind": "CON",
+            "category": "技術スタック",
+            "text": "FastAPI と PostgreSQL",
+            "source": "user",
+        },
+    ],
+}
+
+
+def simple_document_models(requirements: dict | None = None) -> dict[str, dict]:
+    """簡易モードの文書の model(要件定義書だけ。要件の追跡が読む)。"""
+    return {"requirements": REQUIREMENTS_MODEL if requirements is None else requirements}
+
+
 def simple_documents(**overrides: str) -> dict[str, str]:
     """簡易モードの4文書(文書の種類 → 本文)。`overrides`で1つずつ差し替える。"""
     documents = {
@@ -184,7 +222,10 @@ def sample_simple_procedure_source(*, state: StageState = "approved") -> Procedu
     `simple_procedure_doc_model()`、検証の指摘は実際の検証の結果)。"""
     documents = simple_documents()
     model = simple_procedure_doc_model()
-    issues = validate_procedure_doc(model, StageSources(documents=documents, mode="simple"))
+    sources = StageSources(
+        documents=documents, mode="simple", document_models=simple_document_models()
+    )
+    issues = validate_procedure_doc(model, sources)
     return procedure_output_source(
         "予約システム",
         state,
@@ -192,17 +233,22 @@ def sample_simple_procedure_source(*, state: StageState = "approved") -> Procedu
         model,
         issues,
         documents["requirements"],
+        REQUIREMENTS_MODEL,
     )
 
 
 async def create_simple_procedure_project(
     session: AsyncSession, **overrides: str
 ) -> Project:
-    """簡易モードのプロジェクト(4文書`simple_documents()`を1版ずつ持ち、段階8が開いている)。"""
+    """簡易モードのプロジェクト(4文書`simple_documents()`を1版ずつ持ち、段階8が開いている)。
+    要件定義書は model(`simple_document_models()`)も持つ。"""
     project = await create_detailed_project(session, mode="simple", with_documents=False)
     documents = GeneratedDocumentRepository(session)
+    models = simple_document_models()
     for doc_type, content in simple_documents(**overrides).items():
-        await documents.create_version(project_id=project.id, doc_type=doc_type, content=content)
+        await documents.create_version(
+            project_id=project.id, doc_type=doc_type, content=content, model=models.get(doc_type)
+        )
     await session.commit()
     return project
 
