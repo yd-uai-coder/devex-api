@@ -220,6 +220,11 @@ def initial_states() -> dict[str, PointState]:
     return {d.key: PointState(d.key, "open", "") for d in POINT_DEFS}
 
 
+def as_scale(value: str | None) -> Scale | None:
+    """`projects.hearing_scale`の値を規模にする(未決・知らない値は None)。"""
+    return value if value in get_args(Scale) else None  # type: ignore[return-value]
+
+
 def effective_scale(scale: Scale | None) -> Scale:
     """必須を数える規模。決まるまでは「個人・小規模」の列で数える。"""
     return scale or DEFAULT_SCALE

@@ -50,6 +50,9 @@ OUT_OF_SCOPE_PRIORITIES: tuple[str, ...] = ("Should", "Could", "Won't")
 
 # MoSCoW の行の、優先度と中身の区切り(半角・全角のコロン)
 _SCOPE_SEPARATOR = re.compile(r"[:：]")
+# 要件の表の行(`| FR-010 | Should | 要件 | 出どころ | 観点 |`)のセルの区切り(`\|`は区切りでない)
+_TABLE_CELL_SEPARATOR = re.compile(r"(?<!\\)\|")
+_ESCAPED_PIPE = "\\|"
 
 # ファイル名に使えない文字(と空白)。`_`に置き換える
 _UNSAFE_FILENAME = re.compile(r'[\\/:*?"<>|\s]+')
@@ -205,16 +208,31 @@ def fix_target_text(finding: UnitFinding) -> str:
 
 def out_of_scope_lines(requirements: str) -> list[str]:
     """要件定義書の 1.4節(MoSCoW)から、Should / Could / Won't の行を取り出す(行頭の`-`と
-    太字の印を除く)。中身の無い行(`Could have: `)は除く。節が無ければ空。"""
+    太字の印を除く)。中身の無い行(`Could have: `)は除く。節が無ければ空。
+
+    1.4 が要件の表(model から組み立てた要件定義書)なら、優先度の列が Should / Could / Won't の
+    行を「Should(FR-010): 要件」の形にする。以前の箇条書きの要件定義書も読み続ける。"""
     section = extract_section(requirements, REQUIREMENTS_SCOPE_SECTION)
     lines: list[str] = []
     for line in section.splitlines():
+        if line.strip().startswith("|"):
+            row = _scope_table_row(line)
+            if row is not None:
+                lines.append(row)
+            continue
         text = line.strip().lstrip("-*").strip().replace("**", "")
         if not any(text.startswith(priority) for priority in OUT_OF_SCOPE_PRIORITIES):
             continue
         if _SCOPE_SEPARATOR.split(text, maxsplit=1)[-1].strip():
             lines.append(text)
     return lines
+
+
+def _scope_table_row(line: str) -> str | None:
+    cells = [c.strip() for c in _TABLE_CELL_SEPARATOR.split(line.strip().strip("|"))]
+    if len(cells) < 3 or cells[1] not in OUT_OF_SCOPE_PRIORITIES or not cells[2]:
+        return None
+    return f"{cells[1]}({cells[0]}): {cells[2].replace(_ESCAPED_PIPE, '|')}"
 
 
 def unit_filename(unit: PlanUnit) -> str:

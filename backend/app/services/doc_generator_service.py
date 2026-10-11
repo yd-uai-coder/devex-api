@@ -3,23 +3,47 @@ from datetime import UTC, datetime
 
 import structlog
 from langchain_core.messages import HumanMessage, SystemMessage
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.llm.gemini import extract_text_content, get_gemini_llm
 from app.core.database import AsyncSessionLocal
+from app.documents.requirements import (
+    RequirementsModel,
+    build_model,
+    mark_adopted,
+    render_requirements,
+    source_counts,
+    validate_requirements,
+)
+from app.documents.requirements.drafting import (
+    RequirementsGenerationOutput,
+    build_requirements_messages,
+    to_draft,
+)
+from app.hearing import as_scale
 from app.models.chat_history import ChatHistory
 from app.models.generated_document import GeneratedDocument
 from app.models.project import Project
 from app.repositories.chat_history import ChatHistoryRepository
 from app.repositories.generated_document import DOC_TYPES, GeneratedDocumentRepository
+from app.repositories.hearing_point import HearingPointRepository
 from app.repositories.project import ProjectRepository
+from app.schemas.document import (
+    AssumedRequirementRead,
+    GeneratedDocumentRead,
+    RequirementIssueRead,
+    RequirementsSummaryRead,
+)
 from app.services.errors import (
     DocGenerationInProgressError,
     DocumentNotFoundError,
     LLMQuotaExceededError,
+    RequirementNotAssumedError,
+    RequirementNotFoundError,
 )
 from app.services.generation_staleness import is_stale
-from app.services.llm_retry import invoke_with_retry
+from app.services.llm_retry import invoke_structured, invoke_with_retry
 
 logger = structlog.get_logger(__name__)
 
@@ -46,27 +70,8 @@ _COMMON_FORMAT_GUIDANCE = (
 
 # doc_typeごとに特化したシステムプロンプト(docs/internal_design.md 3.3節)。
 # 出力フォーマット(見出し構成)を明示することで、4文書の粒度・構成を安定させる。
+# 要件定義書はここに無い(構造化出力 → model → md。app/documents/requirements/drafting.py)。
 _DOC_TYPE_PROMPTS: dict[str, str] = {
-    "requirements": (
-        "あなたは優秀なITコンサルタント・システムアナリストです。"
-        "入力された【プロジェクト概要情報】をもとに、システム開発の「要件定義書」をMarkdown形式で"
-        "作成してください。前置きや断り書きは不要です。Markdown本文のみを出力してください。\n\n"
-        "出力フォーマット:\n"
-        "# 1. 要件定義書\n\n"
-        "## 1.1 プロジェクトの目的・背景\n- 解決したい課題、目指すゴール\n\n"
-        "## 1.2 ターゲットユーザー・利用シーン\n"
-        "- 主なユーザー層と想定される使用シチュエーション\n\n"
-        "## 1.3 システム化の範囲（In Scope / Out of Scope）\n"
-        "- 今回開発する範囲（In Scope）\n"
-        "- 今回は開発しない範囲（Out of Scope）\n\n"
-        "## 1.4 機能要件（MoSCoW優先度）\n"
-        "- **Must have（必須機能）**: \n- **Should have（推奨機能）**: \n"
-        "- **Could have（あると良い機能）**: \n- **Won't have（見送り機能）**: \n\n"
-        "## 1.5 非機能要件\n- パフォーマンス・応答性\n"
-        "- セキュリティ・権限管理\n- 運用・保守・拡張性\n\n"
-        "## 1.6 制約条件・前提条件\n- 技術スタックの制約、予算・スケジュールの前提"
-        + _COMMON_FORMAT_GUIDANCE
-    ),
     "external_design": (
         "あなたは優秀なUI/UXデザイナー・システムアーキテクトです。"
         "以下の【要件定義書】に基づき、ユーザー視点・外部仕様に関する「外部設計書」をMarkdown形式で"
@@ -181,7 +186,7 @@ _DOC_TYPE_PROMPTS: dict[str, str] = {
 }
 
 # 各doc_typeの入力として使う、前段で確定済みの文書(doc_type名のタプル)。
-# ここに無いdoc_type(requirements)は、代わりにチャット全履歴(transcript)を直接読む。
+# ここに無いdoc_type(requirements)は、代わりにチャット全履歴(transcript)と観点の表を読む。
 # 後続の文書は生のチャット履歴を再解釈せず、前段の確定済み文書だけを入力にすることで、
 # 4文書間の一貫性を確保する。
 _DOC_TYPE_INPUTS: dict[str, tuple[str, ...]] = {
@@ -248,7 +253,7 @@ class DocGeneratorService:
         self._projects = ProjectRepository(session)
         self._chat_histories = ChatHistoryRepository(session)
         self._documents = GeneratedDocumentRepository(session)
-
+        self._hearing_points = HearingPointRepository(session)
 
     async def request_generation(self, project: Project) -> str:
         """生成の要求を受け付け、`status`を`generating`にしてcommitする。戻り値は受け付ける前の状態
@@ -333,9 +338,15 @@ class DocGeneratorService:
             generated: dict[str, str] = {}
             doc_types = DOC_TYPES_BY_MODE[project.mode]
             for doc_type in doc_types:
-                content = await self._generate_one(doc_type, transcript, generated, llm=llm)
+                model: dict | None = None
+                if doc_type == "requirements":
+                    content, model = await self._generate_requirements(
+                        project, transcript, llm=llm
+                    )
+                else:
+                    content = await self._generate_one(doc_type, transcript, generated, llm=llm)
                 await self._documents.create_version(
-                    project_id=project_id, doc_type=doc_type, content=content
+                    project_id=project_id, doc_type=doc_type, content=content, model=model
                 )
                 generated[doc_type] = content
 
@@ -407,21 +418,61 @@ class DocGeneratorService:
         await self._session.commit()
         return restored
 
+    async def adopt_requirement(self, project: Project, req_id: str) -> GeneratedDocument:
+        """現在の版の要件定義書の推測の要件を、利用者が確かめた「採用」にする(LLMは呼ばない)。
+
+        同じ版の model と md を書き換え、版は増やさない(中身は変わらないので、後続の段階を
+        古くしない)。生成中は409。要件が無い・model の無い版は404、推測でない要件は409。"""
+        if project.status == "generating":
+            raise DocGenerationInProgressError(
+                "設計書を生成しています。完了してから再度お試しください。"
+            )
+        document = await self._documents.get_current(
+            project_id=project.id, doc_type="requirements"
+        )
+        if document is None:
+            raise DocumentNotFoundError("requirements not found")
+        model = parse_requirements_model(document.model)
+        if model is None or all(row.id != req_id for row in model.rows):
+            raise RequirementNotFoundError(f"Requirement {req_id} not found")
+        adopted = mark_adopted(model, req_id)
+        if adopted is None:
+            raise RequirementNotAssumedError(f"Requirement {req_id} is not assumed")
+        await self._documents.replace_model(
+            document,
+            content=render_requirements(adopted),
+            model=adopted.model_dump(mode="json"),
+        )
+        await self._session.commit()
+        await self._session.refresh(document)
+        return document
+
+    async def _generate_requirements(
+        self, project: Project, transcript: str, *, llm
+    ) -> tuple[str, dict]:
+        """要件定義書を構造化出力で下書きし、model と md を作る。入力は会話・観点の表・前の版の
+        要件(ID を引き継ぐため)。出どころは観点の状態を上限に直す(app/documents/requirements)。"""
+        states = await self._hearing_points.load_states(project.id)
+        scale = as_scale(project.hearing_scale)
+        current = await self._documents.get_current(
+            project_id=project.id, doc_type="requirements"
+        )
+        previous = parse_requirements_model(current.model if current else None)
+        messages = build_requirements_messages(transcript, states, scale, previous)
+        output = await invoke_structured(llm, RequirementsGenerationOutput, messages)
+        model = build_model(to_draft(output), previous, states, scale)
+        return render_requirements(model), model.model_dump(mode="json")
+
     async def _generate_one(
         self, doc_type: str, transcript: str, generated: dict[str, str], *, llm
     ) -> str:
-        """1種類のドキュメントを、doc_type専用のプロンプトでMarkdownとして生成する。
-        requirementsのみチャット全履歴(transcript)を直接読み、それ以外は前段で確定済みの
-        文書(generated、_DOC_TYPE_INPUTSが参照関係を定義)を入力にする。
+        """要件定義書の後の文書を、doc_type専用のプロンプトでMarkdownとして生成する。
+        前段で確定済みの文書(generated、_DOC_TYPE_INPUTSが参照関係を定義)を入力にする。
         単発呼び出しのためinvoke_with_retryでラップする。"""
         system_prompt = _DOC_TYPE_PROMPTS[doc_type]
-        if doc_type in _DOC_TYPE_INPUTS:
-            human_content = "\n\n".join(
-                f"## {_DOC_TYPE_LABELS[dep]}\n{generated[dep]}"
-                for dep in _DOC_TYPE_INPUTS[doc_type]
-            )
-        else:
-            human_content = transcript
+        human_content = "\n\n".join(
+            f"## {_DOC_TYPE_LABELS[dep]}\n{generated[dep]}" for dep in _DOC_TYPE_INPUTS[doc_type]
+        )
         messages = [
             SystemMessage(content=system_prompt),
             HumanMessage(content=human_content),
@@ -467,3 +518,44 @@ def _render_transcript(history: list[ChatHistory]) -> str:
         if entry.sender != "others"
     ]
     return "\n".join(lines)
+
+
+def parse_requirements_model(raw: dict | None) -> RequirementsModel | None:
+    """保存した model を読む。無い・壊れていれば None(md のまま使う)。"""
+    if raw is None:
+        return None
+    try:
+        return RequirementsModel.model_validate(raw)
+    except ValidationError:
+        return None
+
+
+def requirements_summary(document: GeneratedDocument) -> RequirementsSummaryRead | None:
+    """プレビューに出す要件定義書の出どころの件数・推測の要件・検証の指摘(LLMは呼ばない)。
+    model の無い版・ほかの文書は None。"""
+    if document.doc_type != "requirements":
+        return None
+    model = parse_requirements_model(document.model)
+    if model is None:
+        return None
+    return RequirementsSummaryRead(
+        counts={**source_counts(model)},
+        assumed=[
+            AssumedRequirementRead(id=r.id, kind=r.kind, text=r.text)
+            for r in model.rows
+            if r.source == "assumed"
+        ],
+        issues=[
+            RequirementIssueRead(
+                level=i.level, code=i.code, message=i.message, targets=list(i.targets)
+            )
+            for i in validate_requirements(model)
+        ],
+    )
+
+
+def document_read(document: GeneratedDocument) -> GeneratedDocumentRead:
+    """文書の応答。要件定義書は出どころの件数・推測の要件・検証の指摘を付ける。"""
+    read = GeneratedDocumentRead.model_validate(document)
+    read.requirements = requirements_summary(document)
+    return read

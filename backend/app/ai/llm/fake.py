@@ -52,6 +52,11 @@ from app.detailed_design.procedure_doc_drafting import (
 )
 from app.detailed_design.procedure_drafting import GeneratedStep, ProcedureGenerationOutput
 from app.detailed_design.structure_drafting import GeneratedModuleRow, ModuleListGenerationOutput
+from app.documents.requirements.drafting import (
+    GeneratedRequirement,
+    GeneratedUserScene,
+    RequirementsGenerationOutput,
+)
 from app.hearing import POINT_DEFS, is_point_key
 from app.schemas.hearing import (
     CardOptionOut,
@@ -89,17 +94,11 @@ _CARD_TARGET = re.compile(r"^- ([a-z_]+): ", re.MULTILINE)
 # requirementsと判定されてしまう。各プロンプトが自分自身の
 # 出力フォーマットとして持つ「# N. ラベル」という見出し(cross-reference表記には現れない、
 # doc_type固有の文字列)をマッチ対象にすることでこれを避ける。
+# 要件定義書は構造化出力(RequirementsGenerationOutput)で作るので、ここには無い。
 _DOC_TYPE_MARKERS: dict[str, str] = {
-    "requirements": "# 1. 要件定義書",
     "external_design": "# 2. 外部設計書",
     "internal_design": "# 3. 内部設計書",
     "implementation_plan": "# 4. 実装計画書",
-}
-_DOC_TYPE_LABELS: dict[str, str] = {
-    "requirements": "要件定義書",
-    "external_design": "外部設計書",
-    "internal_design": "内部設計書",
-    "implementation_plan": "実装計画書",
 }
 
 # 内部設計書は、内部設計書プロンプトが指示する固定形式の見出し(3.2節のテーブル・3.3節のAPI一覧・
@@ -550,6 +549,52 @@ def _hearing_reply(messages: list[Any]) -> HearingReplyOut:
     return HearingReplyOut(message=_HEARING_REPLY, cards=cards)
 
 
+# 要件定義書の偽物の要件(種別・優先度・大項目・本文・出どころ・観点)。出どころは
+# doc_generator_service が観点の表で上限をかける。推測の要件を1つ含め、プレビューの
+# 「採用にする」を E2E で試せるようにする。
+_REQUIREMENTS: tuple[tuple[str, str, str, str, str, str], ...] = (
+    ("FR", "Must", "", "[E2E Fake] 備品を予約できる", "user", "core"),
+    ("FR", "Should", "", "[E2E Fake] 予約の履歴を見られる", "user", "future"),
+    ("NFR", "", "可用性", "[E2E Fake] 半日止まってもよい", "adopted", "availability"),
+    ("NFR", "", "セキュリティ", "[E2E Fake] 通信を HTTPS で暗号化する", "assumed", "security"),
+    ("CON", "", "技術スタック", "[E2E Fake] Python と PostgreSQL を使う", "user", "tech"),
+)
+_PREVIOUS_SECTION = "## 前の版の要件\n"
+
+
+def _previous_ids(messages: list[Any]) -> dict[str, str]:
+    """プロンプトの【前の版の要件】(`ID|本文`の行)から、本文 → ID を読む(ID の引き継ぎの契約)。"""
+    human = "\n".join(str(m.content) for m in messages if isinstance(m, HumanMessage))
+    if _PREVIOUS_SECTION not in human:
+        return {}
+    section = human.split(_PREVIOUS_SECTION, 1)[1].split("\n\n", 1)[0]
+    pairs = [line.split("|", 1) for line in section.splitlines() if "|" in line]
+    return {text: req_id for req_id, text in pairs}
+
+
+def _requirements_output(messages: list[Any]) -> RequirementsGenerationOutput:
+    """要件定義書の下書きの偽物。前の版に同じ本文の要件があれば、その ID を prev_id に返す。"""
+    previous = _previous_ids(messages)
+    return RequirementsGenerationOutput(
+        purpose="[E2E Fake] 備品の予約を楽にする",
+        users=[GeneratedUserScene(user="[E2E Fake] 社員", scene="備品を借りるとき", source="user")],
+        in_scope=["[E2E Fake] 備品の予約"],
+        out_of_scope=["[E2E Fake] 決済"],
+        requirements=[
+            GeneratedRequirement(
+                kind=kind,  # type: ignore[arg-type]
+                prev_id=previous.get(text, ""),
+                priority=priority,  # type: ignore[arg-type]
+                category=category,
+                text=text,
+                source=source,  # type: ignore[arg-type]
+                points=[point],
+            )
+            for kind, priority, category, text, source, point in _REQUIREMENTS
+        ],
+    )
+
+
 class _FakeStructuredE2e:
     """`with_structured_output(schema)`が返す構造化出力用サブクライアントのE2E版。"""
 
@@ -572,6 +617,8 @@ class _FakeStructuredE2e:
             return _judge_points(messages)
         if self._schema is HearingReplyOut:
             return _hearing_reply(messages)
+        if self._schema is RequirementsGenerationOutput:
+            return _requirements_output(messages)
         # ヒアリング・UML生成スキーマ以外のスキーマが追加された場合は
         # 「対応漏れ」に気づけるよう黙って汎用値を返さず例外にする。
         raise NotImplementedError(f"E2eFakeLLMが未対応のスキーマ: {self._schema}")
@@ -607,10 +654,7 @@ class E2eFakeLLM:
                     return _INTERNAL_DESIGN_REPLY
                 if doc_type == "external_design":
                     return _EXTERNAL_DESIGN_REPLY
-                if doc_type == "implementation_plan":
-                    return _IMPLEMENTATION_PLAN_REPLY
-                label = _DOC_TYPE_LABELS[doc_type]
-                return f"# {label}(E2E Fake)\n\nこれはE2Eテスト用に生成されたダミーの{label}です。"
+                return _IMPLEMENTATION_PLAN_REPLY
         if "レビュアー" in system_text:
             return _SELF_DIAGNOSIS_REPLY
         # ヒアリング対話(_HEARING_SYSTEM_PROMPT、_OPENING_TURN_PROMPT共通)への応答。

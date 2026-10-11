@@ -5,14 +5,28 @@ import pytest
 import structlog.testing
 from sqlalchemy.ext.asyncio import AsyncSession
 from tests.fixtures.fake_llm import FakeLLM
+from tests.fixtures.requirements import requirements_output
 
+from app.documents.requirements import RequirementsModel
+from app.documents.requirements.drafting import RequirementsGenerationOutput
+from app.hearing import PointState
 from app.models.chat_history import ChatHistory
 from app.models.project import Project
 from app.models.user import User
 from app.repositories.chat_history import ChatHistoryRepository
 from app.repositories.generated_document import DOC_TYPES, GeneratedDocumentRepository
-from app.services.doc_generator_service import DocGeneratorService, _render_transcript
-from app.services.errors import DocumentNotFoundError
+from app.repositories.hearing_point import HearingPointRepository
+from app.services.doc_generator_service import (
+    DocGeneratorService,
+    _render_transcript,
+    document_read,
+)
+from app.services.errors import (
+    DocGenerationInProgressError,
+    DocumentNotFoundError,
+    RequirementNotAssumedError,
+    RequirementNotFoundError,
+)
 
 
 async def _create_project(session: AsyncSession) -> Project:
@@ -28,13 +42,18 @@ async def _create_project(session: AsyncSession) -> Project:
     return project
 
 
-def _fake_llm_for_generation() -> FakeLLM:
-    # DOC_TYPES(4件)の生成 + 自己診断(1件) = 計5回のainvoke呼び出しを想定した順序のcontent。
+def _fake_llm_for_generation(
+    requirements: RequirementsGenerationOutput | None = None,
+) -> FakeLLM:
+    # 要件定義書は構造化出力(1回)、残りの3文書の生成 + 自己診断(1件) = 計4回のainvoke呼び出しを
+    # 想定した順序のcontent。
     contents: list[str | list[str | dict[Any, Any]]] = [
-        f"# {doc_type}\n内容" for doc_type in DOC_TYPES
+        f"# {doc_type}\n内容" for doc_type in DOC_TYPES if doc_type != "requirements"
     ]
     contents.append("## 自己診断\n最重要: 特になし")
-    return FakeLLM(content_sequence=contents)
+    return FakeLLM(
+        content_sequence=contents, structured=requirements or requirements_output()
+    )
 
 
 async def test_generate_creates_all_four_documents(db_session: AsyncSession) -> None:
@@ -176,9 +195,10 @@ async def test_generate_extracts_text_from_thought_signature_content(
     contents: list[str | list[str | dict[Any, Any]]] = [
         [{"type": "text", "text": f"# {doc_type}\n内容", "extras": {"signature": "sig"}}]
         for doc_type in DOC_TYPES
+        if doc_type != "requirements"
     ]
     contents.append([{"type": "text", "text": "## 自己診断\n最重要: 特になし"}])
-    fake_llm = FakeLLM(content_sequence=contents)
+    fake_llm = FakeLLM(content_sequence=contents, structured=requirements_output())
     service = DocGeneratorService(db_session)
 
     await service.generate(project.id, project.user_id, llm=fake_llm)
@@ -196,41 +216,143 @@ async def test_generate_extracts_text_from_thought_signature_content(
 async def test_generate_chains_each_document_from_prior_confirmed_documents(
     db_session: AsyncSession,
 ) -> None:
-    """requirementsのみチャット全履歴を直接読み、それ以外は前段で確定済みの文書だけを
+    """requirementsのみチャット全履歴(と観点の表)を直接読み、それ以外は前段で確定済みの文書だけを
     入力にする(連鎖構成)ことを、実際にLLMへ渡されたHumanMessageの中身で確認する。
     external_designはrequirementsのみ、internal_designはrequirements+external_design、
     implementation_planはrequirements+internal_design(external_designは含めない)を
-    入力にする、という参照関係を検証する。"""
+    入力にする、という参照関係を検証する。requirementsは model から組み立てた md が渡る。"""
     project = await _create_project(db_session)
     contents = [
-        "REQUIREMENTS_マーカー",
         "EXTERNAL_DESIGN_マーカー",
         "INTERNAL_DESIGN_マーカー",
         "IMPLEMENTATION_PLAN_マーカー",
         "自己診断結果",
     ]
-    fake_llm = FakeLLM(content_sequence=list(contents))
+    fake_llm = FakeLLM(
+        content_sequence=list(contents),
+        structured=requirements_output(text="REQUIREMENTS_マーカー"),
+    )
     service = DocGeneratorService(db_session)
 
     await service.generate(project.id, project.user_id, llm=fake_llm)
 
+    requirements_input = fake_llm.structured_messages[0][-1].content
     human_contents = [messages[-1].content for messages in fake_llm.invoke_messages]
 
     # requirements: チャット全履歴(transcript)を直接読む
-    assert "備品予約システムを作りたい" in human_contents[0]
+    assert "備品予約システムを作りたい" in requirements_input
 
     # external_design: requirementsの生成結果のみ
-    assert "REQUIREMENTS_マーカー" in human_contents[1]
-    assert "EXTERNAL_DESIGN_マーカー" not in human_contents[1]
+    assert "REQUIREMENTS_マーカー" in human_contents[0]
+    assert "EXTERNAL_DESIGN_マーカー" not in human_contents[0]
 
     # internal_design: requirements + external_designの生成結果
-    assert "REQUIREMENTS_マーカー" in human_contents[2]
-    assert "EXTERNAL_DESIGN_マーカー" in human_contents[2]
+    assert "REQUIREMENTS_マーカー" in human_contents[1]
+    assert "EXTERNAL_DESIGN_マーカー" in human_contents[1]
 
     # implementation_plan: requirements + internal_designの生成結果(external_designは含めない)
-    assert "REQUIREMENTS_マーカー" in human_contents[3]
-    assert "INTERNAL_DESIGN_マーカー" in human_contents[3]
-    assert "EXTERNAL_DESIGN_マーカー" not in human_contents[3]
+    assert "REQUIREMENTS_マーカー" in human_contents[2]
+    assert "INTERNAL_DESIGN_マーカー" in human_contents[2]
+    assert "EXTERNAL_DESIGN_マーカー" not in human_contents[2]
+
+
+async def _decide_points(session: AsyncSession, project: Project, **statuses: str) -> None:
+    await HearingPointRepository(session).save_states(
+        project.id, [PointState(k, s, f"{k}の決定") for k, s in statuses.items()]  # type: ignore[arg-type]
+    )
+
+
+async def test_generate_requirements_builds_model_from_points_table(
+    db_session: AsyncSession,
+) -> None:
+    """要件定義書は構造化出力 → model → md。観点の表がプロンプトに入り、出どころは観点の状態を
+    上限にする(セキュリティが未決なので、AI が user と書いても推測)。"""
+    project = await _create_project(db_session)
+    project.hearing_scale = "personal"
+    await _decide_points(db_session, project, core="decided", security="open")
+    fake_llm = _fake_llm_for_generation()
+
+    await DocGeneratorService(db_session).generate(project.id, project.user_id, llm=fake_llm)
+
+    assert fake_llm.structured_output_calls == [RequirementsGenerationOutput]
+    prompt = fake_llm.structured_messages[0][-1].content
+    assert "core|コア機能|ユーザーが決定|coreの決定" in prompt
+    assert "規模: 個人・小規模" in prompt
+    document = await GeneratedDocumentRepository(db_session).get_current(
+        project_id=project.id, doc_type="requirements"
+    )
+    assert document is not None and document.model is not None
+    model = RequirementsModel.model_validate(document.model)
+    assert [(r.id, r.source) for r in model.rows] == [("FR-001", "user"), ("NFR-001", "assumed")]
+    assert "| NFR-001 | セキュリティ | HTTPS | **推測** | セキュリティ |" in document.content
+    summary = document_read(document).requirements
+    assert summary is not None
+    assert summary.counts == {"user": 1, "adopted": 0, "assumed": 1}
+    assert [a.id for a in summary.assumed] == ["NFR-001"]
+
+
+async def test_regenerate_requirements_keeps_ids_through_prev_id(
+    db_session: AsyncSession,
+) -> None:
+    """再生成では前の版の要件(ID 付き)をプロンプトに渡し、AI が指した prev_id を引き継ぐ。"""
+    project = await _create_project(db_session)
+    service = DocGeneratorService(db_session)
+    await service.generate(project.id, project.user_id, llm=_fake_llm_for_generation())
+    fake_llm = _fake_llm_for_generation(requirements_output(prev_id="FR-001", text="言い直し"))
+
+    await service.generate(project.id, project.user_id, llm=fake_llm)
+
+    assert "FR-001|備品を予約できる" in fake_llm.structured_messages[0][-1].content
+    document = await GeneratedDocumentRepository(db_session).get_current(
+        project_id=project.id, doc_type="requirements"
+    )
+    assert document is not None and document.version == 2
+    model = RequirementsModel.model_validate(document.model)
+    # FR-001 は引き継ぎ、prev_id の無い NFR は新しい番号(消えた NFR-001 は使い回さない)
+    assert [r.id for r in model.rows] == ["FR-001", "NFR-002"]
+
+
+async def test_adopt_requirement_rewrites_same_version(db_session: AsyncSession) -> None:
+    project = await _create_project(db_session)
+    service = DocGeneratorService(db_session)
+    await service.generate(project.id, project.user_id, llm=_fake_llm_for_generation())
+
+    document = await service.adopt_requirement(project, "NFR-001")
+
+    assert document.version == 1  # 版は増やさない
+    assert "| NFR-001 | セキュリティ | HTTPS | 採用 | セキュリティ |" in document.content
+    model = RequirementsModel.model_validate(document.model)
+    assert [r.source for r in model.rows] == ["assumed", "adopted"]  # FR は観点が未決で推測
+    with pytest.raises(RequirementNotAssumedError):
+        await service.adopt_requirement(project, "NFR-001")
+    with pytest.raises(RequirementNotFoundError):
+        await service.adopt_requirement(project, "FR-099")
+
+
+async def test_adopt_requirement_rejects_missing_model_and_generating(
+    db_session: AsyncSession,
+) -> None:
+    project = await _create_project(db_session)
+    service = DocGeneratorService(db_session)
+    with pytest.raises(DocumentNotFoundError):
+        await service.adopt_requirement(project, "FR-001")
+    await GeneratedDocumentRepository(db_session).create_version(
+        project_id=project.id, doc_type="requirements", content="以前の md"
+    )
+    with pytest.raises(RequirementNotFoundError):  # model の無い以前の版
+        await service.adopt_requirement(project, "FR-001")
+    project.status = "generating"
+    with pytest.raises(DocGenerationInProgressError):
+        await service.adopt_requirement(project, "FR-001")
+
+
+async def test_document_read_has_no_summary_without_model(db_session: AsyncSession) -> None:
+    project = await _create_project(db_session)
+    document = await GeneratedDocumentRepository(db_session).create_version(
+        project_id=project.id, doc_type="requirements", content="以前の md"
+    )
+
+    assert document_read(document).requirements is None
 
 
 async def test_list_versions_returns_newest_first(db_session: AsyncSession) -> None:

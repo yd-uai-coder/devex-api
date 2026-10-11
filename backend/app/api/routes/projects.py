@@ -20,7 +20,11 @@ from app.schemas.hearing import (
 )
 from app.schemas.project import ProjectDetail, ProjectMode, ProjectRead
 from app.services.chat_service import ChatService, ReplyCards
-from app.services.doc_generator_service import DocGeneratorService, generate_documents
+from app.services.doc_generator_service import (
+    DocGeneratorService,
+    document_read,
+    generate_documents,
+)
 from app.services.errors import GenerationFailedError, LLMQuotaExceededError
 from app.services.project import ProjectService, UploadedFileInput
 
@@ -201,7 +205,7 @@ async def list_generated_documents(
 ) -> list[GeneratedDocumentRead]:
     """生成された設計書(各doc_typeの最新バージョンのみ)一覧を取得する。"""
     documents = await DocGeneratorService(session).list_current_documents(current_project.id)
-    return [GeneratedDocumentRead.model_validate(d) for d in documents]
+    return [document_read(d) for d in documents]
 
 @router.get("/{project_id}/documents/{doc_id}/download")
 async def download_generated_document(
@@ -230,7 +234,7 @@ async def list_document_versions(
 ) -> list[GeneratedDocumentRead]:
     """指定doc_typeの保管済み全バージョン(最大3件)を新しい順に取得する。"""
     versions = await DocGeneratorService(session).list_versions(current_project.id, doc_type)
-    return [GeneratedDocumentRead.model_validate(v) for v in versions]
+    return [document_read(v) for v in versions]
 
 
 @router.post(
@@ -244,4 +248,18 @@ async def restore_document_version(
     restored = await DocGeneratorService(session).restore_version(
         current_project.id, doc_type, version
     )
-    return GeneratedDocumentRead.model_validate(restored)
+    return document_read(restored)
+
+
+@router.post(
+    "/{project_id}/documents/requirements/rows/{req_id}/adopt",
+    response_model=GeneratedDocumentRead,
+)
+async def adopt_requirement(
+    req_id: str, session: SessionDep, current_project: CurrentProjectDep
+) -> GeneratedDocumentRead:
+    """要件定義書の推測の要件を、利用者が確かめた「採用」にする(LLMは呼ばない。同じ版の
+    model と md を書き換え、版は増やさない)。"""
+    document = await DocGeneratorService(session).adopt_requirement(current_project, req_id)
+    return document_read(document)
+

@@ -14,6 +14,7 @@ from fastapi import BackgroundTasks
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from tests.fixtures.fake_llm import FakeLLM
+from tests.fixtures.requirements import requirements_output
 from tests.fixtures.uml import create_project
 
 from app.api.routes.projects import trigger_generation
@@ -72,7 +73,7 @@ async def test_failure_midway_rolls_back_partial_versions(db_session: AsyncSessi
         project.id,
         project.user_id,
         status_before_generation=previous,
-        llm=FakeLLM(content_sequence=["# 要件"]),
+        llm=FakeLLM(content_sequence=[], structured=requirements_output()),
     )
 
     documents = await GeneratedDocumentRepository(db_session).list_current_for_project(project.id)

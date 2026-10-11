@@ -296,3 +296,16 @@ class HearingPointNotOpenError(ConflictError):
     上書きしない。言い直しはチャットで行う)。"""
 
     code: ClassVar[str | None] = "HEARING_POINT_NOT_OPEN"
+
+
+class RequirementNotFoundError(NotFoundError):
+    """要件定義書の現在の版に、指定した要件ID の要件が無い場合に送出する(model を持たない
+    以前の版も含む)。"""
+
+    code: ClassVar[str | None] = "REQUIREMENT_NOT_FOUND"
+
+
+class RequirementNotAssumedError(ConflictError):
+    """推測でない要件を「採用」にしようとした場合に送出する(画面が古いまま押したときに起きうる)。"""
+
+    code: ClassVar[str | None] = "REQUIREMENT_NOT_ASSUMED"

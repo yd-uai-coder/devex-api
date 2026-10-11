@@ -1,7 +1,9 @@
 import pytest
 from httpx import AsyncClient
 from tests.fixtures.fake_llm import FakeLLM
+from tests.fixtures.requirements import requirements_output
 
+from app.documents.requirements.drafting import RequirementsGenerationOutput
 from app.hearing import POINT_DEFS
 from app.schemas.hearing import HearingPointsJudgement, HearingReplyOut, JudgedPointOut
 from app.services import chat_service as chat_service_module
@@ -41,7 +43,9 @@ def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> FakeLLM:
         structured_by_schema={
             HearingReplyOut: HearingReplyOut(
                 message="[Fake] 次に、想定している主なユーザー層を教えてください。"
-            )
+            ),
+            # 要件定義書の下書き(構造化出力 → model → md)
+            RequirementsGenerationOutput: requirements_output(),
         },
         # 観点の判定は作成時に1回と、文を送るたびに1回呼ばれる(下のテストは3往復)。
         # 2往復目までは目的だけ、
@@ -189,15 +193,16 @@ async def test_full_projects_flow_create_chat_generate_download(
     project_response = await client.get(f"/api/v1/projects/{project_id}", headers=headers)
     assert project_response.json()["status"] == "completed"
 
-    doc_id = documents[0]["id"]
+    requirements = next(d for d in documents if d["doc_type"] == "requirements")
+    # 観点はすべて決まっているので、要件の出どころはどちらもユーザー(推測なし)
+    assert requirements["requirements"]["counts"] == {"user": 2, "adopted": 0, "assumed": 0}
     download_response = await client.get(
-        f"/api/v1/projects/{project_id}/documents/{doc_id}/download", headers=headers
+        f"/api/v1/projects/{project_id}/documents/{requirements['id']}/download", headers=headers
     )
     assert download_response.status_code == 200
     assert download_response.headers["content-type"].startswith("text/markdown")
-    # FakeLLMは固定の応答文字列のみ返すため、生成内容そのものの品質はここでは検証しない
-    # (品質はdoc_generator_serviceの単体テスト・プロンプト設計の責務)。
-    assert download_response.text == "[Fake] 次に、想定している主なユーザー層を教えてください。"
+    # 要件定義書は model から組み立てた md(要件ID と出どころの付いた表)
+    assert "| FR-001 | Must | 備品を予約できる | ユーザー | コア機能 |" in download_response.text
 
 
 async def test_revising_status_after_message_on_completed_project(

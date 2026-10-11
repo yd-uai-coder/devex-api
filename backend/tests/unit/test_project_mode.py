@@ -3,6 +3,7 @@ import uuid
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 from tests.fixtures.fake_llm import FakeLLM
+from tests.fixtures.requirements import requirements_output
 
 from app.api.routes.projects import create_project
 from app.models.project import Project
@@ -96,8 +97,10 @@ async def test_generate_in_detailed_mode_creates_only_two_documents(
     db_session: AsyncSession,
 ) -> None:
     project = await _create_project(db_session, mode="detailed")
-    # 要件定義・外部設計(2件) + 自己診断(1件) = 計3回の呼び出し
-    fake_llm = FakeLLM(content_sequence=["# 要件", "# 外部", "## 自己診断\n特になし"])
+    # 要件定義(構造化出力1件)・外部設計(1件) + 自己診断(1件) = 計3回の呼び出し
+    fake_llm = FakeLLM(
+        content_sequence=["# 外部", "## 自己診断\n特になし"], structured=requirements_output()
+    )
 
     await DocGeneratorService(db_session).generate(project.id, project.user_id, llm=fake_llm)
 

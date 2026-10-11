@@ -3,9 +3,16 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from app.ai.llm.fake import E2eFakeLLM
 from app.detailed_design.plan import unit_ids
 from app.detailed_design.simple_procedure import parse_wbs
+from app.documents.requirements import build_model, render_requirements
+from app.documents.requirements.drafting import (
+    RequirementsGenerationOutput,
+    build_requirements_messages,
+    to_draft,
+)
 from app.hearing import (
     POINT_DEFS,
     JudgedPoint,
+    PointState,
     initial_states,
     is_sufficient,
     merge_judgement,
@@ -77,8 +84,9 @@ async def test_each_doc_type_prompt_produces_its_own_distinct_reply() -> None:
         assert isinstance(result.content, str)
         replies[doc_type] = result.content
 
-    assert len(set(replies.values())) == 4  # 4種類とも異なる内容であること
-    assert "要件定義書" in replies["requirements"]
+    # 要件定義書は構造化出力なので、文の生成のプロンプトは3種類
+    assert set(replies) == {"external_design", "internal_design", "implementation_plan"}
+    assert len(set(replies.values())) == 3  # 3種類とも異なる内容であること
     assert "外部設計書" in replies["external_design"]
     assert "内部設計書" in replies["internal_design"]
     assert "実装計画書" in replies["implementation_plan"]
@@ -165,3 +173,29 @@ async def test_uml_schemas_return_parsed_output_with_raw_when_include_raw() -> N
         result = await llm.with_structured_output(schema, include_raw=True).ainvoke([])
         assert isinstance(result["parsed"], schema)
         assert result["raw"].response_metadata["finish_reason"] == "STOP"
+
+
+async def _requirements(llm: E2eFakeLLM, messages) -> RequirementsGenerationOutput:
+    result = await llm.with_structured_output(RequirementsGenerationOutput).ainvoke(messages)
+    assert isinstance(result, RequirementsGenerationOutput)
+    return result
+
+
+async def test_requirements_output_keeps_ids_from_real_prompt() -> None:
+    """要件定義書の偽物は、本物のプロンプトの【前の版の要件】から ID を引き継ぐ(プロンプトの
+    書式を変えたときに偽物が追従しているかの契約テスト)。推測の要件を1つ含む。"""
+    llm = E2eFakeLLM()
+    states = {d.key: PointState(d.key, "decided", "決定") for d in POINT_DEFS}
+    first = build_model(
+        to_draft(await _requirements(llm, build_requirements_messages("会話", states, None, None))),
+        None,
+        states,
+        "personal",
+    )
+    second_output = await _requirements(
+        llm, build_requirements_messages("会話", states, "personal", first)
+    )
+
+    assert [r.prev_id for r in second_output.requirements] == [r.id for r in first.rows]
+    assert [r.source for r in first.rows].count("assumed") == 1
+    assert "E2E Fake" in render_requirements(first)

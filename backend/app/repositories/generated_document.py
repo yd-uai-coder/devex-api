@@ -17,9 +17,14 @@ class GeneratedDocumentRepository(CRUDRepository[GeneratedDocument]):
     model = GeneratedDocument
 
     async def create_version(
-        self, *, project_id: uuid.UUID, doc_type: str, content: str
+        self,
+        *,
+        project_id: uuid.UUID,
+        doc_type: str,
+        content: str,
+        model: dict | None = None,
     ) -> GeneratedDocument:
-        """新バージョンを追加する(既存行は上書きしない)。追加後に保管数がMAX_VERSIONS_PER_DOC_TYPEを
+        """新バージョンを追加する(既存行は上書きしない)。`model`は意味モデルを持つ文書だけ。追加後に保管数がMAX_VERSIONS_PER_DOC_TYPEを
         超える場合は、最も古いバージョンから順に削除して上限を維持する。"""
         existing = await self.list_all(
             order_by=GeneratedDocument.version.desc(), project_id=project_id, doc_type=doc_type
@@ -33,6 +38,7 @@ class GeneratedDocumentRepository(CRUDRepository[GeneratedDocument]):
             project_id=project_id,
             doc_type=doc_type,
             content=content,
+            model=model,
             version=next_version,
             is_current=True,
         )
@@ -47,6 +53,16 @@ class GeneratedDocumentRepository(CRUDRepository[GeneratedDocument]):
         if len(existing) > keep_count:
             await self._session.flush()
 
+        return document
+
+    async def replace_model(
+        self, document: GeneratedDocument, *, content: str, model: dict
+    ) -> GeneratedDocument:
+        """同じ版の model と md を書き換える(版を増やさない)。推測の要件を利用者が確かめた
+        「採用」にするときだけ使う(中身は変わらないので、後続の段階を古くしない)。"""
+        document.content = content
+        document.model = model
+        await self._session.flush()
         return document
 
     async def get_latest(self, *, project_id: uuid.UUID, doc_type: str) -> GeneratedDocument | None:

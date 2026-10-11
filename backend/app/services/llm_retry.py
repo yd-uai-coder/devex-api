@@ -5,8 +5,10 @@ from typing import TypeVar
 
 import structlog
 from langchain_core.messages import BaseMessage
+from pydantic import BaseModel
 
 from app.services.errors import GenerationFailedError, LLMQuotaExceededError, LLMTokenLimitError
+from app.uml.generation.failures import unwrap_structured_result
 
 T = TypeVar("T")
 
@@ -130,3 +132,17 @@ def _is_input_token_limit_error(exc: Exception) -> bool:
         and getattr(exc, "code", None) == 400
         and "token" in str(exc).lower()
     )
+
+
+async def invoke_structured[S: BaseModel](
+    llm, schema: type[S], messages: list[BaseMessage]
+) -> S:
+    """構造化出力を呼ぶ(解釈の失敗・クォータ超過は invoke_with_retry の規則で再試行する)。
+    詳細設計モードの段階の下書きと、要件定義書の生成が使う。"""
+    structured_llm = llm.with_structured_output(schema, include_raw=True)
+
+    async def _call() -> S:
+        result = await structured_llm.ainvoke(messages)
+        return unwrap_structured_result(result, schema)
+
+    return await invoke_with_retry(_call, messages=messages)
