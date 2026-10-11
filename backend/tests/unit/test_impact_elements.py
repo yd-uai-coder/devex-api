@@ -7,6 +7,8 @@ SUT: DesignModels.from_dicts / build_elements / parse_db_tables
 読まず、fixture の dict で渡す(読み取りはサービス層の責務)。
 """
 
+from dataclasses import replace
+
 from tests.fixtures.change_impact import (
     REPOSITORY,
     ROUTE,
@@ -59,7 +61,7 @@ def test_smoke_builds_elements_for_documents_and_all_stages():
         "crosscutting",
         "unit",
     }
-    assert elements["fn:F-01"] == Element(
+    assert replace(elements["fn:F-01"], body="") == Element(
         "fn:F-01",
         "function",
         1,
@@ -70,6 +72,9 @@ def test_smoke_builds_elements_for_documents_and_all_stages():
             Ref("api:POST /api/v1/reservations", "trigger"),
         ),
     )
+    # 内容はキーになる欄(ID)を除いた正規化した JSON
+    assert '"name": "予約を登録する"' in elements["fn:F-01"].body
+    assert '"id"' not in elements["fn:F-01"].body
 
 
 # --- 種類ごとの辺 ---

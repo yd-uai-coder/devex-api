@@ -95,6 +95,16 @@ def er_table_names(semantic_model: Mapping[str, Any] | None) -> list[str]:
     return [element.name for element in model.elements]
 
 
+def er_table_definitions(semantic_model: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """ER の意味モデルのテーブル名 → 定義(列と説明)。図の要素の並びのまま。変更の影響で、
+    テーブルの内容(列の追加など)の差分を取るのに使う。"""
+    model = ErSemanticModel.model_validate(semantic_model or {})
+    return {
+        element.name: element.model_dump(mode="json", include={"columns", "description"})
+        for element in model.elements
+    }
+
+
 def tables_without_primary_key(semantic_model: Mapping[str, Any] | None) -> list[str]:
     """主キーの列が1つも無いテーブルの名前。"""
     model = ErSemanticModel.model_validate(semantic_model or {})

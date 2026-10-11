@@ -12,9 +12,12 @@ docs/internal_design.md 3.3節「7. 変更影響分析・変更管理」。
 - キーは既存の ID に種類の接頭辞を付けたもの(`req:FR-001`・`fn:F-01`・`module:<パス>` など)。
   作業単位と手順書は、段階7のタスクの安定キー(`U-001`)で指す。
 - グラフは保存せず、読むたびに組む(要素の数は数百で、組むのは一瞬のため)。
+- 要素は、元の行の内容(`body`。キーになる欄を除いた正規化した JSON)を持つ。承認時の写しと今の
+  model の差分(diff.py)は、これを比べる。
 - 外部のグラフライブラリは使わない(辞書と集合で足りる)。
 """
 
+import json
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -90,19 +93,23 @@ class Ref:
 
 @dataclass(frozen=True)
 class Element:
-    """設計の要素1つ。`stage`は置き場(0 は文書)、`refs`はこの要素が参照する要素。"""
+    """設計の要素1つ。`stage`は置き場(0 は文書)、`refs`はこの要素が参照する要素。
+    `body`は元の行の内容(キーになる欄を除いた正規化した JSON。行を持たない要素は空)。"""
 
     key: str
     kind: ElementKind
     stage: int
     label: str
     refs: tuple[Ref, ...] = ()
+    body: str = ""
 
 
 @dataclass(frozen=True)
 class DesignModels:
     """要素を導く入力(文書の model と段階1〜8 の model)。無い文書・段階は空の model。
-    `er_tables`は段階3の ER のテーブル名(ER は段階の model の外の図にあるため別に渡す)。"""
+    `er_tables`は段階3の ER のテーブル名(ER は段階の model の外の図にあるため別に渡す)、
+    `table_bodies`はテーブルのキー → 定義(列と説明)の正規化した JSON(テーブルの内容の差分に
+    使う)。"""
 
     functions: FunctionListModel = field(default_factory=FunctionListModel)
     data_flow: DataFlowModel = field(default_factory=DataFlowModel)
@@ -115,17 +122,24 @@ class DesignModels:
     requirements: RequirementsModel | None = None
     external_design: ExternalDesignModel | None = None
     er_tables: tuple[str, ...] = ()
+    table_bodies: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_dicts(
         cls,
         stages: Mapping[int, Mapping[str, Any] | None],
         documents: Mapping[str, Mapping[str, Any] | None] | None = None,
-        er_tables: Iterable[str] = (),
+        er_tables: Iterable[str] | Mapping[str, Mapping[str, Any]] = (),
     ) -> "DesignModels":
         """保存された形(段階の`model`・文書の`model`の dict)から作る。形の正しくない段階・文書は
-        空とみなす(検証が別に指摘するため、ここでは落とさない)。"""
+        空とみなす(検証が別に指摘するため、ここでは落とさない)。`er_tables`はテーブル名の並びか、
+        テーブル名 → 定義(`er_table_definitions`)。定義を渡すと、テーブルの内容も比べられる。"""
         documents = documents or {}
+        bodies = (
+            {table_key(name): _json(value) for name, value in er_tables.items()}
+            if isinstance(er_tables, Mapping)
+            else {}
+        )
         return cls(
             functions=_parse(FunctionListModel, stages.get(1)) or FunctionListModel(),
             data_flow=_parse(DataFlowModel, stages.get(2)) or DataFlowModel(),
@@ -138,6 +152,7 @@ class DesignModels:
             requirements=_parse(RequirementsModel, documents.get("requirements")),
             external_design=_parse(ExternalDesignModel, documents.get("external_design")),
             er_tables=tuple(er_tables),
+            table_bodies=bodies,
         )
 
 
@@ -148,6 +163,15 @@ def _parse[M: BaseModel](model_type: type[M], value: Mapping[str, Any] | None) -
         return model_type.model_validate(value)
     except ValidationError:
         return None
+
+
+def _body(row: BaseModel, *keys: str) -> str:
+    """行の内容を、キーになる欄(`keys`)を除いた正規化した JSON にする(差分で比べる値)。"""
+    return _json(row.model_dump(mode="json", exclude=set(keys)))
+
+
+def _json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
 def parse_db_tables(db: str, known_tables: Iterable[str]) -> list[str]:
@@ -165,9 +189,9 @@ class _Builder:
         self.elements: dict[str, Element] = {}
         self.refs: dict[str, list[Ref]] = {}
 
-    def add(self, key: str, kind: ElementKind, stage: int, label: str) -> str:
+    def add(self, key: str, kind: ElementKind, stage: int, label: str, body: str = "") -> str:
         if key not in self.elements:
-            self.elements[key] = Element(key, kind, stage, label)
+            self.elements[key] = Element(key, kind, stage, label, body=body)
             self.refs[key] = []
         return key
 
@@ -183,6 +207,7 @@ class _Builder:
                 e.stage,
                 e.label,
                 tuple(r for r in self.refs[e.key] if r.to in self.elements),
+                e.body,
             )
             for e in self.elements.values()
         ]
@@ -200,16 +225,25 @@ def build_elements(models: DesignModels) -> list[Element]:
 def _documents(b: _Builder, models: DesignModels) -> None:
     if models.requirements is not None:
         for row in models.requirements.rows:
-            b.add(f"req:{row.id}", "requirement", DOCUMENT_STAGE, f"{row.id} {row.text}")
+            label = f"{row.id} {row.text}"
+            b.add(f"req:{row.id}", "requirement", DOCUMENT_STAGE, label, _body(row, "id"))
     if models.external_design is not None:
         for screen in models.external_design.screens:
             label = f"{screen.id} {screen.name}"
-            key = b.add(f"screen:{screen.id}", "screen", DOCUMENT_STAGE, label)
+            key = b.add(
+                f"screen:{screen.id}", "screen", DOCUMENT_STAGE, label, _body(screen, "id")
+            )
             for req in screen.req_ids:
                 b.ref(key, f"req:{req}", "requirement")
         for api in models.external_design.apis:
             label = f"{api.method} {api.path}"
-            key = b.add(f"api:{endpoint_key(api.method, api.path)}", "api", DOCUMENT_STAGE, label)
+            key = b.add(
+                f"api:{endpoint_key(api.method, api.path)}",
+                "api",
+                DOCUMENT_STAGE,
+                label,
+                _body(api, "method", "path"),
+            )
             for screen_id in api.screens:
                 b.ref(key, f"screen:{screen_id}", "screen")
             for req in api.req_ids:
@@ -218,7 +252,7 @@ def _documents(b: _Builder, models: DesignModels) -> None:
 
 def _stages_1_to_4(b: _Builder, models: DesignModels) -> None:
     for row in models.functions.functions:
-        key = b.add(f"fn:{row.id}", "function", 1, f"{row.id} {row.name}")
+        key = b.add(f"fn:{row.id}", "function", 1, f"{row.id} {row.name}", _body(row, "id"))
         for req in row.req_ids:
             b.ref(key, f"req:{req}", "requirement")
         for screen_id in row.screens:
@@ -228,17 +262,21 @@ def _stages_1_to_4(b: _Builder, models: DesignModels) -> None:
             b.ref(key, f"api:{api}", "trigger")
     for summary in models.data_flow.summaries:
         fid = summary.function_id
-        key = b.add(f"summary:{fid}", "summary", 2, f"{fid} の処理の要約")
+        label = f"{fid} の処理の要約"
+        key = b.add(f"summary:{fid}", "summary", 2, label, _body(summary, "function_id"))
         b.ref(key, f"fn:{fid}", "function")
     for name in [*models.er_tables, *(cell.table for cell in models.crud.cells)]:
-        b.add(f"table:{table_key(name)}", "table", 3, name.strip())
+        key = table_key(name)
+        b.add(f"table:{key}", "table", 3, name.strip(), models.table_bodies.get(key, ""))
     for cell in models.crud.cells:
         fid, table = cell.function_id, table_key(cell.table)
-        key = b.add(f"crud:{fid}×{table}", "crud", 3, f"{fid} × {cell.table.strip()}")
+        label = f"{fid} × {cell.table.strip()}"
+        body = _body(cell, "function_id", "table", "draft")
+        key = b.add(f"crud:{fid}×{table}", "crud", 3, label, body)
         b.ref(key, f"fn:{fid}", "function")
         b.ref(key, f"table:{table}", "table")
     for module in models.modules.modules:
-        b.add(f"module:{module.path}", "module", 4, module.path)
+        b.add(f"module:{module.path}", "module", 4, module.path, _body(module, "path"))
     for module in models.modules.modules:
         key = f"module:{module.path}"
         for fid in module.functions:
@@ -251,7 +289,7 @@ def _stages_5_to_8(b: _Builder, models: DesignModels) -> None:
     tables = [k.removeprefix("table:") for k in b.elements if k.startswith("table:")]
     for procedure in models.procedures.procedures:
         fid = procedure.function_id
-        key = b.add(f"proc:{fid}", "procedure", 5, f"{fid} の手順")
+        key = b.add(f"proc:{fid}", "procedure", 5, f"{fid} の手順", _body(procedure, "function_id"))
         b.ref(key, f"fn:{fid}", "function")
         for step in procedure.steps:
             module = f"module:{step.callee.strip()}"
@@ -264,20 +302,22 @@ def _stages_5_to_8(b: _Builder, models: DesignModels) -> None:
                     b.ref(module, f"table:{table}", "table")
     for logic in models.logics.logics:
         name = logic_key(logic.module, logic.function)
-        key = b.add(f"logic:{name}", "logic", 6, f"{logic.module} の {logic.function}")
+        label = f"{logic.module} の {logic.function}"
+        key = b.add(f"logic:{name}", "logic", 6, label, _body(logic, "module", "function"))
         b.ref(key, f"module:{logic.module.strip()}", "placed")
         for procedure in models.procedures.procedures:
             if any(_calls(step, logic.module, logic.function) for step in procedure.steps):
                 b.ref(key, f"proc:{procedure.function_id}", "called_by")
     units = plan_units(models.plan)
     for unit in units:
-        key = b.add(f"task:{unit.key}", "task", 7, f"{unit.unit_id} {unit.task.title}")
+        label = f"{unit.unit_id} {unit.task.title}"
+        key = b.add(f"task:{unit.key}", "task", 7, label, _body(unit.task, "key"))
         for fid in unit.task.function_ids:
             b.ref(key, f"fn:{fid}", "function")
         for path in unit.task.modules:
             b.ref(key, f"module:{path}", "depends")
     for row in models.plan.crosscutting:
-        key = b.add(f"cc:{row.topic}", "crosscutting", 7, row.topic)
+        key = b.add(f"cc:{row.topic}", "crosscutting", 7, row.topic, _body(row, "topic"))
         for req in row.req_ids:
             b.ref(key, f"req:{req}", "requirement")
         for path in row.modules:
@@ -301,7 +341,8 @@ def _units(b: _Builder, models: DesignModels, units: list[PlanUnit]) -> None:
         unit = by_key.get(doc.unit_key or doc.unit_id)
         if unit is None:
             continue
-        key = b.add(f"unit:{unit.key}", "unit", 8, f"{unit.unit_id} の手順書")
+        label = f"{unit.unit_id} の手順書"
+        key = b.add(f"unit:{unit.key}", "unit", 8, label, _body(doc, "unit_id", "unit_key"))
         b.ref(key, f"task:{unit.key}", "unit")
         refs = unit_refs(unit.task, index)
         paths = [r.key for r in refs if r.kind == "module"]

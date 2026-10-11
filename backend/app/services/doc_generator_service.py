@@ -50,6 +50,7 @@ from app.schemas.document import (
     GeneratedDocumentRead,
     RequirementsSummaryRead,
 )
+from app.services.design_stage_service import DesignStageService
 from app.services.errors import (
     DocGenerationInProgressError,
     DocumentNotFoundError,
@@ -256,6 +257,7 @@ class DocGeneratorService:
         self._chat_histories = ChatHistoryRepository(session)
         self._documents = GeneratedDocumentRepository(session)
         self._hearing_points = HearingPointRepository(session)
+        self._stages = DesignStageService(session)
 
     async def request_generation(self, project: Project) -> str:
         """生成の要求を受け付け、`status`を`generating`にしてcommitする。戻り値は受け付ける前の状態
@@ -340,6 +342,14 @@ class DocGeneratorService:
             generated: dict[str, str] = {}
             requirements: RequirementsModel | None = None
             doc_types = DOC_TYPES_BY_MODE[project.mode]
+            # 詳細設計モードの変更の影響は、生成の前に表示していた版と比べる
+            previous_models: dict[str, dict | None] = {}
+            for doc_type in doc_types:
+                current = await self._documents.get_current(
+                    project_id=project_id, doc_type=doc_type
+                )
+                previous_models[doc_type] = current.model if current is not None else None
+            new_models: dict[str, dict | None] = {}
             for doc_type in doc_types:
                 model: dict | None = None
                 if doc_type == "requirements":
@@ -357,6 +367,11 @@ class DocGeneratorService:
                     project_id=project_id, doc_type=doc_type, content=content, model=model
                 )
                 generated[doc_type] = content
+                new_models[doc_type] = model
+            for doc_type in doc_types:
+                await self._stages.record_document_change(
+                    project, doc_type, previous_models[doc_type], new_models[doc_type]
+                )
 
             diagnosis = await self._self_diagnose(generated, llm=llm)
             await self._chat_histories.add(
@@ -417,12 +432,20 @@ class DocGeneratorService:
         self, project_id: uuid.UUID, doc_type: str, version: int
     ) -> GeneratedDocument:
         """指定バージョンを表示中(is_current)に切り替える。バージョン番号は増やさず、新しい行も
-        作らない(既存版の内容も書き換えない)。指定バージョンが存在しなければDocumentNotFoundError。"""
+        作らない(既存版の内容も書き換えない)。指定バージョンが存在しなければDocumentNotFoundError。
+        詳細設計モードでは、切り替える前に表示していた版と比べて、変更の影響を段階に記録する。"""
+        previous = await self._documents.get_current(project_id=project_id, doc_type=doc_type)
+        previous_model = previous.model if previous is not None else None
         restored = await self._documents.set_current(
             project_id=project_id, doc_type=doc_type, version=version
         )
         if restored is None:
             raise DocumentNotFoundError(f"{doc_type} version {version} not found")
+        project = await self._session.get(Project, project_id)
+        if project is not None:
+            await self._stages.record_document_change(
+                project, doc_type, previous_model, restored.model
+            )
         await self._session.commit()
         return restored
 

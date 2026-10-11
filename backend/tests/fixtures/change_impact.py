@@ -10,7 +10,19 @@
   入口 → サービス list → リポジトリ select(reservations R)。
 - 段階7: 横断事項「認証」(NFR-001・入口)・「トランザクション」(サービス)、単位 U-001(基盤)・
   U-002(F-01)・U-003(F-02)。段階8は U-002・U-003 の手順書。
+
+`create_impact_project`は、この設計で段階1〜8 をすべて承認済み(写しあり)にしたプロジェクトを
+DB に作る(印の記録のテスト用。承認の検証を通さず、行を直接作る)。
 """
+
+import uuid
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.design_stage import DesignStage
+from app.models.project import Project
+from app.models.user import User
+from app.repositories.generated_document import GeneratedDocumentRepository
 
 ROUTE = "app/api/routes/reservations.py"
 SERVICE = "app/services/reservation.py"
@@ -172,3 +184,33 @@ def impact_documents() -> dict[str, dict]:
             "known_req_ids": ["FR-001", "FR-002", "NFR-001"],
         },
     }
+
+
+async def create_impact_project(session: AsyncSession) -> Project:
+    """詳細設計モードのプロジェクトに、文書(1版ずつ)と段階1〜8(承認済み・写しあり)を作る。
+    入力の版(`input_fingerprint`)は記録しない(段階は「古い」にならず、承認済みのまま)。"""
+    user = User(email=f"impact-{uuid.uuid4()}@example.com", hashed_password="x")
+    session.add(user)
+    await session.flush()
+    project = Project(user_id=user.id, title="p", mode="detailed", status="completed")
+    session.add(project)
+    await session.flush()
+    documents = GeneratedDocumentRepository(session)
+    for doc_type, model in impact_documents().items():
+        await documents.create_version(
+            project_id=project.id, doc_type=doc_type, content=f"# {doc_type}", model=model
+        )
+    for stage, model in impact_stages().items():
+        session.add(
+            DesignStage(
+                project_id=project.id,
+                stage=stage,
+                status="approved",
+                model=model,
+                version=1,
+                approved_version=1,
+                approved_model=model,
+            )
+        )
+    await session.commit()
+    return project
