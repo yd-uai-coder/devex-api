@@ -12,7 +12,7 @@ DBはインメモリSQLite(db_session)で、スタブにはしない(入力の�
 import pytest
 from fastapi import BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from tests.fixtures.detailed_design import create_stage7_project
+from tests.fixtures.detailed_design import create_stage7_project, plan_model
 from tests.fixtures.fake_llm import FakeLLM
 
 import app.services.design_stage_generation_service as generation_service
@@ -133,6 +133,8 @@ async def test_smoke_stage7_generates_plan_from_design_markdown_and_can_be_appro
     # 処理の重複を除き、モジュールの短い書き方をパスにそろえる
     [task] = milestone["tasks"]
     assert (task["function_ids"], task["modules"]) == (["F-01"], [ROUTE])
+    # 単位のキーを振る
+    assert (task["key"], model["next_unit_seq"]) == ("U-001", 2)
     assert stage7.issues == []
     diagrams = await UmlDiagramRepository(db_session).list_for_project(project_id)
     assert {d.status for d in diagrams} == {"approved"}
@@ -155,3 +157,41 @@ async def test_stage7_failure_keeps_previous_model(
 
     assert stage7.generation_status == "failed"
     assert stage7.model is None
+
+
+async def test_regeneration_carries_keys_of_same_titles(db_session: AsyncSession) -> None:
+    """作り直しは全体を置き換えるが、タスク名が同じ単位は前のキーを引き継ぐ(段階8の手順書を
+    付けたままにする)。"""
+    project = await create_stage7_project(db_session)
+    project_id = project.id
+    previous = plan_model()
+    previous["milestones"][0]["tasks"][1]["title"] = "予約の API"
+    await DesignStageService(db_session).save(
+        project, stage=7, expected_version=None, model=previous
+    )
+    service = DesignStageGenerationService(db_session)
+    await service.request_generation(project, stage=7)
+
+    llm = FakeLLM(structured_sequence=[_crosscutting_output(), _plan_output()])
+    await service.execute(project_id=project_id, user_id=project.user_id, stage=7, llm=llm)
+    stage7 = await DesignStageService(db_session).read(project_id, 7)
+
+    assert stage7.model is not None
+    [task] = stage7.model["milestones"][0]["tasks"]
+    assert (task["title"], task["key"], stage7.model["next_unit_seq"]) == ("予約の API", "U-002", 3)
+
+
+async def test_save_assigns_keys_to_new_tasks(db_session: AsyncSession) -> None:
+    """画面で足したタスク(キーが空)には、保存時に次の番号のキーを振る。"""
+    project = await create_stage7_project(db_session)
+    model = plan_model()
+    model["milestones"][0]["tasks"].append({"kind": "base", "title": "デプロイする", "key": ""})
+
+    saved = await DesignStageService(db_session).save(
+        project, stage=7, expected_version=None, model=model
+    )
+
+    assert saved.model is not None
+    tasks = saved.model["milestones"][0]["tasks"]
+    assert [t["key"] for t in tasks] == ["U-001", "U-002", "U-003"]
+    assert saved.model["next_unit_seq"] == 4

@@ -7,8 +7,9 @@ docs/internal_design.md 3.3節「5. 実装手順書」の「出力」。
 組み立てる表示で、文書としては保存しない。ここでは、組み立てに使う値を1つの
 `ProcedureOutputSource`にまとめる。DB の読み取りはサービスが行う。
 
-- 単位の一覧は作業単位の並び順(`plan_units`。依存順)。手順書は、単位の ID とタスク名が作業単位と
-  合うものだけを使う(`documented_unit_ids`。合わない手順書は検証のエラーで、作り直しの対象)。
+- 単位の一覧は作業単位の並び順(`plan_units`。依存順)。手順書は、単位(キーで付け直した ID)と
+  タスク名が作業単位と合うものだけを使う(`documented_unit_ids`。合わない手順書は検証のエラーで、
+  作り直しの対象)。
 - 参照する設計の展開は、画面の単位の詳細・生成の入力と同じ`ProcedureBasis.context`を使う。
 - モードで変わる文言(作業単位の出どころ・直す先)は、土台の`labels`から書く。
 - 未定義・要決定は、段階8の検証の指摘(重要度のあるもの)と、手順書の AI の指摘を1つにまとめる。
@@ -35,6 +36,7 @@ from app.detailed_design.procedure_doc import (
     UnitProcedure,
     documented_unit_ids,
     plan_units,
+    relabel_units,
 )
 from app.detailed_design.procedure_doc_refs import UnitContext
 from app.detailed_design.requirement_trace import (
@@ -148,7 +150,7 @@ def procedure_output_source(
     model から`ProcedureOutputSource`を作る。`model`は zip なら承認済みのもの、画面のコピーなら
     保存済みのもの。"""
     plan = basis.plan
-    doc = ProcedureDocModel.model_validate(model or {})
+    doc = relabel_units(ProcedureDocModel.model_validate(model or {}), plan)
     units = tuple(plan_units(plan))
     documented = documented_unit_ids(plan, doc)
     procedures = {u.unit_id: u for u in doc.units if u.unit_id in documented}

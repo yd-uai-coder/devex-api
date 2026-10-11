@@ -68,6 +68,8 @@ from app.detailed_design.plan import (
     PlanTask,
     Risk,
     UnitKind,
+    assign_unit_keys,
+    carry_over_unit_keys,
     is_file_path,
     milestone_functions,
     milestone_id,
@@ -76,6 +78,7 @@ from app.detailed_design.plan import (
     planned_function_ids,
     task_id,
     unit_ids,
+    unit_key,
     unplanned_functions,
 )
 from app.detailed_design.procedure import (
@@ -113,6 +116,7 @@ from app.detailed_design.procedure_doc import (
     find_unit,
     merge_unit_procedure,
     plan_units,
+    relabel_units,
     unit_refs,
 )
 from app.detailed_design.sequence import (
@@ -255,6 +259,8 @@ __all__ = [
     "dfd_accesses",
     "dfd_subject",
     "doc_key",
+    "assign_unit_keys",
+    "carry_over_unit_keys",
     "documented_unit_ids",
     "endpoint_key",
     "er_table_names",
@@ -290,6 +296,7 @@ __all__ = [
     "pending_function_ids",
     "pending_logic_keys",
     "plan_units",
+    "relabel_units",
     "planned_function_ids",
     "reachable_callees",
     "resolve_callee",
@@ -305,6 +312,7 @@ __all__ = [
     "to_sequence",
     "trigger_key",
     "unit_ids",
+    "unit_key",
     "unit_refs",
     "unplanned_functions",
     "validate_stage",

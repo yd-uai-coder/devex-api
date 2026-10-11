@@ -1,7 +1,8 @@
 """段階7 横断事項と実装計画の意味モデルと検証のテスト。
 
 SUT: milestone_id / task_id / unit_ids / milestone_functions / planned_function_ids /
-     unplanned_functions / is_file_path / missing_topics / normalize_plan
+     unplanned_functions / is_file_path / missing_topics / normalize_plan /
+     unit_key / assign_unit_keys / carry_over_unit_keys
      (app/detailed_design/plan.py)、
      validate_plan / STAGE_VALIDATORS(app/detailed_design/validation.py)、
      パッケージの re-export(app/detailed_design/__init__.py)
@@ -24,6 +25,8 @@ from app.detailed_design import (
     PlanTask,
     Risk,
     StageSources,
+    assign_unit_keys,
+    carry_over_unit_keys,
     has_errors,
     is_file_path,
     milestone_functions,
@@ -33,19 +36,24 @@ from app.detailed_design import (
     planned_function_ids,
     task_id,
     unit_ids,
+    unit_key,
     unplanned_functions,
     validate_stage,
 )
 from app.detailed_design.validation import validate_plan
+from app.documents.external_design.model import ExternalDesignModel
 
 ROUTE = "app/api/routes/reservations.py"
 
 
 def _sources(
-    *, functions: list[str] | None = None, paths: list[str] | None = None
+    *,
+    functions: list[str] | None = None,
+    paths: list[str] | None = None,
+    known_req_ids: list[str] | None = None,
 ) -> StageSources:
     """段階1(F-01、`functions`を渡すとその処理ID も)と段階4(ROUTE の1行、`paths`を渡すと
-    そのパスの行も)。"""
+    そのパスの行も)。`known_req_ids`を渡すと、外部設計書の model に要件ID の一覧を写す。"""
     function_list = function_list_model()
     for function_id in functions or []:
         row = dict(function_list["functions"][0], id=function_id, trigger=f"GET /{function_id}")
@@ -53,7 +61,12 @@ def _sources(
     module_list = module_list_model()
     for path in paths or []:
         module_list["modules"].append(dict(module_list["modules"][0], path=path))
-    return StageSources(stages={1: function_list, 4: module_list})
+    models = (
+        {"external_design": ExternalDesignModel(known_req_ids=known_req_ids).model_dump()}
+        if known_req_ids is not None
+        else {}
+    )
+    return StageSources(stages={1: function_list, 4: module_list}, document_models=models)
 
 
 def _task(model: dict, index: int = 1) -> dict:
@@ -293,3 +306,118 @@ def test_validate_warns_missing_topic_empty_policy_tasks_and_risks():
     codes = [i.code for i in issues]
     assert codes.count("MISSING_TOPIC") == 3
     assert {"EMPTY_POLICY", "EMPTY_TASKS", "NO_RISKS"} <= set(codes)
+
+
+# --- 作業単位の安定キー ---
+
+
+def _keys(model: PlanModel) -> list[str]:
+    return [t.key for m in model.milestones for t in m.tasks]
+
+
+def test_assign_unit_keys_numbers_tasks_without_key_in_order():
+    model = PlanModel(
+        milestones=[
+            Milestone(name="a", tasks=[PlanTask(title="x"), PlanTask(title="y")]),
+            Milestone(name="b", tasks=[PlanTask(title="z")]),
+        ]
+    )
+    keyed = assign_unit_keys(model)
+    assert unit_key(7) == "U-007"
+    assert _keys(keyed) == ["U-001", "U-002", "U-003"]
+    assert keyed.next_unit_seq == 4
+
+
+def test_assign_unit_keys_keeps_existing_and_renumbers_duplicates():
+    model = PlanModel(
+        milestones=[
+            Milestone(
+                name="a",
+                tasks=[
+                    PlanTask(key="U-005", title="x"),
+                    PlanTask(key="U-005", title="y"),
+                    PlanTask(title="z"),
+                ],
+            )
+        ],
+        # 古い番号でも、今あるキーより後ろから振る
+        next_unit_seq=2,
+    )
+    keyed = assign_unit_keys(model)
+    assert _keys(keyed) == ["U-005", "U-006", "U-007"]
+    assert keyed.next_unit_seq == 8
+
+
+def test_keys_stay_with_tasks_when_reordered():
+    keyed = assign_unit_keys(PlanModel.model_validate(plan_model()))
+    tasks = keyed.milestones[0].tasks
+    reordered = keyed.model_copy(
+        update={"milestones": [keyed.milestones[0].model_copy(update={"tasks": tasks[::-1]})]}
+    )
+    again = assign_unit_keys(reordered)
+    assert [(t.key, t.title) for t in again.milestones[0].tasks] == [
+        ("U-002", "予約を登録する"),
+        ("U-001", "開発環境を用意する"),
+    ]
+    assert again.next_unit_seq == 3
+
+
+def test_carry_over_unit_keys_by_unique_title():
+    previous = PlanModel(
+        milestones=[
+            Milestone(
+                name="a",
+                tasks=[
+                    PlanTask(key="U-001", title="準備"),
+                    PlanTask(key="U-002", title="登録"),
+                    PlanTask(key="U-003", title="同名"),
+                    PlanTask(key="U-004", title="同名"),
+                ],
+            )
+        ],
+        next_unit_seq=5,
+    )
+    regenerated = PlanModel(
+        milestones=[
+            Milestone(name="b", tasks=[PlanTask(title="登録"), PlanTask(title="同名")]),
+            Milestone(name="c", tasks=[PlanTask(title="新しい"), PlanTask(title=" 準備 ")]),
+        ]
+    )
+    carried = carry_over_unit_keys(regenerated, previous)
+    # 同じ名前が前に2つある「同名」は引き継がず、前の番号の続きから振る
+    assert _keys(carried) == ["U-002", "U-005", "U-006", "U-001"]
+    assert carried.next_unit_seq == 7
+
+
+def test_normalize_plan_keeps_keys_and_next_seq():
+    model = PlanModel(
+        milestones=[Milestone(name="a", tasks=[PlanTask(key=" U-003 ", title="x")])],
+        next_unit_seq=4,
+    )
+    normalized = normalize_plan(model, [])
+    assert _keys(normalized) == ["U-003"]
+    assert normalized.next_unit_seq == 4
+
+
+# --- 横断事項の要件ID ---
+
+
+def test_normalize_plan_keeps_crosscutting_requirement_ids():
+    model = PlanModel(
+        crosscutting=[CrossCuttingRow(topic="認証", policy="JWT", req_ids=[" NFR-001 ", "NFR-001"])]
+    )
+    assert normalize_plan(model, []).crosscutting[0].req_ids == ["NFR-001"]
+
+
+def test_validate_warns_unknown_crosscutting_requirement():
+    model = plan_model()
+    model["crosscutting"][1]["req_ids"] = ["NFR-001", "NFR-009"]
+
+    issues = validate_plan(model, _sources(known_req_ids=["FR-001", "NFR-001"]))
+    # 要件ID の一覧の無いプロジェクト(外部設計書の model が無い)は照合しない
+    unchecked = validate_plan(model, _sources())
+
+    assert [(i.code, i.severity, i.target) for i in issues] == [
+        ("UNKNOWN_REQUIREMENT_ID", "warning", "認証")
+    ]
+    assert unchecked == []

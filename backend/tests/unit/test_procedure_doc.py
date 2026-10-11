@@ -24,6 +24,7 @@ from app.detailed_design import (
     documented_unit_ids,
     merge_unit_procedure,
     plan_units,
+    relabel_units,
     unit_refs,
 )
 from app.detailed_design.procedure_doc import generation_targets, name_key, spelling_match
@@ -181,9 +182,57 @@ def test_merge_replaces_unit_and_keeps_plan_order() -> None:
 
 def test_merge_keeps_units_missing_from_plan_at_the_end() -> None:
     """段階7に無くなった単位の手順書は消さずに後ろへ置く(検証の UNIT_MISMATCH で知らせる)。"""
-    doc = ProcedureDocModel.model_validate(procedure_doc_model(unit_id="M-09-T01"))
+    doc = ProcedureDocModel.model_validate(procedure_doc_model(unit_id="M-09-T01", unit_key=""))
     base = UnitProcedure(unit_id="M-01-T01", title="開発環境を用意する")
 
     merged = merge_unit_procedure(doc, _PLAN, base)
 
     assert [u.unit_id for u in merged.units] == ["M-01-T01", "M-09-T01"]
+
+
+def _reordered_plan() -> PlanModel:
+    """`plan_model()`のタスクを逆に並べた段階7(U-002 が M-01-T01 になる)。"""
+    model = plan_model()
+    tasks = model["milestones"][0]["tasks"]
+    tasks[1]["depends_on"] = []
+    tasks.reverse()
+    return PlanModel.model_validate(model)
+
+
+def test_plan_unit_key_falls_back_to_unit_id() -> None:
+    """キーの無いタスク(簡易モードの WBS)は、単位の ID をキーにする。"""
+    plan = PlanModel.model_validate(plan_model())
+    plan.milestones[0].tasks[0].key = ""
+
+    assert [u.key for u in plan_units(plan)] == ["M-01-T01", "U-002"]
+
+
+def test_relabel_units_follows_keys_after_reorder() -> None:
+    doc = ProcedureDocModel.model_validate(procedure_doc_model())
+    stray = UnitProcedure(unit_id="M-01-T02", unit_key="U-009", title="消えた単位")
+    legacy = UnitProcedure(unit_id="M-01-T02", title="キーの無い手順書")
+    doc = doc.model_copy(update={"units": [*doc.units, stray, legacy]})
+
+    relabeled = relabel_units(doc, _reordered_plan())
+
+    assert [(u.unit_key, u.unit_id) for u in relabeled.units] == [
+        ("U-002", "M-01-T01"),
+        ("U-009", "M-01-T02"),
+        ("", "M-01-T02"),
+    ]
+
+
+def test_documented_and_merge_use_keys_after_reorder() -> None:
+    """並べ替えた後も、手順書は同じ単位のものとして数え、置き換え・並べ直しもキーで行う。"""
+    plan = _reordered_plan()
+    doc = ProcedureDocModel.model_validate(procedure_doc_model())
+    base = UnitProcedure(unit_id="M-01-T02", unit_key="U-001", title="開発環境を用意する")
+
+    merged = merge_unit_procedure(doc, plan, base)
+
+    assert documented_unit_ids(plan, doc) == {"M-01-T01"}
+    assert generation_targets(plan, doc, None) == ["M-01-T02"]
+    assert [(u.unit_id, u.unit_key) for u in merged.units] == [
+        ("M-01-T01", "U-002"),
+        ("M-01-T02", "U-001"),
+    ]

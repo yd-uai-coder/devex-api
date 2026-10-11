@@ -5,8 +5,10 @@ docs/internal_design.md 3.3節「5. 実装手順書」。
 段階8は、段階7の作業単位(タスク)ごとの手順書を持つ。`design_stages.model`(段階8)に持つ。
 
 - 作業単位の正本は段階7。単位の ID(`M-01-T01`)は段階7の並び順から導く(`plan_units`)。
-  手順書は単位の ID と、作ったときのタスク名を持つ。段階7の並べ替え・改名で ID かタスク名が
-  合わなくなった手順書は、検証のエラーにして作り直させる(自動で付け替えない)。
+  手順書は単位のキー(段階7のタスクの`key`)・単位の ID・作ったときのタスク名を持つ。手順書は
+  キーで単位に付くので、段階7を並べ替えても同じ単位に付いたまま(表示の ID は`relabel_units`が
+  今の並び順から付け直す)。キーの無い単位(簡易モードの WBS)は、単位の ID をキーにする。
+  改名でタスク名が合わなくなった手順書は、検証のエラーにして作り直させる(自動で付け替えない)。
 - 手順書は設計を書き写さない。参照する設計(段階5の手順・段階6の関数・段階4のモジュール)は
   単位の処理ID・モジュールから導く(`unit_refs`)。中身の展開は、表示・AI 向けの出力・生成の入力の
   ときにだけ行う。
@@ -91,9 +93,11 @@ class AiFinding(BaseModel):
 
 
 class UnitProcedure(BaseModel):
-    """単位1つ分の手順書。`unit_id`と`title`は作ったときの段階7の単位の ID とタスク名。"""
+    """単位1つ分の手順書。`unit_key`は段階7の単位のキー、`unit_id`は表示の ID(読むときに
+    `relabel_units`が今の並び順から付け直す)、`title`は作ったときのタスク名。"""
 
     unit_id: str
+    unit_key: str = ""
     title: str = ""
     purpose: str = ""
     files: list[UnitFile] = Field(default_factory=list)
@@ -112,11 +116,16 @@ class ProcedureDocModel(BaseModel):
 
 @dataclass(frozen=True)
 class PlanUnit:
-    """段階7の作業単位1つ(ID・マイルストーンの番号・タスク)。"""
+    """段階7の作業単位1つ(ID・マイルストーンの番号・タスク)。`key`は並べ替えで変わらない
+    単位のキー(タスクにキーが無ければ単位の ID)。"""
 
     unit_id: str
     milestone: str
     task: PlanTask
+
+    @property
+    def key(self) -> str:
+        return self.task.key or self.unit_id
 
 
 def plan_units(plan: PlanModel) -> list[PlanUnit]:
@@ -133,9 +142,22 @@ def find_unit(plan: PlanModel, unit_id: str) -> PlanUnit | None:
     return next((unit for unit in plan_units(plan) if unit.unit_id == unit_id.strip()), None)
 
 
+def relabel_units(model: ProcedureDocModel, plan: PlanModel) -> ProcedureDocModel:
+    """手順書の表示の ID を、キーで引いた段階7の今の単位の ID に付け直す。キーの無い手順書と、
+    キーが段階7に無い手順書はそのまま残す(検証が UNIT_MISMATCH で知らせる)。"""
+    ids = {u.key: u.unit_id for u in plan_units(plan)}
+    return ProcedureDocModel(
+        units=[
+            u.model_copy(update={"unit_id": ids[u.unit_key]}) if u.unit_key in ids else u
+            for u in model.units
+        ]
+    )
+
+
 def documented_unit_ids(plan: PlanModel, model: ProcedureDocModel) -> set[str]:
-    """手順書のある単位の ID。単位の ID とタスク名の両方が段階7と合うものだけを数える
-    (合わない手順書は検証の UNIT_MISMATCH で、作り直しの対象)。"""
+    """手順書のある単位の ID。単位(キーで付け直した ID)とタスク名の両方が段階7と合うものだけを
+    数える(合わない手順書は検証の UNIT_MISMATCH で、作り直しの対象)。"""
+    model = relabel_units(model, plan)
     titles = {(u.unit_id, u.title.strip()) for u in model.units}
     return {u.unit_id for u in plan_units(plan) if (u.unit_id, u.task.title.strip()) in titles}
 
@@ -158,6 +180,7 @@ def merge_unit_procedure(
 
     単位は段階7の並び順に並べ直す。段階7に無くなった単位の手順書は消さずに後ろへ置く
     (検証の UNIT_MISMATCH で人に知らせる。自動で付け替えたり消したりしない)。"""
+    model = relabel_units(model, plan)
     units = [u for u in model.units if u.unit_id != procedure.unit_id] + [procedure]
     order = {u.unit_id: i for i, u in enumerate(plan_units(plan))}
     planned = sorted((u for u in units if u.unit_id in order), key=lambda u: order[u.unit_id])

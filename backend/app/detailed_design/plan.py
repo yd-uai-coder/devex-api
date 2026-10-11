@@ -11,7 +11,10 @@ docs/internal_design.md 3.3節「4. 詳細設計モード」。
 - タスクは実装手順書の作業単位(単位)になる。処理を持つものは機能ごとの縦割り(`feature`。
   バックエンド・フロントエンド・テストを1単位に)、処理の無い準備・デプロイは`base`にする。
 - マイルストーンの番号(`M-01`…)と単位の ID(`M-01-T01`…)は保存しない。並び順から
-  `milestone_id`・`task_id`で導く(L-ID と同じ)。
+  `milestone_id`・`task_id`で導く(L-ID と同じ)。表示の ID は並べ替えで変わるので、段階8の
+  手順書と変更の影響は、タスクごとに保存する安定キー(`key`。`U-001`…)で単位を指す。
+  キーは`assign_unit_keys`が、キーの無いタスクに`next_unit_seq`から振る(要件ID と同じく、
+  消した番号は使い直さない)。
 - 単位の間の依存(`depends_on`)は単位の ID で書き、前にある単位だけを指せる(後ろや自分を指すと
   検証のエラー。これで循環も起きない)。並べ替えたときの付け替えは画面の操作が行う。
 - 処理ID は段階1の機能一覧の ID で書く。マイルストーンの処理は、そのタスクの処理から導く
@@ -19,8 +22,11 @@ docs/internal_design.md 3.3節「4. 詳細設計モード」。
 - タスクのファイルは2つの欄に分ける。`modules`は段階4のモジュール一覧のパスで、検証する。
   `config_files`は`Dockerfile`・`docker-compose.yml`のような環境・設定のファイルの例で、検証しない。
 - 横断事項の`modules`は「関わるファイルの例」で、検証しない。
+- 横断事項の`req_ids`は、その方針が担う要件ID(非機能要件・制約を含む)。変更の影響を非機能要件
+  からたどるために持つ(処理を持たない横断事項へは、段階1の処理からは届かないため)。
 """
 
+from collections import Counter
 from collections.abc import Iterable, Sequence
 from typing import Literal
 
@@ -46,11 +52,13 @@ CROSSCUTTING_TOPICS: tuple[str, ...] = ("例外と HTTP", "認証", "トラン�
 
 
 class CrossCuttingRow(BaseModel):
-    """07 横断事項の1行。`modules`はその方針に関わるファイルの例(検証しない)。"""
+    """07 横断事項の1行。`modules`はその方針に関わるファイルの例(検証しない)、`req_ids`はその方針が
+    担う要件ID(要件定義書に無い ID は検証で警告する)。"""
 
     topic: str
     policy: str = ""
     modules: list[str] = Field(default_factory=list)
+    req_ids: list[str] = Field(default_factory=list)
 
 
 class PlanTask(BaseModel):
@@ -59,6 +67,8 @@ class PlanTask(BaseModel):
     `depends_on`は先に終わっている必要がある単位の ID、`modules`は段階4のパス(検証する)、
     `config_files`は環境・設定のファイルの例(検証しない)。"""
 
+    # 並べ替えで変わらない単位のキー(`U-001`…)。空なら保存時・生成時に振る
+    key: str = ""
     kind: UnitKind = "feature"
     title: str = ""
     function_ids: list[str] = Field(default_factory=list)
@@ -92,6 +102,8 @@ class PlanModel(BaseModel):
     milestones: list[Milestone] = Field(default_factory=list)
     environment: str = ""
     risks: list[Risk] = Field(default_factory=list)
+    # 次に振る単位のキーの番号
+    next_unit_seq: int = 1
 
 
 def milestone_id(index: int) -> str:
@@ -102,6 +114,70 @@ def milestone_id(index: int) -> str:
 def task_id(milestone_index: int, task_index: int) -> str:
     """マイルストーンとタスクの並び順(0始まり)から単位の ID を導く(`M-01-T01`…)。"""
     return f"{milestone_id(milestone_index)}-T{task_index + 1:02d}"
+
+
+def unit_key(seq: int) -> str:
+    """単位のキーを番号から作る(`U-001`…)。"""
+    return f"U-{seq:03d}"
+
+
+def assign_unit_keys(model: PlanModel) -> PlanModel:
+    """キーの無いタスク・前のタスクと同じキーのタスクに、次の番号のキーを振る(並び順に)。
+
+    振った分だけ`next_unit_seq`を進める。今あるキーより小さい番号は振らない(`next_unit_seq`が
+    古くても、既存のキーと重ならないようにする)。"""
+    tasks = [task for milestone in model.milestones for task in milestone.tasks]
+    used = {task.key for task in tasks if task.key}
+    seq = max([model.next_unit_seq, *(_key_seq(key) + 1 for key in used)])
+    seen: set[str] = set()
+    milestones: list[Milestone] = []
+    for milestone in model.milestones:
+        keyed: list[PlanTask] = []
+        for task in milestone.tasks:
+            key = task.key
+            if not key or key in seen:
+                key, seq = unit_key(seq), seq + 1
+            seen.add(key)
+            keyed.append(task.model_copy(update={"key": key}))
+        milestones.append(milestone.model_copy(update={"tasks": keyed}))
+    return model.model_copy(update={"milestones": milestones, "next_unit_seq": seq})
+
+
+def carry_over_unit_keys(model: PlanModel, previous: PlanModel) -> PlanModel:
+    """作り直した計画に、前の計画のキーを引き継ぐ(タスク名が同じタスクだけ。前の計画で同じ名前が
+    2つあるものは引き継がない)。番号は前の計画から続け、残りは`assign_unit_keys`が振る。
+
+    作り直しは全体を置き換えるが、同じ作業単位の手順書(段階8)を付けたままにするため。"""
+    counts = Counter(
+        task.title.strip() for milestone in previous.milestones for task in milestone.tasks
+    )
+    keys = {
+        task.title.strip(): task.key
+        for milestone in previous.milestones
+        for task in milestone.tasks
+        if task.key and counts[task.title.strip()] == 1
+    }
+    milestones = [
+        milestone.model_copy(
+            update={
+                "tasks": [
+                    task.model_copy(update={"key": keys.get(task.title.strip(), "")})
+                    for task in milestone.tasks
+                ]
+            }
+        )
+        for milestone in model.milestones
+    ]
+    seq = max(model.next_unit_seq, previous.next_unit_seq)
+    return assign_unit_keys(
+        model.model_copy(update={"milestones": milestones, "next_unit_seq": seq})
+    )
+
+
+def _key_seq(key: str) -> int:
+    """`U-001`形式のキーの番号(形の違うキーは0)。"""
+    head, _, number = key.partition("-")
+    return int(number) if head == "U" and number.isdigit() else 0
 
 
 def unit_ids(model: PlanModel) -> list[str]:
@@ -168,6 +244,7 @@ def normalize_plan(model: PlanModel, module_paths: Sequence[str]) -> PlanModel:
             topic=row.topic.strip(),
             policy=row.policy.strip(),
             modules=_modules(row.modules, module_paths),
+            req_ids=_clean(row.req_ids),
         )
         for row in model.crosscutting
         if row.topic.strip() or row.policy.strip()
@@ -176,6 +253,7 @@ def normalize_plan(model: PlanModel, module_paths: Sequence[str]) -> PlanModel:
     for milestone in model.milestones:
         tasks = [
             PlanTask(
+                key=task.key.strip(),
                 kind=task.kind,
                 title=task.title.strip(),
                 function_ids=_clean(task.function_ids),
@@ -207,4 +285,5 @@ def normalize_plan(model: PlanModel, module_paths: Sequence[str]) -> PlanModel:
         milestones=milestones,
         environment=model.environment.strip(),
         risks=risks,
+        next_unit_seq=model.next_unit_seq,
     )

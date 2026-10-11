@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tests.fixtures.detailed_design import (
     create_document_project,
     create_stage7_project,
+    plan_model,
     procedure_doc_model,
     procedure_doc_output,
 )
@@ -114,7 +115,7 @@ async def test_mismatched_unit_blocks_approval(db_session: AsyncSession) -> None
     """段階7と合わない手順書(並べ替え・改名の後)は、作り直すまで承認できない。"""
     project = await create_document_project(db_session)
     service = DesignStageService(db_session)
-    model = procedure_doc_model(unit_id="M-01-T01")
+    model = procedure_doc_model(unit_id="M-01-T01", unit_key="")
     await service.save(project, stage=8, expected_version=None, model=model)
 
     with pytest.raises(DesignStageInvalidError):
@@ -179,8 +180,9 @@ async def test_route_generates_selected_unit_and_can_be_approved(db_session: Asy
     assert stage8.state == "draft"
     assert stage8.model is not None
     [unit] = stage8.model["units"]
-    assert (unit["unit_id"], unit["title"], unit["purpose"]) == (
+    assert (unit["unit_id"], unit["unit_key"], unit["title"], unit["purpose"]) == (
         "M-01-T02",
+        "U-002",
         "予約を登録する",
         "予約を登録できる",
     )
@@ -246,3 +248,30 @@ async def test_generation_rejects_empty_unknown_too_many_and_other_stage(
         await service.request_generation(project, stage=7, unit_ids=["M-01-T01"])
     accepted = await service.request_generation(project, stage=8, unit_ids=["M-01-T01"])
     assert accepted.generation_status == "generating"
+
+
+async def test_procedure_doc_follows_unit_when_stage7_is_reordered(
+    db_session: AsyncSession,
+) -> None:
+    """段階7でタスクを並べ替えても、手順書はキーで同じ単位に付いたまま(表示の ID は今の並び順)。"""
+    project = await create_document_project(db_session)
+    project_id = project.id
+    service = DesignStageService(db_session)
+    await service.save(project, stage=8, expected_version=None, model=procedure_doc_model())
+
+    reordered = plan_model()
+    tasks = reordered["milestones"][0]["tasks"]
+    tasks[1]["depends_on"] = []
+    tasks.reverse()
+    await service.save(project, stage=7, expected_version=1, model=reordered)
+    await service.approve(project, stage=7, expected_version=2)
+    stage8 = await service.read(project_id, 8)
+
+    assert stage8.model is not None
+    [unit] = stage8.model["units"]
+    assert (unit["unit_id"], unit["unit_key"], unit["title"]) == (
+        "M-01-T01",
+        "U-002",
+        "予約を登録する",
+    )
+    assert "UNIT_MISMATCH" not in [i.code for i in stage8.issues]

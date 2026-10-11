@@ -8,15 +8,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.detailed_design import (
     DATA_MODEL_STAGE,
     ER_SUBJECT,
+    PLAN_STAGE,
     PROCEDURE_DOC_STAGE,
     PROCEDURE_STAGE,
     STRUCTURE_STAGE,
     STRUCTURE_SUBJECT,
     Fingerprint,
     ModuleListModel,
+    PlanModel,
+    ProcedureDocModel,
     ProcedureModel,
     StageRecord,
     StageView,
+    assign_unit_keys,
     can_approve,
     component_layers,
     confirm_drafts,
@@ -26,6 +30,7 @@ from app.detailed_design import (
     er_table_names,
     find_unit,
     module_dependencies,
+    relabel_units,
     table_key,
     tables_without_primary_key,
 )
@@ -146,8 +151,11 @@ class DesignStageService:
         self, project: Project, *, stage: int, expected_version: int | None, model: dict
     ) -> DesignStageRead:
         """段階の内容を人の編集として保存する。承認済みの段階を保存すると承認をやり直す
-        (`reviewing`へ戻し、versionを増やす)。未着手の段階は、初めての保存で行を作る。"""
+        (`reviewing`へ戻し、versionを増やす)。未着手の段階は、初めての保存で行を作る。
+        段階7は、キーの無いタスク(画面で足したタスク)に単位のキーを振ってから保存する。"""
         _ensure_stage(project, stage)
+        if stage == PLAN_STAGE:
+            model = _with_unit_keys(model)
         rows, views, _ = await self._load(project)
         _ensure_open(views[stage])
         row = rows.get(stage)
@@ -502,6 +510,27 @@ def _approved_versions(
     }
 
 
+def _with_unit_keys(model: dict) -> dict:
+    """段階7の内容に単位のキーを振る。形の正しくない内容はそのまま返す(検証が指摘する)。"""
+    try:
+        plan = PlanModel.model_validate(model)
+    except ValidationError:
+        return model
+    return assign_unit_keys(plan).model_dump(mode="json")
+
+
+def _relabeled(model: dict | None, basis: ProcedureBasis | None) -> dict | None:
+    """段階8の手順書の表示の ID を、作業単位の今の並び順に付け直す(画面は ID で単位に付けるため)。
+    作業単位が無い・形の正しくない内容はそのまま返す。"""
+    if not model or basis is None:
+        return model
+    try:
+        doc = ProcedureDocModel.model_validate(model)
+    except ValidationError:
+        return model
+    return relabel_units(doc, basis.plan).model_dump(mode="json")
+
+
 def _to_read(view: StageView, row: DesignStage | None, sources: StageSources) -> DesignStageRead:
     # 段階8の作業単位(詳細設計モードは段階7、簡易モードは実装計画書の WBS)。画面の単位の一覧が使う
     basis = (
@@ -523,7 +552,7 @@ def _to_read(view: StageView, row: DesignStage | None, sources: StageSources) ->
         missing_inputs=list(view.missing_inputs),
         version=row.version if row is not None else None,
         approved_version=row.approved_version if row is not None else None,
-        model=row.model if row is not None else None,
+        model=_relabeled(row.model, basis) if row is not None else None,
         updated_at=row.updated_at if row is not None else None,
         generation_status=row.generation_status if row is not None else None,  # type: ignore[arg-type]
         generation_error=row.generation_error if row is not None else None,

@@ -32,6 +32,7 @@ from app.detailed_design.plan import (
     UnitKind,
 )
 from app.detailed_design.prompt_rules import NAMING_RULES
+from app.detailed_design.requirement_trace import normalize_req_id
 
 
 class GeneratedCrossCutting(BaseModel):
@@ -42,6 +43,11 @@ class GeneratedCrossCutting(BaseModel):
     modules: list[str] = Field(
         description="この方針に関わるファイルのパスの例(【詳細設計書】04 のモジュール一覧のパスや、"
         "設定のファイル)"
+    )
+    req_ids: list[str] = Field(
+        default_factory=list,
+        description="この方針が担う要件の ID(【要件定義書】の非機能要件・制約・機能要件の ID を"
+        "そのまま。例: NFR-001)",
     )
 
 
@@ -112,7 +118,10 @@ CROSSCUTTING_SYSTEM_PROMPT = (
     "創作せず、『(要決定)』と書いて決める必要があることを示す\n"
     "- modules には、その方針に関わるファイルのパスを例として書く。【詳細設計書】04 の"
     "モジュール一覧にあるものはそのパスをそのまま使い、設定のファイルも書いてよい"
-    "(ライブラリ名は書かない)" + NAMING_RULES
+    "(ライブラリ名は書かない)\n"
+    "- req_ids には、その方針が担う要件の ID を【要件定義書】の ID のまま書く(認証なら"
+    "アクセス制御の非機能要件、ログなら監視・個人情報の要件など)。要件定義書に無い ID は"
+    "作らない。当てはまる要件が無ければ空にする" + NAMING_RULES
 )
 
 PLAN_SYSTEM_PROMPT = (
@@ -176,11 +185,22 @@ def build_plan_messages(
 
 
 def to_crosscutting(output: CrossCuttingGenerationOutput) -> list[CrossCuttingRow]:
-    """横断事項の構造化出力を、意味モデルの行に変える(空白の整えは`normalize_plan`が行う)。"""
+    """横断事項の構造化出力を、意味モデルの行に変える(空白の整えは`normalize_plan`が行う)。
+    要件ID は形をそろえる。"""
     return [
-        CrossCuttingRow(topic=row.topic, policy=row.policy, modules=list(row.modules))
+        CrossCuttingRow(
+            topic=row.topic,
+            policy=row.policy,
+            modules=list(row.modules),
+            req_ids=_req_ids(row.req_ids),
+        )
         for row in output.crosscutting
     ]
+
+
+def _req_ids(values: Sequence[str]) -> list[str]:
+    """AI が書いた要件ID を`FR-001`の形にそろえる。形の違う値は捨てる(AI の書き損じのため)。"""
+    return [req for req in (normalize_req_id(v) for v in values) if req is not None]
 
 
 def to_plan_model(
