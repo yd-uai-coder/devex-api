@@ -9,6 +9,8 @@ app/services/design_stage_service.py)に加えて、段階ごとの検証で「�
 段階は検証なし)。
 検証には段階の内容のほかに入力の文書の本文が要ることがあるので、
 `StageSources`で渡す(段階1は外部設計書のAPI一覧と照らして、下書きの漏れを警告する)。
+要件の追跡(処理・作業単位の無い Must の機能要件など)は、文書の model(`document_models`)を読む。
+段階1は外部設計書の model に写した要件ID、簡易モードの段階8は要件定義書の model。
 段階2は、入力の段階1の内容と、機能グループの DFD(`uml_diagrams`)の要約も使う。
 段階3は、段階1・2の内容と、DFD の線から読み取った R/W と、ER の要約を使う。
 段階4は、段階1の内容と、構成図の要約を使う。
@@ -80,6 +82,12 @@ from app.detailed_design.procedure_doc import (
     spelling_match,
     unit_refs,
 )
+from app.detailed_design.requirement_trace import (
+    RequirementIndex,
+    index_from_external_design,
+    index_from_requirements,
+    unit_req_ids,
+)
 from app.detailed_design.sequence import (
     module_dependencies,
     reachable_callees,
@@ -91,6 +99,11 @@ from app.detailed_design.stages import ProjectMode
 from app.detailed_design.structure import ModuleListModel, module_ref_matches
 
 Severity = Literal["error", "warning"]
+
+# 計画と合わない手順書の直し方(画面の段階8の「計画に無い手順書」の操作)
+_STRAY_GUIDE = (
+    "単位の一覧の下の「{source}に無い手順書」で、今の単位へ付け替えるか消してください"
+)
 
 # 簡易モードの段階8の指摘の直す先(実装計画書・内部設計書)
 _PLAN: DesignDocument = "implementation_plan"
@@ -154,6 +167,8 @@ class StageSources:
     - `er_diagram`: ER の要約(まだ無ければ None)。段階3が使う。
     - `component_diagram`: 構成図の要約(まだ無ければ None)。段階4が使う。
     - `mode`: プロジェクトのモード。簡易モードの段階8は、段階でなく4文書から作業単位と設計を読む。
+    - `document_models`: 入力の文書の表示中の版の model(model を持つ版だけ。要件定義書・
+      外部設計書)。要件の追跡が読む。
     """
 
     documents: Mapping[str, str] = field(default_factory=dict)
@@ -162,6 +177,7 @@ class StageSources:
     er_diagram: ErDiagramSummary | None = None
     component_diagram: ComponentDiagramSummary | None = None
     mode: ProjectMode = "detailed"
+    document_models: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
 
 StageValidator = Callable[[Mapping[str, Any], StageSources], list[StageIssue]]
@@ -177,7 +193,7 @@ def validate_function_list(model: Mapping[str, Any], sources: StageSources) -> l
     エラー: 形が不正 / 処理が0件 / 処理IDの形式・重複・`next_number`以上の番号 / 名称が空 /
     機能グループが一覧に無い / 機能グループの重複。
     警告: 使われていない機能グループ / トリガーの重複 /
-    外部設計書のAPI一覧にあるが機能一覧に無いAPI。
+    外部設計書のAPI一覧にあるが機能一覧に無いAPI / 要件の追跡(`_requirement_issues`)。
     """
     try:
         parsed = FunctionListModel.model_validate(model)
@@ -236,7 +252,48 @@ def validate_function_list(model: Mapping[str, Any], sources: StageSources) -> l
             api = f"{endpoint.method} {endpoint.path}"
             message = f"外部設計書のAPI一覧にある {api} が、機能一覧にありません。"
             issues.append(_warning("MISSING_API", message, api))
+    return issues + _requirement_issues(parsed, sources)
+
+
+def _requirement_issues(parsed: FunctionListModel, sources: StageSources) -> list[StageIssue]:
+    """段階1の要件の追跡(警告)。要件ID は外部設計書の model に写したものと照らす。
+
+    処理の無い Must の機能要件 / 要件の無い処理 / 要件定義書に無い要件ID。外部設計書はあるが
+    要件ID を持たない(Phase 37 より前に生成した)なら、その旨の1件だけにする。"""
+    index = index_from_external_design(sources.document_models.get("external_design"))
+    if not index.available:
+        if not sources.documents.get("external_design", "").strip():
+            return []
+        message = (
+            "外部設計書に要件ID がありません(要件定義書・外部設計書を再生成すると、"
+            "処理と要件の対応を確かめられます)。"
+        )
+        return [_warning("REQUIREMENT_IDS_MISSING", message)]
+    issues: list[StageIssue] = []
+    linked = {req for row in parsed.functions for req in row.req_ids}
+    for req_id in index.must_fr_ids:
+        if req_id not in linked:
+            message = f"Must の機能要件 {req_id} を担う処理がありません。"
+            issues.append(_warning("MUST_REQUIREMENT_UNPROCESSED", message, req_id))
+    for row in parsed.functions:
+        if not row.req_ids:
+            message = f"{row.id} に要件がありません(要件定義書に無い機能か、要件の付け忘れです)。"
+            issues.append(_warning("UNLINKED_FUNCTION", message, row.id))
+        issues += _unknown_requirements(row.id, row.req_ids, index)
     return issues
+
+
+def _unknown_requirements(
+    owner: str, req_ids: list[str], index: RequirementIndex
+) -> list[StageIssue]:
+    known = set(index.known_ids)
+    return [
+        _warning(
+            "UNKNOWN_REQUIREMENT_ID", f"{owner} の要件 {req} が要件定義書にありません。", owner
+        )
+        for req in req_ids
+        if req not in known
+    ]
 
 
 def validate_data_flow(model: Mapping[str, Any], sources: StageSources) -> list[StageIssue]:
@@ -763,7 +820,7 @@ def validate_procedure_doc(
     """段階8(実装手順書)の検証 = 決定的な実装可能性チェック。
 
     エラー(承認を止める): 形が不正 / 同じ単位の手順書が2つある / 手順書の単位が段階7に無い・
-    タスク名が違う(段階7を並べ替え・改名した。作り直させる)。
+    タスク名が違う(段階7を並べ替え・改名した。画面で今の単位へ付け替えるか消させる)。
     警告(重要度・直す先の段階を持つ。承認は止めない):
     - 中程度・段階5: 機能の単位の処理に、段階5の手順が無い(`NO_PROCEDURE`)
     - 中程度・段階3: 手順に DB 操作があるのに、CRUD 図にその処理の操作が無い(`NOT_IN_CRUD`)
@@ -783,7 +840,7 @@ def validate_procedure_doc(
     basis = procedure_basis(sources.mode, sources.stages, sources.documents)
     issues, matched = _matched_procedures(parsed, basis)
     if basis.mode == "simple":
-        return issues + _simple_procedure_issues(basis)
+        return issues + _simple_procedure_issues(basis, sources)
     index = basis.index
     function_list = FunctionListModel.model_validate(sources.stages.get(1) or {})
     triggers = {row.id: row.trigger for row in function_list.functions}
@@ -821,16 +878,15 @@ def _matched_procedures(
             continue
         unit = by_id.get(uid)
         if unit is None:
-            message = (
-                f"手順書の単位 {uid} が、{source}にありません(手順書を作り直してください)。"
-            )
+            guide = _STRAY_GUIDE.format(source=source)
+            message = f"手順書の単位 {uid} が、{source}にありません({guide})。"
             issues.append(_unit_error("UNIT_MISMATCH", message, uid))
             continue
         if unit.task.title.strip() != doc.title.strip():
             message = (
                 f"{uid} の手順書は「{doc.title.strip()}」のものですが、{source}の {uid} は"
                 f"「{unit.task.title.strip()}」です({source}を並べ替えたか改名しました。"
-                "手順書を作り直してください)。"
+                f"{_STRAY_GUIDE.format(source=source)})。"
             )
             issues.append(_unit_error("UNIT_MISMATCH", message, uid))
             continue
@@ -838,12 +894,13 @@ def _matched_procedures(
     return issues, matched
 
 
-def _simple_procedure_issues(basis: ProcedureBasis) -> list[StageIssue]:
+def _simple_procedure_issues(basis: ProcedureBasis, sources: StageSources) -> list[StageIssue]:
     """簡易モードの実装可能性チェック(警告。直す先は文書)。
 
     - 実装計画書: WBS の書式(`WBS_*`)、依存先が一覧に無い・後ろの単位、[機能]に DF が無い、
       DF が内部設計書に無い、どの単位にも入っていない DF(軽微)
     - 内部設計書: モジュール一覧が無い(最重要)
+    - 要件の追跡(`_simple_requirement_issues`。直す先は実装計画書)
 
     モジュールとファイルは見ない。簡易モードのモジュール一覧は層ごとにまとめた行で、ファイルは
     層まで照合する(参照の展開。`module_layer`)。層に当たらないファイルも、簡易モードの粒度では
@@ -872,6 +929,48 @@ def _simple_procedure_issues(basis: ProcedureBasis) -> list[StageIssue]:
         if flow_id not in planned:
             message = f"内部設計書の処理 {flow_id} が、どの単位にも入っていません。"
             issues.append(_doc_finding("UNPLANNED_DATAFLOW", message, flow_id, "minor", _PLAN))
+    return issues + _simple_requirement_issues(units, sources)
+
+
+def _simple_requirement_issues(
+    units: list[PlanUnit], sources: StageSources
+) -> list[StageIssue]:
+    """簡易モードの要件の追跡(警告。直す先は実装計画書)。要件は WBS の「要件」欄。
+
+    - 中程度: 単位の無い Must の機能要件
+    - 軽微: 要件の無い機能の単位 / 要件定義書に無い要件ID
+    要件定義書はあるが要件ID を持たない(Phase 36 より前に生成した)なら、その旨の軽微な1件だけ。
+    """
+    index = index_from_requirements(sources.document_models.get("requirements"))
+    if not index.available:
+        if not sources.documents.get("requirements", "").strip():
+            return []
+        message = (
+            "要件定義書に要件ID がありません(要件定義書と実装計画書を再生成すると、"
+            "作業単位と要件の対応を確かめられます)。"
+        )
+        return [_doc_finding("REQUIREMENT_IDS_MISSING", message, None, "minor", _PLAN)]
+    reqs = unit_req_ids(units)
+    issues: list[StageIssue] = []
+    linked = {req for values in reqs.values() for req in values}
+    for req_id in index.must_fr_ids:
+        if req_id not in linked:
+            message = f"Must の機能要件 {req_id} を担う単位がありません。"
+            issues.append(
+                _doc_finding("MUST_REQUIREMENT_UNPLANNED", message, req_id, "major", _PLAN)
+            )
+    known = set(index.known_ids)
+    for unit in units:
+        uid = unit.unit_id
+        if unit.task.kind == "feature" and not reqs[uid]:
+            message = f"{uid} は機能の単位ですが、要件がありません。"
+            issues.append(_doc_finding("UNLINKED_UNIT", message, uid, "minor", _PLAN, uid))
+        for req in reqs[uid]:
+            if req not in known:
+                message = f"{uid} の要件 {req} が要件定義書にありません。"
+                issues.append(
+                    _doc_finding("UNKNOWN_REQUIREMENT_ID", message, req, "minor", _PLAN, uid)
+                )
     return issues
 
 

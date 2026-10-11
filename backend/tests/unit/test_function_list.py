@@ -164,6 +164,8 @@ def test_validate_warns_duplicate_trigger_and_missing_api() -> None:
     assert [(i.code, i.target) for i in issues] == [
         ("DUPLICATE_TRIGGER", "F-01"),
         ("MISSING_API", "GET /api/v1/items"),
+        # 外部設計書に model が無い(Phase 37 より前の版)
+        ("REQUIREMENT_IDS_MISSING", None),
     ]
 
 
@@ -173,3 +175,42 @@ def test_stages_without_validator_have_no_issues() -> None:
     assert validate_stage(9, {"anything": 1}, StageSources()) == []
     assert validate_stage(1, None, StageSources()) == []
     assert has_errors([StageIssue("warning", "W", "w")]) is False
+
+
+def test_merge_copies_api_requirements_from_external_design() -> None:
+    """API の処理は外部設計書の 2.6 の行の要件ID を写す。API でない処理と、2.6 に無い API は
+    下書きの値(空白・重複は除く)。"""
+    drafts = [
+        FunctionDraft("登録する", "API", "post /api/v1/reservations/", (), "", "", ("FR-009",)),
+        FunctionDraft("一覧を返す", "API", "GET /api/v1/items", (), "", "", ("FR-002",)),
+        FunctionDraft("集計する", "画面", "SCR-001: 集計", (), "", "集計", (" FR-003", "FR-003")),
+    ]
+    api_req_ids = {"POST /api/v1/reservations": ["FR-001"]}
+
+    model = merge_draft(drafts, api_req_ids=api_req_ids)
+
+    assert [row.req_ids for row in model.functions] == [["FR-001"], ["FR-002"], ["FR-003"]]
+
+
+def test_validate_traces_requirements_from_external_design_copy() -> None:
+    """要件の追跡: 処理の無い Must の要件・要件の無い処理・要件定義書に無い要件ID(警告)。
+    要件ID は外部設計書の model に写したものと照らす。"""
+    model = function_list_model()
+    model["functions"].append(
+        {**model["functions"][0], "id": "F-02", "trigger": "GET /a", "req_ids": []}
+    )
+    model["functions"].append(
+        {**model["functions"][0], "id": "F-03", "trigger": "GET /b", "req_ids": ["FR-099"]}
+    )
+    model["next_number"] = 4
+    external = {"known_req_ids": ["FR-001", "FR-002"], "must_fr_ids": ["FR-001", "FR-002"]}
+    sources = StageSources(document_models={"external_design": external})
+
+    issues = validate_function_list(model, sources)
+
+    assert has_errors(issues) is False
+    assert [(i.code, i.target) for i in issues] == [
+        ("MUST_REQUIREMENT_UNPROCESSED", "FR-002"),
+        ("UNLINKED_FUNCTION", "F-02"),
+        ("UNKNOWN_REQUIREMENT_ID", "F-03"),
+    ]

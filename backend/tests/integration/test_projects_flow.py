@@ -1,8 +1,10 @@
 import pytest
 from httpx import AsyncClient
+from tests.fixtures.external_design import upstream_outputs
 from tests.fixtures.fake_llm import FakeLLM
 
-from app.schemas.generation import HearingCompletionCheck
+from app.hearing import POINT_DEFS
+from app.schemas.hearing import HearingPointsJudgement, HearingReplyOut, JudgedPointOut
 from app.services import chat_service as chat_service_module
 from app.services import doc_generator_service as doc_generator_service_module
 
@@ -35,11 +37,39 @@ def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> FakeLLM:
     """
     fake = FakeLLM(
         content="[Fake] 次に、想定している主なユーザー層を教えてください。",
-        stream_chunks=["[Fake] 次に、", "想定している主なユーザー層を教えてください。"],
-        # 完了判定はチャットの送信ごとに1回呼ばれる(下のテストは最大3往復)
+        # ヒアリングの返信(本文と選択肢カードの構造化出力)。規模が未決の間は、コードが規模の
+        # カードを足す
+        structured_by_schema={
+            HearingReplyOut: HearingReplyOut(
+                message="[Fake] 次に、想定している主なユーザー層を教えてください。"
+            ),
+            # 要件定義書・外部設計書の下書き(構造化出力 → model → md)
+            **upstream_outputs(),
+        },
+        # 観点の判定は作成時に1回と、文を送るたびに1回呼ばれる(下のテストは3往復)。
+        # 2往復目までは目的だけ、
+        # 3往復目で全観点が決まる(発言の番号: 初期入力=1、利用者の発言=2〜4)
         structured_sequence=[
-            HearingCompletionCheck(is_sufficient=True, summary="[Fake] 要約です", missing_points=[])
-            for _ in range(3)
+            HearingPointsJudgement(),  # プロジェクト作成時の判定(初期入力からは何も決まらない)
+            *[
+                HearingPointsJudgement(
+                    points=[
+                        JudgedPointOut(
+                            key="purpose", status="decided", summary="在庫の可視化", evidence=[1]
+                        )
+                    ]
+                )
+                for _ in range(2)
+            ],
+            HearingPointsJudgement(
+                scale="internal",
+                points=[
+                    JudgedPointOut(
+                        key=d.key, status="decided", summary=f"[Fake] {d.label}", evidence=[4]
+                    )
+                    for d in POINT_DEFS
+                ],
+            ),
         ],
     )
     monkeypatch.setattr(chat_service_module, "get_gemini_llm", lambda: fake)
@@ -72,8 +102,8 @@ async def test_full_projects_flow_create_chat_generate_download(
     project_id = create_response.json()["id"]
     assert create_response.json()["status"] == "interviewing"
 
-    # ヒアリング完了判定には最低発話数(ユーザー発話3件)が必要なため、3往復送る。
-    # 判定は送信のたびに返信の前に行われ、GETはその結果を返す(2往復目までは足りない)
+    # 判定は送信のたびに返信の前に行われ、GETはその結果を返す(2往復目までは必須の観点が足りない)。
+    # 2往復目は、1往復目の返信に付いた規模のカードを選んで送る
     chat_responses = []
     for index, message in enumerate(
         (
@@ -83,27 +113,55 @@ async def test_full_projects_flow_create_chat_generate_download(
         ),
         start=1,
     ):
+        body: dict = {"message": message}
+        if index == 2:
+            history = await client.get(f"/api/v1/projects/{project_id}/chat", headers=headers)
+            card = history.json()[-1]["cards"][0]
+            assert card["point_key"] == "scale"
+            body["card_answers"] = [{"card_id": card["id"], "option": 1}]
         chat_response = await client.post(
             f"/api/v1/projects/{project_id}/chat",
             headers=headers,
-            json={"message": message},
+            json=body,
         )
         assert chat_response.status_code == 200
         chat_responses.append(chat_response)
+        if index == 1:
+            assert "event: cards" in chat_response.text
+        if index == 2:
+            points = await client.get(
+                f"/api/v1/projects/{project_id}/hearing-points", headers=headers
+            )
+            assert points.json()["scale"] == "internal"
+            assert points.json()["points"][0]["status"] == "adopted"
         if index < 3:
             pending = await client.get(
                 f"/api/v1/projects/{project_id}/hearing-completion", headers=headers
             )
             assert pending.json()["is_sufficient"] is False
     assert "text/event-stream" in chat_responses[-1].headers["content-type"]
-    # 十分になった送信の返信は、判定のまとめ(LLMの返信ではない)
-    assert "[Fake] 要約です" in chat_responses[-1].text
+    # 十分になった送信の返信は、観点の表から組み立てたまとめ(LLMの返信ではない)
+    assert "規模: 社内" in chat_responses[-1].text
+    assert "[Fake] 可用性" in chat_responses[-1].text
+
+    points_response = await client.get(
+        f"/api/v1/projects/{project_id}/hearing-points", headers=headers
+    )
+    assert points_response.status_code == 200
+    assert points_response.json()["is_sufficient"] is True
+    assert points_response.json()["points"][0]["evidence"][0]["label"] == "発言3"
 
     history_response = await client.get(f"/api/v1/projects/{project_id}/chat", headers=headers)
     assert history_response.status_code == 200
     senders = [entry["sender"] for entry in history_response.json()]
     # intake要約(サーバー起動時の最初のAI発話)・ユーザー発話・AI返信が揃っていること
     assert "user" in senders and "ai" in senders
+    # カードの選択は発言の本文に入り、カードには選ばれた選択肢が残る
+    answered = next(e for e in history_response.json() if e["message"].startswith("【規模】"))
+    assert answered["message"].startswith("【規模】社内の人が使う\n\n")
+    assert any(
+        card["selected"] == 1 for e in history_response.json() for card in e["cards"] or []
+    )
 
     completion_response = await client.get(
         f"/api/v1/projects/{project_id}/hearing-completion", headers=headers
@@ -134,15 +192,16 @@ async def test_full_projects_flow_create_chat_generate_download(
     project_response = await client.get(f"/api/v1/projects/{project_id}", headers=headers)
     assert project_response.json()["status"] == "completed"
 
-    doc_id = documents[0]["id"]
+    requirements = next(d for d in documents if d["doc_type"] == "requirements")
+    # 観点はすべて決まっているので、要件の出どころはどちらもユーザー(推測なし)
+    assert requirements["requirements"]["counts"] == {"user": 2, "adopted": 0, "assumed": 0}
     download_response = await client.get(
-        f"/api/v1/projects/{project_id}/documents/{doc_id}/download", headers=headers
+        f"/api/v1/projects/{project_id}/documents/{requirements['id']}/download", headers=headers
     )
     assert download_response.status_code == 200
     assert download_response.headers["content-type"].startswith("text/markdown")
-    # FakeLLMは固定の応答文字列のみ返すため、生成内容そのものの品質はここでは検証しない
-    # (品質はdoc_generator_serviceの単体テスト・プロンプト設計の責務)。
-    assert download_response.text == "[Fake] 次に、想定している主なユーザー層を教えてください。"
+    # 要件定義書は model から組み立てた md(要件ID と出どころの付いた表)
+    assert "| FR-001 | Must | 備品を予約できる | ユーザー | コア機能 |" in download_response.text
 
 
 async def test_revising_status_after_message_on_completed_project(
@@ -177,6 +236,40 @@ async def test_revising_status_after_message_on_completed_project(
     )
     project_response = await client.get(f"/api/v1/projects/{project_id}", headers=headers)
     assert project_response.json()["status"] == "revising"
+
+
+async def test_opening_scale_card_and_marking_point_not_applicable(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """最初の発話に規模のカードが付き、観点の表から未決の観点を対象外にできる(LLMは呼ばない)。"""
+    _install_fake_llm(monkeypatch)
+    token = await _register_and_login(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    create_response = await client.post(
+        "/api/v1/projects",
+        headers=headers,
+        data={"name": "備品予約", "system_overview": "備品予約", "goals_raw": "重複を防ぐ"},
+        files=[],
+    )
+    project_id = create_response.json()["id"]
+
+    history = await client.get(f"/api/v1/projects/{project_id}/chat", headers=headers)
+    opening = history.json()[-1]
+    assert opening["sender"] == "ai"
+    assert [card["point_key"] for card in opening["cards"]] == ["scale"]
+
+    url = f"/api/v1/projects/{project_id}/hearing-points"
+    skip = {"status": "not_applicable"}
+    response = await client.put(f"{url}/purpose", headers=headers, json=skip)
+    assert response.status_code == 200
+    purpose = next(p for p in response.json()["points"] if p["key"] == "purpose")
+    assert purpose["status"] == "not_applicable"
+    again = await client.put(f"{url}/purpose", headers=headers, json=skip)
+    assert again.status_code == 409
+    unknown = await client.put(f"{url}/unknown", headers=headers, json=skip)
+    assert unknown.status_code == 404
+    invalid = await client.put(f"{url}/users", headers=headers, json={"status": "decided"})
+    assert invalid.status_code == 422
 
 
 @pytest.mark.parametrize("name", ["   ", "あ" * 41])

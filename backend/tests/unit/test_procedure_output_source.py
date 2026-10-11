@@ -102,6 +102,23 @@ def test_out_of_scope_lines_without_section() -> None:
     assert out_of_scope_lines(REQUIREMENTS_WITH_SCOPE)[0] == "Should have(重要): 予約の履歴"
 
 
+def test_out_of_scope_lines_reads_requirement_table_rows() -> None:
+    requirements = (
+        "## 1.4 機能要件(MoSCoW 優先度)\n\n"
+        "| ID | 優先度 | 要件 | 出どころ | 観点 |\n|---|---|---|---|---|\n"
+        "| FR-001 | Must | 予約できる | ユーザー | コア機能 |\n"
+        "| FR-002 | Should | 履歴 \\| 比較 | ユーザー | 将来の拡張 |\n"
+        "| FR-003 | Won't | 決済 | **推測** | MVP の範囲 |\n"
+        "\n## 1.5 非機能要件\n"
+        "| NFR-001 | Could | 対象外にしない | ユーザー | 可用性 |\n"
+    )
+
+    assert out_of_scope_lines(requirements) == [
+        "Should(FR-002): 履歴 | 比較",
+        "Won't(FR-003): 決済",
+    ]
+
+
 def test_unit_filename_replaces_unsafe_characters() -> None:
     plan = PlanModel.model_validate(sample_procedure_source().plan.model_dump())
     unit = find_unit(plan, "M-01-T02")

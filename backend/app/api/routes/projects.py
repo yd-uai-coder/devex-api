@@ -12,10 +12,19 @@ from app.api.responses import content_disposition
 from app.core.errors import AppError, BadRequestError
 from app.schemas.document import DocType, GeneratedDocumentRead
 from app.schemas.generation import HearingCompletionCheck
-from app.schemas.hearing import ChatHistoryRead, HearingMessageRequest
+from app.schemas.hearing import (
+    ChatHistoryRead,
+    HearingMessageRequest,
+    HearingPointsRead,
+    HearingPointUpdate,
+)
 from app.schemas.project import ProjectDetail, ProjectMode, ProjectRead
-from app.services.chat_service import ChatService
-from app.services.doc_generator_service import DocGeneratorService, generate_documents
+from app.services.chat_service import ChatService, ReplyCards
+from app.services.doc_generator_service import (
+    DocGeneratorService,
+    document_read,
+    generate_documents,
+)
 from app.services.errors import GenerationFailedError, LLMQuotaExceededError
 from app.services.project import ProjectService, UploadedFileInput
 
@@ -101,15 +110,23 @@ async def get_project(session: SessionDep, current_project: CurrentProjectDep) -
 async def send_hearing_message(
     payload: HearingMessageRequest, session: SessionDep, current_project: CurrentProjectDep
 ) -> StreamingResponse:
-    """ヒアリングチャットへメッセージを送信し、
-    AI応答をSSE(Server-Sent Events)でストリーミング返却する。"""
+    """ヒアリングチャットへメッセージ(と選択肢カードへの回答)を送信し、AI応答をSSE
+    (Server-Sent Events)で返す。本文は`data: {"delta": ...}`、選択肢カードは
+    `event: cards`(`data: {"cards": [...]}`)で送り、`data: [DONE]`で終える。"""
 
     async def event_stream():
         try:
-            async for chunk in ChatService(session).stream_reply(
-                current_project, user_message=payload.message
+            async for item in ChatService(session).stream_reply(
+                current_project,
+                user_message=payload.message,
+                card_answers=payload.card_answers,
+                continue_optional=payload.continue_optional,
             ):
-                yield f"data: {json.dumps({'delta': chunk}, ensure_ascii=False)}\n\n"
+                if isinstance(item, ReplyCards):
+                    body = json.dumps({"cards": item.cards}, ensure_ascii=False)
+                    yield f"event: cards\ndata: {body}\n\n"
+                else:
+                    yield f"data: {json.dumps({'delta': item}, ensure_ascii=False)}\n\n"
         except Exception as exc:  # noqa: BLE001 -- 200を返した後なので、失敗はSSEのイベントで伝える
             await session.rollback()
             yield _sse_error_event(exc)
@@ -136,6 +153,26 @@ async def get_hearing_completion(
     ここではLLMを呼ばない)。is_sufficient=Trueでも生成へは自動で進まない(チャットにまとめを
     出し、ユーザーの明示的な承認を得てから/generateを呼ぶ想定)。"""
     return ChatService(session).stored_completion(current_project)
+
+
+@router.get("/{project_id}/hearing-points", response_model=HearingPointsRead)
+async def get_hearing_points(
+    session: SessionDep, current_project: CurrentProjectDep
+) -> HearingPointsRead:
+    """チャット画面の観点の表を返す(判定はチャットの送信時に行い、ここではLLMを呼ばない)。"""
+    return await ChatService(session).points_view(current_project)
+
+
+@router.put("/{project_id}/hearing-points/{point_key}", response_model=HearingPointsRead)
+async def update_hearing_point(
+    point_key: str,
+    payload: HearingPointUpdate,
+    session: SessionDep,
+    current_project: CurrentProjectDep,
+) -> HearingPointsRead:
+    """観点の表の画面から、未決の観点を「対象外(後で決める)」にし、作り直した表を返す
+    (LLMは呼ばない。完了判定もその場で表から作り直す)。"""
+    return await ChatService(session).mark_point_not_applicable(current_project, point_key)
 
 
 @router.post("/{project_id}/generate", status_code=status.HTTP_202_ACCEPTED)
@@ -168,7 +205,7 @@ async def list_generated_documents(
 ) -> list[GeneratedDocumentRead]:
     """生成された設計書(各doc_typeの最新バージョンのみ)一覧を取得する。"""
     documents = await DocGeneratorService(session).list_current_documents(current_project.id)
-    return [GeneratedDocumentRead.model_validate(d) for d in documents]
+    return [document_read(d) for d in documents]
 
 @router.get("/{project_id}/documents/{doc_id}/download")
 async def download_generated_document(
@@ -197,7 +234,7 @@ async def list_document_versions(
 ) -> list[GeneratedDocumentRead]:
     """指定doc_typeの保管済み全バージョン(最大3件)を新しい順に取得する。"""
     versions = await DocGeneratorService(session).list_versions(current_project.id, doc_type)
-    return [GeneratedDocumentRead.model_validate(v) for v in versions]
+    return [document_read(v) for v in versions]
 
 
 @router.post(
@@ -211,4 +248,18 @@ async def restore_document_version(
     restored = await DocGeneratorService(session).restore_version(
         current_project.id, doc_type, version
     )
-    return GeneratedDocumentRead.model_validate(restored)
+    return document_read(restored)
+
+
+@router.post(
+    "/{project_id}/documents/requirements/rows/{req_id}/adopt",
+    response_model=GeneratedDocumentRead,
+)
+async def adopt_requirement(
+    req_id: str, session: SessionDep, current_project: CurrentProjectDep
+) -> GeneratedDocumentRead:
+    """要件定義書の推測の要件を、利用者が確かめた「採用」にする(LLMは呼ばない。同じ版の
+    model と md を書き換え、版は増やさない)。"""
+    document = await DocGeneratorService(session).adopt_requirement(current_project, req_id)
+    return document_read(document)
+

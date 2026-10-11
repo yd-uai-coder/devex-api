@@ -1,44 +1,76 @@
 from langchain_core.messages import HumanMessage, SystemMessage
+from tests.fixtures.external_design import e2e_fake_external_design_md
 
 from app.ai.llm.fake import E2eFakeLLM
 from app.detailed_design.plan import unit_ids
 from app.detailed_design.simple_procedure import parse_wbs
-from app.schemas.generation import HearingCompletionCheck
+from app.documents.requirements import build_model, render_requirements
+from app.documents.requirements.drafting import (
+    RequirementsGenerationOutput,
+    build_requirements_messages,
+    to_draft,
+)
+from app.hearing import (
+    POINT_DEFS,
+    JudgedPoint,
+    PointState,
+    initial_states,
+    is_sufficient,
+    merge_judgement,
+    point_def,
+)
+from app.models.project import Project
+from app.schemas.hearing import HearingPointsJudgement, HearingReplyOut
+from app.services.chat_service import _build_messages
 from app.services.doc_generator_service import _DOC_TYPE_PROMPTS, _SELF_DIAGNOSIS_SYSTEM_PROMPT
 
 
-async def _completion(llm: E2eFakeLLM, *, human_message_count: int) -> HearingCompletionCheck:
+async def _judge(llm: E2eFakeLLM, *, human_message_count: int) -> HearingPointsJudgement:
     messages = [SystemMessage(content="dummy")]
-    messages += [HumanMessage(content=f"turn {i}") for i in range(human_message_count)]
-    messages.append(HumanMessage(content="completion check prompt"))  # 末尾は常に判定プロンプト自身
-    structured = llm.with_structured_output(HearingCompletionCheck)
+    messages += [HumanMessage(content=f"[#{i + 1}] turn {i}") for i in range(human_message_count)]
+    messages.append(HumanMessage(content="points judge prompt"))  # 末尾は常に判定プロンプト自身
+    structured = llm.with_structured_output(HearingPointsJudgement)
     result = await structured.ainvoke(messages)
-    assert isinstance(result, HearingCompletionCheck)
+    assert isinstance(result, HearingPointsJudgement)
     return result
 
 
-async def test_insufficient_with_only_intake_message() -> None:
-    result = await _completion(E2eFakeLLM(), human_message_count=1)
+def _sufficient(result: HearingPointsJudgement) -> bool:
+    """chat_serviceと同じく、表に取り込んでからコードで完了を判定する(根拠の番号はidとみなす)。"""
+    judged = [
+        JudgedPoint(p.key, p.status, p.summary, tuple(str(n) for n in p.evidence))
+        for p in result.points
+    ]
+    user_messages = {e for p in judged for e in p.evidence}
+    merged = merge_judgement(initial_states(), judged, user_messages=user_messages)
+    return is_sufficient(merged, result.scale)
 
-    assert result.is_sufficient is False
+
+async def test_insufficient_with_only_intake_message() -> None:
+    result = await _judge(E2eFakeLLM(), human_message_count=1)
+
+    assert _sufficient(result) is False
 
 
 async def test_insufficient_after_one_chat_turn() -> None:
-    result = await _completion(E2eFakeLLM(), human_message_count=2)
+    result = await _judge(E2eFakeLLM(), human_message_count=2)
 
-    assert result.is_sufficient is False
+    assert _sufficient(result) is False
 
 
 async def test_insufficient_after_two_chat_turns() -> None:
-    result = await _completion(E2eFakeLLM(), human_message_count=3)
+    result = await _judge(E2eFakeLLM(), human_message_count=3)
 
-    assert result.is_sufficient is False
+    assert _sufficient(result) is False
 
 
 async def test_sufficient_after_three_chat_turns() -> None:
-    result = await _completion(E2eFakeLLM(), human_message_count=4)
+    result = await _judge(E2eFakeLLM(), human_message_count=4)
 
-    assert result.is_sufficient is True
+    assert _sufficient(result) is True
+    assert len(result.points) == len(POINT_DEFS)
+    # 根拠は番号の付いた発言のうち最後のもの
+    assert all(p.evidence == [4] for p in result.points)
 
 
 async def test_each_doc_type_prompt_produces_its_own_distinct_reply() -> None:
@@ -55,9 +87,9 @@ async def test_each_doc_type_prompt_produces_its_own_distinct_reply() -> None:
         assert isinstance(result.content, str)
         replies[doc_type] = result.content
 
-    assert len(set(replies.values())) == 4  # 4種類とも異なる内容であること
-    assert "要件定義書" in replies["requirements"]
-    assert "外部設計書" in replies["external_design"]
+    # 要件定義書・外部設計書は構造化出力なので、文の生成のプロンプトは2種類
+    assert set(replies) == {"internal_design", "implementation_plan"}
+    assert len(set(replies.values())) == 2  # 2種類とも異なる内容であること
     assert "内部設計書" in replies["internal_design"]
     assert "実装計画書" in replies["implementation_plan"]
 
@@ -98,6 +130,32 @@ async def test_hearing_reply_is_returned_for_ordinary_chat_turn() -> None:
     assert "承知しました" in result.content
 
 
+async def test_hearing_reply_returns_card_for_first_card_target_of_real_prompt() -> None:
+    """chat_serviceの返信のプロンプト(カードにしてよい観点の行)から、先頭の観点のカードを返す。
+    プロンプトの書式を変えたときに偽物が追従しているかの契約テスト。"""
+    llm = E2eFakeLLM()
+    messages = _build_messages(
+        [], Project(), card_targets=[point_def("availability"), point_def("security")]
+    )
+
+    result = await llm.with_structured_output(HearingReplyOut).ainvoke(messages)
+
+    assert isinstance(result, HearingReplyOut)
+    assert "承知しました" in result.message
+    assert [card.point_key for card in result.cards] == ["availability"]
+    assert len(result.cards[0].options) == 2
+
+
+async def test_hearing_reply_has_no_card_when_scale_card_is_left_to_code() -> None:
+    llm = E2eFakeLLM()
+    messages = _build_messages([], Project(), code_card_label="規模")
+
+    result = await llm.with_structured_output(HearingReplyOut).ainvoke(messages)
+
+    assert isinstance(result, HearingReplyOut)
+    assert result.cards == []
+
+
 async def test_astream_yields_a_single_chunk_with_the_same_reply() -> None:
     llm = E2eFakeLLM()
     messages = [
@@ -117,3 +175,39 @@ async def test_uml_schemas_return_parsed_output_with_raw_when_include_raw() -> N
         result = await llm.with_structured_output(schema, include_raw=True).ainvoke([])
         assert isinstance(result["parsed"], schema)
         assert result["raw"].response_metadata["finish_reason"] == "STOP"
+
+
+async def _requirements(llm: E2eFakeLLM, messages) -> RequirementsGenerationOutput:
+    result = await llm.with_structured_output(RequirementsGenerationOutput).ainvoke(messages)
+    assert isinstance(result, RequirementsGenerationOutput)
+    return result
+
+
+async def test_requirements_output_keeps_ids_from_real_prompt() -> None:
+    """要件定義書の偽物は、本物のプロンプトの【前の版の要件】から ID を引き継ぐ(プロンプトの
+    書式を変えたときに偽物が追従しているかの契約テスト)。推測の要件を1つ含む。"""
+    llm = E2eFakeLLM()
+    states = {d.key: PointState(d.key, "decided", "決定") for d in POINT_DEFS}
+    first = build_model(
+        to_draft(await _requirements(llm, build_requirements_messages("会話", states, None, None))),
+        None,
+        states,
+        "personal",
+    )
+    second_output = await _requirements(
+        llm, build_requirements_messages("会話", states, "personal", first)
+    )
+
+    assert [r.prev_id for r in second_output.requirements] == [r.id for r in first.rows]
+    assert [r.source for r in first.rows].count("assumed") == 1
+    assert "E2E Fake" in render_requirements(first)
+
+
+async def test_external_design_output_renders_with_e2e_marker() -> None:
+    """偽の外部設計書は、組み立てた md に E2E の確かめる文字と、偽の要件定義書の要件ID を持つ。"""
+    md = await e2e_fake_external_design_md(E2eFakeLLM())
+
+    assert "E2E Fake" in md
+    assert "# 2. 外部設計書" in md
+    assert "| SCR-001 | 予約画面 |" in md
+    assert "FR-001" in md and "FR-002" in md

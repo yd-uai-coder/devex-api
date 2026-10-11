@@ -3,6 +3,7 @@
 AIには、外部設計書から「処理」を列挙させるだけにする。処理IDと機能グループの初期値は書かせない
 (function_list.merge_draft が前の版との突き合わせとパスから決定的に決める)。AIに決めさせると、
 再生成のたびにIDや初期値が揺れて、後の段階の参照や人の確定値が壊れるため。
+要件ID はAPIでない処理の分だけ書かせる(APIの処理は、外部設計書の 2.6 の行から merge_draft が写す)。
 """
 
 from typing import Literal
@@ -33,6 +34,11 @@ class GeneratedFunction(BaseModel):
         description="APIでない処理(バッチ・画面・その他)だけ、機能グループの提案"
         "(APIは空にする)",
     )
+    req_ids: list[str] = Field(
+        default_factory=list,
+        description="APIでない処理だけ、関係する要件ID(FR-001など。外部設計書の画面・外部連携の"
+        "『要件』の欄から)。APIは空にする",
+    )
 
 
 class FunctionListGenerationOutput(BaseModel):
@@ -54,6 +60,9 @@ SYSTEM_PROMPT = (
     "triggerは『SCR-005: プレビューの切り替え』の形にし、group_hint に機能グループを提案する。"
     "入力欄の表示や画面遷移のような単純なものは加えない\n"
     "- screens には、外部設計書の画面一覧(2.2)の画面IDを書く\n"
+    "- APIでない処理だけ、req_ids に関係する要件ID(FR-001など)を書く。外部設計書の画面一覧・"
+    "外部連携の『要件』の欄にある ID だけを使い、新しい ID を作らない。APIの処理は空にする"
+    "(システムが API一覧の『要件』の欄から写す)\n"
     "- 処理IDは書かない(システムが振る)。並びは、利用者の操作の流れに沿った順にする"
     + NAMING_RULES
 )
@@ -77,6 +86,7 @@ def to_drafts(output: FunctionListGenerationOutput) -> list[FunctionDraft]:
             screens=tuple(s.strip() for s in item.screens if s.strip()),
             summary=item.summary,
             group_hint=item.group_hint,
+            req_ids=tuple(r.strip() for r in item.req_ids if r.strip()),
         )
         for item in output.functions
         if item.name.strip()

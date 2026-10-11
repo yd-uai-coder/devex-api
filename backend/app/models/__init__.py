@@ -3,6 +3,7 @@ from app.models.conversation import Conversation, Message
 from app.models.data_item import DataItem
 from app.models.design_stage import DesignStage
 from app.models.generated_document import GeneratedDocument
+from app.models.hearing_point import HearingPoint
 from app.models.intake_file import IntakeFile
 from app.models.project import Project
 from app.models.prompt_template import PromptTemplate
@@ -17,6 +18,7 @@ __all__ = [
     "DataItem",
     "DesignStage",
     "GeneratedDocument",
+    "HearingPoint",
     "IntakeFile",
     "Message",
     "Project",

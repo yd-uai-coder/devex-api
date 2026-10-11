@@ -16,7 +16,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.core.database import Base
+from app.core.database import Base, PortableJSON
 
 # 型チェック時の解決用。
 # 通常の実行時には False -> importされない（循環import回避のため）
@@ -50,6 +50,10 @@ class GeneratedDocument(Base):
     # doc_type：種別 ('requirements', 'external_design', 'internal_design', 'implementation_plan')
     doc_type: Mapped[str] = mapped_column(String(50), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False) # 生成されたMarkdownテキスト
+    # 意味モデル(要件定義書・外部設計書。app/documents/requirements/model.pyのRequirementsModel、
+    # app/documents/external_design/model.pyのExternalDesignModelの形)。
+    # contentはこれから組み立てたmd。modelを持たない文書・以前の版はNULL(mdのまま使う)
+    model: Mapped[dict | None] = mapped_column(PortableJSON, nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     # is_current：復元用
     is_current: Mapped[bool] = mapped_column(

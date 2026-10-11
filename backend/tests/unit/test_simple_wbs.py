@@ -30,6 +30,8 @@ def test_parses_milestones_and_units_in_order() -> None:
     assert base.config_files == ["docker-compose.yml", ".env.example"]
     assert (feature.kind, feature.title) == ("feature", "予約を登録する")
     assert feature.function_ids == ["DF-1"]
+    assert feature.req_ids == ["FR-001"]
+    assert base.req_ids == []
     assert feature.depends_on == ["M-01-T01"]
     # バッククォートは外す
     assert feature.modules == ["app/api/reservations.py", "app/services/reservation.py"]
@@ -100,3 +102,15 @@ def test_wont_milestone_is_skipped() -> None:
 
     assert unit_ids(result.plan) == ["M-01-T01"]
     assert [(i.code, i.level) for i in result.issues] == [("WBS_FORMAT", "minor")]
+
+
+def test_requirement_ids_are_normalized() -> None:
+    """「要件」「要件ID」のどちらも読み、要件ID の形にそろえる。形の違う値は捨てて軽微な指摘。"""
+    plan = PLAN_MD.replace("  - 要件: FR-001\n", "  - **要件ID**：fr-1、FR-001, 予約\n")
+
+    result = parse_wbs(plan)
+
+    assert result.plan.milestones[0].tasks[1].req_ids == ["FR-001"]
+    assert [(i.code, i.level, i.target) for i in result.issues] == [
+        ("WBS_FORMAT", "minor", "予約")
+    ]

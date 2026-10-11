@@ -5,6 +5,8 @@ SUT は`app/detailed_design/procedure_output/markdown.py`の`to_index_markdown`�
 スタブ不要 ── 対象は`ProcedureOutputSource`(フィクスチャ)だけから決まる純粋関数のため。
 """
 
+from dataclasses import replace
+
 import pytest
 from tests.fixtures.detailed_design import document_stage_models, sample_procedure_source
 from tests.fixtures.simple_procedure import sample_simple_procedure_source
@@ -23,6 +25,7 @@ from app.detailed_design.procedure_output.markdown import (
     COMPLETION_CRITERIA,
     PROCEDURE_UNAPPROVED_TEXT,
 )
+from app.detailed_design.procedure_output.source import REQUIREMENTS_MISSING_TEXT
 from app.detailed_design.validation import StageIssue
 
 
@@ -30,8 +33,9 @@ def _sections(markdown: str) -> list[str]:
     return [line for line in markdown.splitlines() if line.startswith("## ")]
 
 
-def test_index_has_five_sections() -> None:
-    """統合スモーク: index は 実装概要 → 実装前提 → 単位の一覧 → 未定義の一覧 → 完了条件。"""
+def test_index_has_six_sections() -> None:
+    """統合スモーク: index は 実装概要 → 実装前提 → 単位の一覧 → 要件との対応 → 未定義の一覧 →
+    完了条件。"""
     markdown = to_index_markdown(sample_procedure_source())
 
     assert markdown.startswith("# 実装手順書: 予約システム\n")
@@ -39,8 +43,9 @@ def test_index_has_five_sections() -> None:
         "## 1. 実装概要",
         "## 2. 実装前提・制約",
         "## 3. 単位の一覧(依存順)",
-        "## 4. 未定義・要決定の一覧(実装可能性チェックの結果)",
-        "## 5. 完了条件",
+        "## 4. 要件との対応",
+        "## 5. 未定義・要決定の一覧(実装可能性チェックの結果)",
+        "## 6. 完了条件",
     ]
     assert "| M-01 | 予約の登録 | Must | 予約を登録できる |" in markdown
     assert "- Won't have(見送り): 決済" in markdown
@@ -51,9 +56,10 @@ def test_index_has_five_sections() -> None:
 def test_index_unit_list_links_documented_units_only() -> None:
     markdown = to_index_markdown(sample_procedure_source())
 
-    assert "| M-01-T01 開発環境を用意する | 基盤 | — | — | (未生成) | — | — |" in markdown
+    assert "| M-01-T01 開発環境を用意する | 基盤 | — | — | — | (未生成) | — | — |" in markdown
     assert (
-        "| [M-01-T02 予約を登録する](./M-01-T02_予約を登録する.md) | 機能 | F-01 | M-01-T01 | "
+        "| [M-01-T02 予約を登録する](./M-01-T02_予約を登録する.md) | 機能 | F-01 | FR-001 | "
+        "M-01-T01 | "
         "`app/api/routes/reservations.py`、`tests/test_reservations.py` | テストが通る | 最重要1 |"
     ) in markdown
 
@@ -85,7 +91,7 @@ def test_unit_markdown_refers_by_id_and_adds_sequence() -> None:
 
     assert markdown.startswith(
         "# M-01-T02 予約を登録する\n\n"
-        "> 種別: 機能 / マイルストーン: M-01 予約の登録 / 依存: M-01-T01\n"
+        "> 種別: 機能 / マイルストーン: M-01 予約の登録 / 要件: FR-001 / 依存: M-01-T01\n"
     )
     assert "- 段階5 F-01 予約を登録する\n" in markdown
     assert "### シーケンス図(段階5 F-01 予約を登録する の手順から導出)" in markdown
@@ -161,12 +167,13 @@ def test_simple_mode_index_and_ai_markdown() -> None:
     index = to_index_markdown(source)
     ai = to_ai_markdown(source, "M-01-T02")
 
-    assert _sections(index)[:5] == [
+    assert _sections(index)[:6] == [
         "## 1. 実装概要",
         "## 2. 実装前提・制約",
         "## 3. 単位の一覧(依存順)",
-        "## 4. 未定義・要決定の一覧(実装可能性チェックの結果)",
-        "## 5. 完了条件",
+        "## 4. 要件との対応",
+        "## 5. 未定義・要決定の一覧(実装可能性チェックの結果)",
+        "## 6. 完了条件",
     ]
     assert "実装計画書のマイルストーン M-01〜M-02。" in index
     assert "### 技術スタック・開発環境(実装計画書 4.3・内部設計書 3.1)" in index
@@ -178,3 +185,28 @@ def test_simple_mode_index_and_ai_markdown() -> None:
     assert f"- {SIMPLE_MODULE_RULE}" in ai
     assert "### 内部設計書 DF-1 POST /api/v1/reservations" in ai
     assert "### 内部設計書 3.4 例外処理・エラー・ログ" in ai
+    # 要件: 単位は WBS の「要件」欄、処理の列は単位の DF。Won't の要件は載せない
+    assert "| FR-001 | Must | 予約の登録 | DF-1 | M-01-T02 |" in index
+    assert "| FR-002 | Should | 予約の一覧 | DF-2 | M-02-T01 |" in index
+    assert "FR-003" not in index
+    assert "- FR-001: 予約の登録" in ai
+
+
+def test_index_traces_requirements_and_lists_constraints() -> None:
+    """要件との対応(FR ごとの処理と単位)と、実装前提の非機能要件・制約の表。"""
+    markdown = to_index_markdown(sample_procedure_source())
+
+    assert "| FR-001 | Must | 予約の登録 | F-01 | M-01-T02 |" in markdown
+    assert "### 非機能要件・制約(要件定義書)" in markdown
+    assert "| NFR-001 | セキュリティ | 通信は HTTPS | ユーザー |" in markdown
+    ai = to_ai_markdown(sample_procedure_source(), "M-01-T02")
+    assert "実現する要件:\n\n- FR-001: 予約の登録\n" in ai
+
+
+def test_index_without_requirement_ids_asks_to_regenerate() -> None:
+    """要件定義書に model が無い(Phase 36 より前の版)なら、要件の節は再生成の案内だけ。"""
+    source = replace(sample_procedure_source(), requirements_available=False, trace=())
+
+    markdown = to_index_markdown(source)
+
+    assert markdown.count(REQUIREMENTS_MISSING_TEXT) == 2  # 実装前提の表と、要件との対応

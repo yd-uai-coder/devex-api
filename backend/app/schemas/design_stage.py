@@ -47,7 +47,8 @@ class DesignStageRead(BaseModel):
     検証の結果。`dfd_accesses`は段階3だけが持つ、DFD から決まる R/W(画面で
     DFD を読み直して導き直さないよう、導いた結果を渡す)。`plan`は段階8だけが持つ、作業単位
     (段階7と同じ形。詳細設計モードは承認済みの段階7、簡易モードは実装計画書の WBS を読んだもの。
-    段階8が開いていなければ None)。"""
+    段階8が開いていなければ None)。`unit_req_ids`は段階8だけが持つ、作業単位ごとの要件ID
+    (詳細設計モードは単位の処理の段階1の要件、簡易モードは WBS の「要件」欄)。"""
 
     stage: int
     mode: Literal["simple", "detailed"] = "detailed"
@@ -63,6 +64,7 @@ class DesignStageRead(BaseModel):
     issues: list[StageIssueRead] = Field(default_factory=list)
     dfd_accesses: list[DfdAccessRead] = Field(default_factory=list)
     plan: dict[str, Any] | None = None
+    unit_req_ids: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class DesignStageSave(BaseModel):

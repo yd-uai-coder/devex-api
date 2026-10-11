@@ -28,6 +28,7 @@ from fastapi import BackgroundTasks
 from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 from tests.fixtures.detailed_design import (
+    EXTERNAL_DESIGN_DOC_MODEL,
     create_detailed_project,
     create_stage3_project,
     create_stage4_project,
@@ -36,6 +37,7 @@ from tests.fixtures.detailed_design import (
     data_flow_model,
     function_list_model,
 )
+from tests.fixtures.external_design import e2e_fake_upstream
 from tests.fixtures.fake_llm import FakeLLM
 
 from app.ai.llm.fake import E2eFakeLLM
@@ -130,7 +132,10 @@ def _output(*names_and_triggers: tuple[str, str]) -> FunctionListGenerationOutpu
 async def _project(session: AsyncSession) -> Project:
     project = await create_detailed_project(session)
     await GeneratedDocumentRepository(session).create_version(
-        project_id=project.id, doc_type="external_design", content=EXTERNAL_DESIGN
+        project_id=project.id,
+        doc_type="external_design",
+        content=EXTERNAL_DESIGN,
+        model=EXTERNAL_DESIGN_DOC_MODEL,
     )
     await session.commit()
     return project
@@ -171,6 +176,8 @@ async def test_route_accepts_generation_and_execute_saves_draft(db_session: Asyn
     assert stage1.version == 2
     assert stage1.model is not None
     assert [f["id"] for f in stage1.model["functions"]] == ["F-01"]
+    # API の処理の要件ID は、外部設計書の model の 2.6 の行から写る
+    assert stage1.model["functions"][0]["req_ids"] == ["FR-001"]
     assert stage1.issues == []
 
 
@@ -326,6 +333,7 @@ def test_messages_and_drafts() -> None:
                 screens=[" SCR-1 ", ""],
                 summary="s",
                 group_hint="運用",
+                req_ids=[" FR-003 ", ""],
             ),
         ]
     )
@@ -335,18 +343,23 @@ def test_messages_and_drafts() -> None:
     assert isinstance(messages[0], SystemMessage)
     assert isinstance(messages[1], HumanMessage)
     assert EXTERNAL_DESIGN in str(messages[1].content)
-    assert [(d.name, d.screens, d.group_hint) for d in drafts] == [("集計する", ("SCR-1",), "運用")]
+    assert [(d.name, d.screens, d.group_hint, d.req_ids) for d in drafts] == [
+        ("集計する", ("SCR-1",), "運用", ("FR-003",))
+    ]
 
 
 async def test_e2e_fake_function_list_passes_validation(db_session: AsyncSession) -> None:
-    """偽LLM(E2E)の段階1の出力は、偽LLMの外部設計書と照らしてエラー・漏れなく通る。"""
+    """偽LLM(E2E)の段階1の出力は、偽LLMの外部設計書と照らしてエラー・漏れなく通る
+    (API の処理の要件ID は外部設計書の model から写るので、要件の追跡の指摘も無い)。"""
     llm = E2eFakeLLM()
-    external = str((await llm.ainvoke([SystemMessage(content="# 2. 外部設計書")])).content)
-    sources = StageSources(documents={"external_design": external})
+    external, model = (await e2e_fake_upstream(llm))["external_design"]
+    sources = StageSources(
+        documents={"external_design": external}, document_models={"external_design": model}
+    )
 
-    model = await generate_function_list(_context(db_session, llm, sources))
+    function_list = await generate_function_list(_context(db_session, llm, sources))
 
-    assert validate_stage(1, model, sources) == []
+    assert validate_stage(1, function_list, sources) == []
 
 
 # ---- 段階2(データフロー) ----

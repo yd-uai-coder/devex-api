@@ -4,8 +4,9 @@ docs/external_design.md 2.8節「出力」。`implementation_procedure/implement
 
 - 詳細設計書・実装計画と同じ自己完結の1ページ(`document.html.page`。CSS とスクリプトを中に持つ)。
 - 単位はタブにせず、縦に並べる(実装計画の HTML と同じ形)。概要 → 実装前提 → 単位の一覧 →
-  未定義の一覧 → 完了条件 → 単位ごとの手順書。単位の ID はアンカーを持ち、一覧・依存・未定義の
-  単位の ID から移れる。単位が多くても、ページ内の検索と印刷で全単位を通して読める。
+  要件との対応 → 未定義の一覧 → 完了条件 → 単位ごとの手順書。単位の ID はアンカーを持ち、
+  一覧・依存・未定義の単位の ID から移れる。単位が多くても、ページ内の検索と印刷で全単位を
+  通して読める。
 - 中身は md(`procedure_output/markdown.py`)と同じ。参照する設計は ID(見出し)だけを書き、
   段階5の手順のシーケンス図は SVG(`ExpandedRef.svg`)で埋め込む。
 - 段階8が承認済みでなければ「未承認」とだけ書く。
@@ -21,14 +22,21 @@ from app.detailed_design.plan import milestone_id
 from app.detailed_design.procedure_doc import PlanUnit
 from app.detailed_design.procedure_output.markdown import (
     COMPLETION_CRITERIA,
+    CONSTRAINT_HEADERS,
+    CONSTRAINTS_HEADING,
     DECIDED_CRITERION,
     NOT_GENERATED_TEXT,
+    TRACE_HEADERS,
+    TRACE_NOTE,
     UNIT_LIST_HEADERS,
+    constraint_table_rows,
     file_kind_label,
+    trace_table_rows,
 )
 from app.detailed_design.procedure_output.source import (
     LEVEL_LABELS,
     ORIGIN_LABELS,
+    REQUIREMENTS_MISSING_TEXT,
     ProcedureOutputSource,
     UnitFinding,
     count_text,
@@ -54,9 +62,10 @@ def to_procedure_html(source: ProcedureOutputSource) -> str:
         ("1", "実装概要"),
         ("2", "実装前提・制約"),
         ("3", "単位の一覧(依存順)"),
-        ("4", "未定義・要決定の一覧"),
-        ("5", "完了条件"),
-        ("6", "単位ごとの手順書"),
+        ("4", "要件との対応"),
+        ("5", "未定義・要決定の一覧"),
+        ("6", "完了条件"),
+        ("7", "単位ごとの手順書"),
     ]
     toc = "".join(f'<a href="#proc{n}">{e(f"{n} {h}")}</a>' for n, h in sections)
     header = (
@@ -73,6 +82,7 @@ def to_procedure_html(source: ProcedureOutputSource) -> str:
         _overview(source),
         _premises(source),
         _unit_list(source),
+        _trace(source),
         _findings(source),
         _completion(),
         _units(source),
@@ -118,10 +128,33 @@ def _premises(source: ProcedureOutputSource) -> str:
         else '<p class="muted">—</p>'
     )
     labels = source.labels
+    if not source.requirements_available:
+        constraints = f'<p class="muted">{e(REQUIREMENTS_MISSING_TEXT)}</p>'
+    elif source.constraints:
+        rows = constraint_table_rows(source)
+        constraints = _text_table(CONSTRAINT_HEADERS, rows, "非機能要件・制約")
+    else:
+        constraints = '<p class="muted">—</p>'
     return (
         f"<h3>{e(labels.environment)}</h3>{stack}"
         f"<h3>{e(labels.rules)}</h3>{_list(source.rules)}"
+        f"<h3>{e(CONSTRAINTS_HEADING)}</h3>{constraints}"
     )
+
+
+def _trace(source: ProcedureOutputSource) -> str:
+    if not source.requirements_available:
+        return f'<p class="muted">{e(REQUIREMENTS_MISSING_TEXT)}</p>'
+    if not source.trace:
+        return '<p class="muted">—</p>'
+    return f"<p>{e(TRACE_NOTE)}</p>" + _text_table(
+        TRACE_HEADERS, trace_table_rows(source), "要件との対応"
+    )
+
+
+def _text_table(headers: Sequence[str], rows: list[list[str]], label: str) -> str:
+    """文字だけの表(セルはすべて`e`で書く)。"""
+    return table(list(headers), [[e(cell) for cell in row] for row in rows], label=label)
 
 
 def _unit_list(source: ProcedureOutputSource) -> str:
@@ -134,6 +167,7 @@ def _unit_list(source: ProcedureOutputSource) -> str:
                     f"{mono(unit.unit_id)} {e(unit.task.title)}",
                     e(UNIT_KIND_LABELS[unit.task.kind]),
                     e(", ".join(unit.task.function_ids) or "—"),
+                    e(", ".join(source.unit_requirements(unit.unit_id)) or "—"),
                     _depends(source, unit),
                     f'<span class="muted">{e(NOT_GENERATED_TEXT)}</span>',
                     "",
@@ -146,6 +180,7 @@ def _unit_list(source: ProcedureOutputSource) -> str:
                 f"{badge(unit.unit_id)} {e(unit.task.title)}",
                 e(UNIT_KIND_LABELS[unit.task.kind]),
                 e(", ".join(unit.task.function_ids) or "—"),
+                e(", ".join(source.unit_requirements(unit.unit_id)) or "—"),
                 _depends(source, unit),
                 "<br>".join(mono(f.path) for f in procedure.files) or "—",
                 e(" / ".join(procedure.verify)),
@@ -208,7 +243,8 @@ def _unit(source: ProcedureOutputSource, unit: PlanUnit) -> str:
     context = source.contexts[unit.unit_id]
     meta = (
         f"種別: {e(UNIT_KIND_LABELS[unit.task.kind])} / マイルストーン: "
-        f"{e(unit.milestone)} {e(source.milestone_name(unit))} / 依存: "
+        f"{e(unit.milestone)} {e(source.milestone_name(unit))} / 要件: "
+        f"{e(', '.join(source.unit_requirements(unit.unit_id)) or '—')} / 依存: "
         + (_depends(source, unit) or "なし")
     )
     refs = [

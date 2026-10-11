@@ -21,7 +21,7 @@ def test_html_is_self_contained_and_deterministic() -> None:
     assert html.startswith("<!doctype html>")
     assert "<title>実装手順書: 予約システム</title>" in html
     assert "<script src" not in html and "<link" not in html
-    for number in range(1, 7):
+    for number in range(1, 8):
         assert f'id="proc{number}"' in html
 
 
@@ -75,3 +75,13 @@ def test_simple_mode_html_names_documents() -> None:
     assert "承認済みの段階8と4文書から組み立てた" in html
     assert "<h3>実装ルール(内部設計書 3.3・3.4より)</h3>" in html
     assert "<td>内部設計書</td>" in html
+
+
+def test_requirement_trace_and_constraints() -> None:
+    """要件との対応(md と同じ行)と、実装前提の非機能要件・制約の表。単位の見出しに要件。"""
+    html = to_procedure_html(sample_procedure_source())
+
+    assert "<td>FR-001</td><td>Must</td><td>予約の登録</td><td>F-01</td><td>M-01-T02</td>" in html
+    assert "非機能要件・制約(要件定義書)" in html
+    assert "<td>NFR-001</td><td>セキュリティ</td><td>通信は HTTPS</td><td>ユーザー</td>" in html
+    assert "/ 要件: FR-001 / 依存:" in html
