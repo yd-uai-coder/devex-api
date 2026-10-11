@@ -4,21 +4,9 @@ ID の重複・形の誤りは`assemble`が決定的に振るので起きない�
 こと(推測の要件・未決の必須の観点・Must の機能要件が無い)を挙げる。
 """
 
-from dataclasses import dataclass
-from typing import Literal
-
+from app.documents.issues import DocumentIssue
 from app.documents.requirements.model import RequirementsModel, RequirementSource
 from app.hearing import POINT_DEFS, as_scale, is_required
-
-IssueLevel = Literal["critical", "major", "minor"]
-
-
-@dataclass(frozen=True)
-class RequirementIssue:
-    level: IssueLevel
-    code: str
-    message: str
-    targets: tuple[str, ...] = ()
 
 
 def source_counts(model: RequirementsModel) -> dict[RequirementSource, int]:
@@ -29,14 +17,14 @@ def source_counts(model: RequirementsModel) -> dict[RequirementSource, int]:
     return counts
 
 
-def validate_requirements(model: RequirementsModel) -> list[RequirementIssue]:
+def validate_requirements(model: RequirementsModel) -> list[DocumentIssue]:
     """生成した時点の観点の表(`model.point_statuses`)に対して検証する。"""
     statuses = model.point_statuses
     scale = as_scale(model.scale)
-    issues: list[RequirementIssue] = []
+    issues: list[DocumentIssue] = []
     if not any(r.kind == "FR" and r.priority == "Must" for r in model.rows):
         issues.append(
-            RequirementIssue("major", "NO_MUST_REQUIREMENT", "Must の機能要件がありません。")
+            DocumentIssue("major", "NO_MUST_REQUIREMENT", "Must の機能要件がありません。")
         )
     open_required = [
         d
@@ -45,7 +33,7 @@ def validate_requirements(model: RequirementsModel) -> list[RequirementIssue]:
     ]
     if open_required:
         issues.append(
-            RequirementIssue(
+            DocumentIssue(
                 "major",
                 "REQUIRED_POINT_OPEN",
                 "必須の観点が未決のまま生成しました: "
@@ -58,7 +46,7 @@ def validate_requirements(model: RequirementsModel) -> list[RequirementIssue]:
     on_not_applicable = [r.id for r in model.rows if r.points and set(r.points) <= not_applicable]
     if on_not_applicable:
         issues.append(
-            RequirementIssue(
+            DocumentIssue(
                 "minor",
                 "REQUIREMENT_ON_NOT_APPLICABLE_POINT",
                 "対象外とした観点だけを根拠にした要件があります: " + "・".join(on_not_applicable),
@@ -68,7 +56,7 @@ def validate_requirements(model: RequirementsModel) -> list[RequirementIssue]:
     assumed = [r.id for r in model.rows if r.source == "assumed"]
     if assumed:
         issues.append(
-            RequirementIssue(
+            DocumentIssue(
                 "minor",
                 "ASSUMED_REQUIREMENTS",
                 f"推測の要件が{len(assumed)}件あります(利用者に確かめてください)。",

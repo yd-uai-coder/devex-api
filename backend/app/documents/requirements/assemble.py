@@ -12,6 +12,7 @@ AI には要件の中身・出どころ・観点だけを書かせ、ID は書�
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
+from app.documents.ids import carry_over_ids, initial_next_seq
 from app.documents.requirements.model import (
     PRIORITIES,
     REQUIREMENT_KINDS,
@@ -21,8 +22,6 @@ from app.documents.requirements.model import (
     RequirementsModel,
     RequirementSource,
     UserScene,
-    parse_requirement_id,
-    requirement_id,
 )
 from app.hearing import POINT_DEFS, PointState, Scale, is_point_key
 
@@ -103,42 +102,18 @@ def cap_source(
     return _RANK_SOURCE[min(_SOURCE_RANK[source], max(caps))]  # type: ignore[index]
 
 
-def _initial_next_seq(previous: RequirementsModel | None) -> dict[str, int]:
-    """前の版の次の番号(持っていなければ前の版の行の最大番号 + 1)。"""
-    next_seq: dict[str, int] = dict.fromkeys(REQUIREMENT_KINDS, 1)
-    if previous is None:
-        return next_seq
-    for row in previous.rows:
-        parsed = parse_requirement_id(row.id)
-        if parsed is not None:
-            kind, seq = parsed
-            next_seq[kind] = max(next_seq[kind], seq + 1)
-    for kind, seq in previous.next_seq.items():
-        if kind in next_seq:
-            next_seq[kind] = max(next_seq[kind], seq)
-    return next_seq
-
-
 def assign_ids(
     kinds_and_prev: Sequence[tuple[RequirementKind, str]], previous: RequirementsModel | None
 ) -> tuple[list[str], dict[str, int]]:
-    """行ごとの ID と、次の番号を決める。
+    """行ごとの ID と、次の番号を決める(`app.documents.ids.carry_over_ids`)。
 
     `prev_id`が前の版に在り、種別が同じで、まだ使われていなければ引き継ぐ。それ以外(新しい要件・
     前の版に無い ID・種別違い・重複)は種別ごとの次の番号を振る。"""
-    previous_ids = {row.id: row.kind for row in previous.rows} if previous else {}
-    next_seq = _initial_next_seq(previous)
-    used: set[str] = set()
-    ids: list[str] = []
-    for kind, prev_id in kinds_and_prev:
-        prev_id = prev_id.strip().upper()
-        if previous_ids.get(prev_id) == kind and prev_id not in used:
-            ids.append(prev_id)
-        else:
-            ids.append(requirement_id(kind, next_seq[kind]))
-            next_seq[kind] += 1
-        used.add(ids[-1])
-    return ids, next_seq
+    rows = previous.rows if previous else []
+    next_seq = initial_next_seq(
+        REQUIREMENT_KINDS, [r.id for r in rows], previous.next_seq if previous else {}
+    )
+    return carry_over_ids(kinds_and_prev, {r.id: r.kind for r in rows}, next_seq)
 
 
 def _priority(value: str) -> Priority:

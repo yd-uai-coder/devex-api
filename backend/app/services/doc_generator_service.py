@@ -8,6 +8,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.llm.gemini import extract_text_content, get_gemini_llm
 from app.core.database import AsyncSessionLocal
+from app.documents.external_design import (
+    ExternalDesignModel,
+    render_external_design,
+    row_counts,
+    validate_external_design,
+)
+from app.documents.external_design import build_model as build_external_design_model
+from app.documents.external_design.drafting import (
+    ExternalDesignGenerationOutput,
+    build_external_design_messages,
+)
+from app.documents.external_design.drafting import to_draft as to_external_design_draft
+from app.documents.issues import DocumentIssue
 from app.documents.requirements import (
     RequirementsModel,
     build_model,
@@ -31,8 +44,9 @@ from app.repositories.hearing_point import HearingPointRepository
 from app.repositories.project import ProjectRepository
 from app.schemas.document import (
     AssumedRequirementRead,
+    DocumentIssueRead,
+    ExternalDesignSummaryRead,
     GeneratedDocumentRead,
-    RequirementIssueRead,
     RequirementsSummaryRead,
 )
 from app.services.errors import (
@@ -70,33 +84,10 @@ _COMMON_FORMAT_GUIDANCE = (
 
 # doc_typeごとに特化したシステムプロンプト(docs/internal_design.md 3.3節)。
 # 出力フォーマット(見出し構成)を明示することで、4文書の粒度・構成を安定させる。
-# 要件定義書はここに無い(構造化出力 → model → md。app/documents/requirements/drafting.py)。
+# 要件定義書・外部設計書はここに無い(構造化出力 → model → md。app/documents/requirements・
+# app/documents/external_design の drafting.py)。外部設計書の見出し(2.1〜2.6)と 2.6 の列は
+# app/documents/external_design/markdown.py が組み立てる。
 _DOC_TYPE_PROMPTS: dict[str, str] = {
-    "external_design": (
-        "あなたは優秀なUI/UXデザイナー・システムアーキテクトです。"
-        "以下の【要件定義書】に基づき、ユーザー視点・外部仕様に関する「外部設計書」をMarkdown形式で"
-        "作成してください。前置きや断り書きは不要です。Markdown本文のみを出力してください。\n\n"
-        "出力フォーマット:\n"
-        "# 2. 外部設計書\n\n"
-        "## 2.1 システム構成概要\n- システムの全体像と外部との関係性（テキストによる構造記述）\n\n"
-        "## 2.2 画面一覧・画面遷移フロー（概要）\n"
-        "- 画面一覧は表形式(画面ID/画面名/主要な役割/優先度)で示す\n"
-        "- 画面遷移はテキスト図(コードブロック)で示す\n\n"
-        "## 2.3 主要画面のUI/UX仕様\n"
-        "- 主要画面ごとに`### 画面ID: 画面名`の小見出しを立て、構成要素"
-        "（入力項目、表示項目、操作ボタン、アクション）を記述する\n\n"
-        "## 2.4 外部システム・API連携仕様\n- 連携する外部サービス／API、"
-        "認証方式、データ連携タイミング\n\n"
-        "## 2.5 データ入出力仕様\n- ファイル入出力（CSV、JSON等）、"
-        "受付フォーマット・バリデーションルール\n\n"
-        "## 2.6 API一覧\n"
-        "- 本システム自身が提供するAPIを、Markdownテーブル(メソッド/パス/概要/関連画面)で"
-        "すべて列挙する\n"
-        "- パスは`/api/v1/<リソース>`の形で書き、個別の対象は`{id}`のように波括弧で示す。"
-        "親リソースに属するものは`/api/v1/<親リソース>/{id}/<リソース>`とする\n"
-        "- 関連画面は2.2の画面IDで書く(複数は`/`区切り、画面が無いものは`—`)"
-        + _COMMON_FORMAT_GUIDANCE
-    ),
     "internal_design": (
         "あなたは優秀なリードエンジニア・データベース設計者です。"
         "以下の【要件定義書】および【外部設計書】に基づき、システム内部の構造・ロジックに関する"
@@ -187,6 +178,8 @@ _DOC_TYPE_PROMPTS: dict[str, str] = {
 
 # 各doc_typeの入力として使う、前段で確定済みの文書(doc_type名のタプル)。
 # ここに無いdoc_type(requirements)は、代わりにチャット全履歴(transcript)と観点の表を読む。
+# 外部設計書(_generate_external_design)は、要件定義書の md に加えて、生成した要件定義書の
+# model(要件ID の照合)も受け取る。
 # 後続の文書は生のチャット履歴を再解釈せず、前段の確定済み文書だけを入力にすることで、
 # 4文書間の一貫性を確保する。
 _DOC_TYPE_INPUTS: dict[str, tuple[str, ...]] = {
@@ -336,12 +329,18 @@ class DocGeneratorService:
             transcript = _render_transcript(history)
 
             generated: dict[str, str] = {}
+            requirements: RequirementsModel | None = None
             doc_types = DOC_TYPES_BY_MODE[project.mode]
             for doc_type in doc_types:
                 model: dict | None = None
                 if doc_type == "requirements":
-                    content, model = await self._generate_requirements(
+                    content, requirements = await self._generate_requirements(
                         project, transcript, llm=llm
+                    )
+                    model = requirements.model_dump(mode="json")
+                elif doc_type == "external_design":
+                    content, model = await self._generate_external_design(
+                        project, generated["requirements"], requirements, llm=llm
                     )
                 else:
                     content = await self._generate_one(doc_type, transcript, generated, llm=llm)
@@ -449,7 +448,7 @@ class DocGeneratorService:
 
     async def _generate_requirements(
         self, project: Project, transcript: str, *, llm
-    ) -> tuple[str, dict]:
+    ) -> tuple[str, RequirementsModel]:
         """要件定義書を構造化出力で下書きし、model と md を作る。入力は会話・観点の表・前の版の
         要件(ID を引き継ぐため)。出どころは観点の状態を上限に直す(app/documents/requirements)。"""
         states = await self._hearing_points.load_states(project.id)
@@ -461,7 +460,29 @@ class DocGeneratorService:
         messages = build_requirements_messages(transcript, states, scale, previous)
         output = await invoke_structured(llm, RequirementsGenerationOutput, messages)
         model = build_model(to_draft(output), previous, states, scale)
-        return render_requirements(model), model.model_dump(mode="json")
+        return render_requirements(model), model
+
+    async def _generate_external_design(
+        self,
+        project: Project,
+        requirements_md: str,
+        requirements: RequirementsModel | None,
+        *,
+        llm,
+    ) -> tuple[str, dict]:
+        """外部設計書を構造化出力で下書きし、model と md を作る。入力は要件定義書の md と前の版の
+        画面(画面ID を引き継ぐため)。要件ID の照合用に要件定義書の model を写す
+        (app/documents/external_design)。"""
+        current = await self._documents.get_current(
+            project_id=project.id, doc_type="external_design"
+        )
+        previous = parse_external_design_model(current.model if current else None)
+        messages = build_external_design_messages(requirements_md, previous)
+        output = await invoke_structured(llm, ExternalDesignGenerationOutput, messages)
+        model = build_external_design_model(
+            to_external_design_draft(output), previous, requirements
+        )
+        return render_external_design(model), model.model_dump(mode="json")
 
     async def _generate_one(
         self, doc_type: str, transcript: str, generated: dict[str, str], *, llm
@@ -545,17 +566,44 @@ def requirements_summary(document: GeneratedDocument) -> RequirementsSummaryRead
             for r in model.rows
             if r.source == "assumed"
         ],
-        issues=[
-            RequirementIssueRead(
-                level=i.level, code=i.code, message=i.message, targets=list(i.targets)
-            )
-            for i in validate_requirements(model)
-        ],
+        issues=_issues_read(validate_requirements(model)),
     )
 
 
+def parse_external_design_model(raw: dict | None) -> ExternalDesignModel | None:
+    """保存した外部設計書の model を読む。無い・壊れていれば None(md のまま使う)。"""
+    if raw is None:
+        return None
+    try:
+        return ExternalDesignModel.model_validate(raw)
+    except ValidationError:
+        return None
+
+
+def external_design_summary(document: GeneratedDocument) -> ExternalDesignSummaryRead | None:
+    """プレビューに出す外部設計書の行数と検証の指摘(LLMは呼ばない)。model の無い版・ほかの
+    文書は None。"""
+    if document.doc_type != "external_design":
+        return None
+    model = parse_external_design_model(document.model)
+    if model is None:
+        return None
+    return ExternalDesignSummaryRead(
+        counts=row_counts(model), issues=_issues_read(validate_external_design(model))
+    )
+
+
+def _issues_read(issues: list[DocumentIssue]) -> list[DocumentIssueRead]:
+    return [
+        DocumentIssueRead(level=i.level, code=i.code, message=i.message, targets=list(i.targets))
+        for i in issues
+    ]
+
+
 def document_read(document: GeneratedDocument) -> GeneratedDocumentRead:
-    """文書の応答。要件定義書は出どころの件数・推測の要件・検証の指摘を付ける。"""
+    """文書の応答。要件定義書は出どころの件数・推測の要件・検証の指摘を、外部設計書は行数と
+    検証の指摘を付ける。"""
     read = GeneratedDocumentRead.model_validate(document)
     read.requirements = requirements_summary(document)
+    read.external_design = external_design_summary(document)
     return read

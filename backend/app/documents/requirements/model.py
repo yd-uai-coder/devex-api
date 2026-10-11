@@ -9,6 +9,8 @@ from typing import Literal, get_args
 
 from pydantic import BaseModel, Field
 
+from app.documents.ids import parse_seq_id, seq_id
+
 RequirementKind = Literal["FR", "NFR", "CON"]
 RequirementSource = Literal["user", "adopted", "assumed"]
 Priority = Literal["Must", "Should", "Could", "Won't"]
@@ -59,12 +61,9 @@ class RequirementsModel(BaseModel):
 
 
 def requirement_id(kind: RequirementKind, seq: int) -> str:
-    return f"{kind}-{seq:03d}"
+    return seq_id(kind, seq)
 
 
 def parse_requirement_id(value: str) -> tuple[RequirementKind, int] | None:
     """`FR-001`を(種別, 番号)にする。形が違えば None。"""
-    kind, sep, number = value.strip().partition("-")
-    if not sep or kind not in REQUIREMENT_KINDS or not number.isdigit():
-        return None
-    return kind, int(number)  # type: ignore[return-value]
+    return parse_seq_id(value, REQUIREMENT_KINDS)  # type: ignore[return-value]

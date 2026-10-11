@@ -1,9 +1,8 @@
 import pytest
 from httpx import AsyncClient
+from tests.fixtures.external_design import upstream_outputs
 from tests.fixtures.fake_llm import FakeLLM
-from tests.fixtures.requirements import requirements_output
 
-from app.documents.requirements.drafting import RequirementsGenerationOutput
 from app.hearing import POINT_DEFS
 from app.schemas.hearing import HearingPointsJudgement, HearingReplyOut, JudgedPointOut
 from app.services import chat_service as chat_service_module
@@ -44,8 +43,8 @@ def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> FakeLLM:
             HearingReplyOut: HearingReplyOut(
                 message="[Fake] 次に、想定している主なユーザー層を教えてください。"
             ),
-            # 要件定義書の下書き(構造化出力 → model → md)
-            RequirementsGenerationOutput: requirements_output(),
+            # 要件定義書・外部設計書の下書き(構造化出力 → model → md)
+            **upstream_outputs(),
         },
         # 観点の判定は作成時に1回と、文を送るたびに1回呼ばれる(下のテストは3往復)。
         # 2往復目までは目的だけ、

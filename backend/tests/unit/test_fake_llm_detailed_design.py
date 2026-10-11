@@ -21,6 +21,7 @@ import zipfile
 from langchain_core.messages import SystemMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 from tests.fixtures.detailed_design import create_detailed_project
+from tests.fixtures.external_design import e2e_fake_external_design_md
 
 from app.ai.llm.fake import E2eFakeLLM
 from app.detailed_design import has_errors, validate_stage
@@ -48,13 +49,17 @@ async def _create_project(session: AsyncSession, llm: E2eFakeLLM) -> Project:
     """ヒアリング後の詳細設計モードのプロジェクト(要件定義・外部設計は偽LLM の本文)。"""
     project = await create_detailed_project(session, with_documents=False)
     documents = GeneratedDocumentRepository(session)
-    for doc_type, marker in (
-        ("requirements", "# 1. 要件定義書"),
-        ("external_design", "# 2. 外部設計書"),
-    ):
-        await documents.create_version(
-            project_id=project.id, doc_type=doc_type, content=await _fake_document(llm, marker)
-        )
+    await documents.create_version(
+        project_id=project.id,
+        doc_type="requirements",
+        content=await _fake_document(llm, "# 1. 要件定義書"),
+    )
+    # 外部設計書は構造化出力 → model → md(段階1は 2.6 の API 一覧を読む)
+    await documents.create_version(
+        project_id=project.id,
+        doc_type="external_design",
+        content=await e2e_fake_external_design_md(llm),
+    )
     await session.commit()
     return project
 

@@ -16,6 +16,7 @@ import zipfile
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy.ext.asyncio import AsyncSession
+from tests.fixtures.external_design import e2e_fake_external_design_md
 from tests.fixtures.simple_procedure import create_simple_procedure_project
 
 from app.ai.llm.fake import E2eFakeLLM
@@ -32,6 +33,8 @@ async def _fake_documents(llm: E2eFakeLLM) -> dict[str, str]:
     for doc_type, prompt in _DOC_TYPE_PROMPTS.items():
         reply = await llm.ainvoke([SystemMessage(content=prompt), HumanMessage(content="dummy")])
         documents[doc_type] = str(reply.content)
+    # 外部設計書は構造化出力 → model → md(段階8は 2.6 の API 一覧を読む)
+    documents["external_design"] = await e2e_fake_external_design_md(llm)
     return documents
 
 

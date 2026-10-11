@@ -68,7 +68,8 @@ async def test_failure_midway_rolls_back_partial_versions(db_session: AsyncSessi
     service = DocGeneratorService(db_session)
     previous = await service.request_generation(project)
 
-    # 要件定義だけ生成でき、外部設計で応答が尽きて失敗する
+    # 要件定義だけ生成でき、外部設計で構造化出力を解釈できずに失敗する(偽の LLM は外部設計書の
+    # スキーマにも要件定義書の出力を返す)
     await service.generate(
         project.id,
         project.user_id,

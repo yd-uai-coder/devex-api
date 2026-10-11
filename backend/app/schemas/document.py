@@ -7,8 +7,8 @@ from pydantic import BaseModel, ConfigDict
 DocType = Literal["requirements", "external_design", "internal_design", "implementation_plan"]
 
 
-class RequirementIssueRead(BaseModel):
-    """要件定義書の検証の指摘(app/documents/requirements/validation.py)。"""
+class DocumentIssueRead(BaseModel):
+    """要件定義書・外部設計書の検証の指摘(app/documents/issues.py の DocumentIssue)。"""
 
     level: Literal["critical", "major", "minor"]
     code: str
@@ -29,7 +29,14 @@ class RequirementsSummaryRead(BaseModel):
 
     counts: dict[str, int]
     assumed: list[AssumedRequirementRead]
-    issues: list[RequirementIssueRead]
+    issues: list[DocumentIssueRead]
+
+
+class ExternalDesignSummaryRead(BaseModel):
+    """外部設計書の行数(screens / apis / integrations)と検証の指摘。"""
+
+    counts: dict[str, int]
+    issues: list[DocumentIssueRead]
 
 
 class GeneratedDocumentRead(BaseModel):
@@ -45,3 +52,5 @@ class GeneratedDocumentRead(BaseModel):
     is_current: bool
     # 要件定義書で model を持つ版だけ(ほかは None)。ルートが requirements_summary で入れる
     requirements: RequirementsSummaryRead | None = None
+    # 外部設計書で model を持つ版だけ(ほかは None)。ルートが external_design_summary で入れる
+    external_design: ExternalDesignSummaryRead | None = None

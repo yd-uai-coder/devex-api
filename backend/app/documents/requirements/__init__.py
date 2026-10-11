@@ -24,21 +24,14 @@ from app.documents.requirements.model import (
     parse_requirement_id,
     requirement_id,
 )
-from app.documents.requirements.validation import (
-    IssueLevel,
-    RequirementIssue,
-    source_counts,
-    validate_requirements,
-)
+from app.documents.requirements.validation import source_counts, validate_requirements
 
 __all__ = [
     "PRIORITIES",
     "REQUIREMENT_KINDS",
     "SOURCE_LABEL",
-    "IssueLevel",
     "Priority",
     "RequirementDraft",
-    "RequirementIssue",
     "RequirementKind",
     "RequirementRow",
     "RequirementSource",
