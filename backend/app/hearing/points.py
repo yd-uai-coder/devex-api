@@ -5,10 +5,12 @@ docs/internal_design.md 3.3節「観点の定義はコードに持つ」。観�
 
 完了の判定はここで決定的に行う(LLM には判定させない)。LLM は発言から観点ごとの状態と根拠を
 返すだけで、その取り込み(`merge_judgement`)もここで行う。根拠がユーザー側の発言に結べない
-「決定」は取り込まない(AI の提案・推測を、利用者が決めたことと数えないため)。
+「決定」は取り込まない(AI の提案・推測を、利用者が決めたことと数えないため)。「採用」と、
+チャットで確かめる観点(規模・技術スタック)は、利用者の発言(初期入力・添付でない)が根拠の
+ときだけ取り込む。
 """
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, get_args
 
@@ -58,6 +60,12 @@ class PointDef:
     label: str
     question: str  # 場面で聞く問いの例
     required: frozenset[Scale]  # 必須になる規模
+    # 決まったと言える条件。判定の LLM はこれを満たすときだけ決定・採用にし、返信の LLM は
+    # これを満たす答えが返るように問う(一語だけで決まったことにしないため)
+    done_when: str
+    # 初期入力・添付から推し量らず、チャットで利用者に確かめる観点(規模・技術スタック)。
+    # 規模は後の必須を切り替え、技術スタックは推測で埋まると設計の全体が創作になるため
+    confirm_in_chat: bool = False
 
 
 _ALL: frozenset[Scale] = frozenset({"personal", "internal", "public"})
@@ -73,6 +81,8 @@ POINT_DEFS: tuple[PointDef, ...] = (
         label="規模",
         question="使うのは自分(と数人)だけですか。社内の人ですか。誰でも登録できるサービスですか",
         required=_ALL,
+        done_when="使う人の範囲(自分と数人 / 社内 / 誰でも登録できる)を利用者が選んだ",
+        confirm_in_chat=True,
     ),
     PointDef(
         key="purpose",
@@ -80,6 +90,7 @@ POINT_DEFS: tuple[PointDef, ...] = (
         label="目的・課題",
         question="これが無いと、今は何に困っていますか",
         required=_ALL,
+        done_when="今困っていること、または作る目的が分かる",
     ),
     PointDef(
         key="users",
@@ -87,6 +98,7 @@ POINT_DEFS: tuple[PointDef, ...] = (
         label="利用者と使う場面",
         question="誰が、どんなときに開きますか",
         required=_ALL,
+        done_when="誰が、どんな場面で使うかが分かる",
     ),
     PointDef(
         key="daily_flow",
@@ -94,6 +106,7 @@ POINT_DEFS: tuple[PointDef, ...] = (
         label="利用者の1日の流れ",
         question="使う人の1日のどこで、どのくらいの時間使いますか",
         required=_INTERNAL_UP,
+        done_when="1日のどのタイミングで、どのくらいの時間使うかが分かる",
     ),
     PointDef(
         key="core",
@@ -101,6 +114,7 @@ POINT_DEFS: tuple[PointDef, ...] = (
         label="コア機能",
         question="最初の版で、これだけはできてほしいことは何ですか",
         required=_ALL,
+        done_when="最初の版で必ずできてほしい機能が挙がっている",
     ),
     PointDef(
         key="scope",
@@ -108,6 +122,7 @@ POINT_DEFS: tuple[PointDef, ...] = (
         label="MVP の範囲",
         question="最初の版で作らないと決めているものはありますか",
         required=_ALL,
+        done_when="最初の版で作らないもの(無いなら、無いこと)が分かる",
     ),
     PointDef(
         key="exceptions",
@@ -118,6 +133,7 @@ POINT_DEFS: tuple[PointDef, ...] = (
             "権限が無い、のときにどうなってほしいですか"
         ),
         required=_ALL,
+        done_when="失敗したとき・入力を誤ったとき・やり直したいときの、どれかの動きが分かる",
     ),
     PointDef(
         key="future",
@@ -125,6 +141,7 @@ POINT_DEFS: tuple[PointDef, ...] = (
         label="将来の拡張",
         question="後で足したいと思っているものはありますか",
         required=_PUBLIC,
+        done_when="後で足したいもの(無いなら、無いこと)が分かる",
     ),
     PointDef(
         key="tech",
@@ -132,6 +149,12 @@ POINT_DEFS: tuple[PointDef, ...] = (
         label="技術スタック・環境の制約",
         question="使いたい(使わなければならない)言語・フレームワーク・置き場所はありますか",
         required=_ALL,
+        done_when=(
+            "サーバー側(または全体)の言語・フレームワークと、置き場所(クラウド・VPS・"
+            "社内サーバーなど)が分かる。AI を使うシステムなら、使う AI(LLM)も。"
+            "DB やライブラリの名前だけでは決まっていない"
+        ),
+        confirm_in_chat=True,
     ),
     PointDef(
         key="schedule",
@@ -139,6 +162,7 @@ POINT_DEFS: tuple[PointDef, ...] = (
         label="体制・期間",
         question="何人で、いつまでに作りますか",
         required=_NONE,
+        done_when="作る人数と期限が分かる",
     ),
     PointDef(
         key="availability",
@@ -146,6 +170,7 @@ POINT_DEFS: tuple[PointDef, ...] = (
         label="可用性",
         question="夜中や休日に止まっていたら、どのくらいで困りますか",
         required=_ALL,
+        done_when="止まったとき、どのくらいで困るかが分かる",
     ),
     PointDef(
         key="performance",
@@ -153,6 +178,7 @@ POINT_DEFS: tuple[PointDef, ...] = (
         label="性能・拡張性",
         question="同時に何人くらいが使いますか。待てるのは何秒までですか",
         required=_ALL,
+        done_when="同時に使う人数か、待てる時間が分かる",
     ),
     PointDef(
         key="operability",
@@ -160,6 +186,7 @@ POINT_DEFS: tuple[PointDef, ...] = (
         label="運用・保守性",
         question="止まったことに、誰がどうやって気づけばよいですか",
         required=_INTERNAL_UP,
+        done_when="止まったこと・エラーに、誰がどう気づくかが分かる",
     ),
     PointDef(
         key="migration",
@@ -167,13 +194,15 @@ POINT_DEFS: tuple[PointDef, ...] = (
         label="移行性",
         question="今使っている仕組みやデータから、移すものはありますか",
         required=_INTERNAL_UP,
+        done_when="移すデータ・仕組み(無いなら、無いこと)が分かる",
     ),
     PointDef(
         key="security",
         kind="nonfunctional",
         label="セキュリティ",
-        question="入れたデータを、誰に見られたら困りますか",
+        question="入れたデータを、誰に見られたら困りますか。ログインはどうしますか",
         required=_ALL,
+        done_when="見られて困る相手と、ログインの要否(要るなら、その方法)が分かる",
     ),
     PointDef(
         key="environment",
@@ -181,6 +210,10 @@ POINT_DEFS: tuple[PointDef, ...] = (
         label="システム環境・エコロジー",
         question="どの端末・ブラウザで使いますか",
         required=_INTERNAL_UP,
+        done_when=(
+            "利用者が使う端末・ブラウザが分かる。サーバーや開発の技術(フレームワークなど)は"
+            "ここに含めない(技術スタックの観点)"
+        ),
     ),
 )
 
@@ -282,13 +315,19 @@ def to_state(
 
 
 def merge_judgement(
-    previous: Mapping[str, PointState], judged: Iterable[JudgedPoint]
+    previous: Mapping[str, PointState],
+    judged: Iterable[JudgedPoint],
+    *,
+    user_messages: Collection[str],
 ) -> dict[str, PointState]:
-    """判定の LLM の結果を、前の表に取り込む。
+    """判定の LLM の結果を、前の表に取り込む。`user_messages`は利用者の発言(sender='user')の id。
 
     - 知らない観点のキー・状態は捨てる。返らなかった観点は前の状態のまま。
     - 未決以外(決定・採用・対象外)は、根拠の発言が1つ以上あるときだけ取り込む。根拠が無ければ
       前の状態のまま(AI の推測で決まったことにしない)。
+    - 「採用」と、チャットで確かめる観点(`confirm_in_chat`)の未決以外は、根拠に利用者の発言が
+      あるときだけ取り込む。初期入力・添付は AI の提案に同意できないので、それだけを根拠にした
+      採用は推測と同じ。規模・技術スタックは、初期入力に一部が書いてあっても利用者に確かめる。
     - 未決は根拠が無くても取り込む(利用者が決めたことを取り消した場合)。
     """
     merged: dict[str, PointState] = initial_states()
@@ -298,6 +337,11 @@ def merge_judgement(
     for item in judged:
         state = to_state(item.key, item.status, item.summary.strip(), item.evidence)
         if state is None or (state.status != "open" and not state.evidence):
+            continue
+        needs_user = state.status == "adopted" or (
+            point_def(state.key).confirm_in_chat and state.status != "open"
+        )
+        if needs_user and not any(e in user_messages for e in state.evidence):
             continue
         merged[state.key] = state
     return merged

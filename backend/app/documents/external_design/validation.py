@@ -4,7 +4,7 @@
 空(要件定義書に model が無かった)なら、要件ID の照合はしない。
 """
 
-from app.documents.external_design.model import BODY_METHODS, ExternalDesignModel
+from app.documents.external_design.model import BODY_METHODS, NO_BODY, ExternalDesignModel
 from app.documents.issues import DocumentIssue
 
 
@@ -43,7 +43,8 @@ def validate_external_design(model: ExternalDesignModel) -> list[DocumentIssue]:
             DocumentIssue(
                 "major",
                 "API_BODY_MISSING",
-                "本文の欄が空の API があります: " + "・".join(no_body),
+                "本文の欄が空の API があります: " + "・".join(no_body)
+                + f"(本文の要らない API は「{NO_BODY}」と書いてください)",
                 tuple(no_body),
             )
         )

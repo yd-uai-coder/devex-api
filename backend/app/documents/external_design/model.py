@@ -13,6 +13,8 @@ from app.documents.requirements.model import Priority
 SCREEN_PREFIX = "SCR"
 # 本文(リクエストボディ)を持つはずのメソッド
 BODY_METHODS = ("POST", "PUT", "PATCH")
+# 本文の要らない POST など(生成・ログアウトの操作)の本文の欄に書く値。空欄と区別する
+NO_BODY = "なし"
 
 
 class ScreenRow(BaseModel):

@@ -41,7 +41,9 @@ def _sufficient(result: HearingPointsJudgement) -> bool:
         JudgedPoint(p.key, p.status, p.summary, tuple(str(n) for n in p.evidence))
         for p in result.points
     ]
-    return is_sufficient(merge_judgement(initial_states(), judged), result.scale)
+    user_messages = {e for p in judged for e in p.evidence}
+    merged = merge_judgement(initial_states(), judged, user_messages=user_messages)
+    return is_sufficient(merged, result.scale)
 
 
 async def test_insufficient_with_only_intake_message() -> None:

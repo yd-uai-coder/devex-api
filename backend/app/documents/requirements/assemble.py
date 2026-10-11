@@ -34,8 +34,10 @@ _STATUS_CAP: dict[str, RequirementSource] = {
     "open": "assumed",
     "not_applicable": "assumed",
 }
-# 規模はほぼ必ず決まっているので、それだけを根拠に上限を上げない(どの要件にも付けられるため)
+# 規模はほぼ必ず決まっているので、それだけを根拠に上限を上げない(どの要件にも付けられるため)。
+# ただし制約(CON)の行は規模そのもの(公開か社内か)を述べるので、規模も根拠に数える
 _NOT_GROUNDING: frozenset[str] = frozenset({"scale"})
+_SCALE_GROUNDS_KINDS: frozenset[str] = frozenset({"CON"})
 _NFR_CATEGORY: dict[str, str] = {d.key: d.label for d in POINT_DEFS if d.kind == "nonfunctional"}
 _OTHER_CATEGORY = "その他"
 # 1.2(利用者と使う場面)の根拠の観点
@@ -84,18 +86,19 @@ def known_points(points: Iterable[str]) -> list[str]:
 
 
 def cap_source(
-    source: str, points: Sequence[str], states: Mapping[str, PointState]
+    source: str, points: Sequence[str], states: Mapping[str, PointState], *, kind: str = ""
 ) -> RequirementSource:
     """出どころに、観点の状態で上限をかける。
 
-    上限は根拠の観点(規模を除く)のうち最も強い状態から決まる(決定 → ユーザー、採用 → 採用、
-    未決・対象外 → 推測)。根拠の観点が無い・知らない出どころなら推測。"""
+    上限は根拠の観点(規模を除く。制約の行は規模も含む)のうち最も強い状態から決まる(決定 →
+    ユーザー、採用 → 採用、未決・対象外 → 推測)。根拠の観点が無い・知らない出どころなら推測。"""
     if source not in _SOURCE_RANK:
         return "assumed"
+    excluded = frozenset() if kind in _SCALE_GROUNDS_KINDS else _NOT_GROUNDING
     caps = [
         _SOURCE_RANK[_STATUS_CAP[states[key].status]]
         for key in points
-        if key in states and key not in _NOT_GROUNDING
+        if key in states and key not in excluded
     ]
     if not caps:
         return "assumed"
@@ -153,7 +156,7 @@ def build_model(
                 priority=_priority(r.priority) if kind == "FR" else None,
                 category="" if kind == "FR" else _category(kind, r.category, points),
                 text=r.text.strip(),
-                source=cap_source(r.source, points, states),
+                source=cap_source(r.source, points, states, kind=kind),
                 points=points,
             )
         )

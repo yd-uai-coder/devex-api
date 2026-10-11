@@ -1,3 +1,4 @@
+import re
 import uuid
 from datetime import UTC, datetime
 
@@ -192,6 +193,9 @@ _DOC_TYPE_INPUTS: dict[str, tuple[str, ...]] = {
     "internal_design": ("requirements", "external_design"),
     "implementation_plan": ("requirements", "internal_design"),
 }
+
+# 見出しの記号が重なった行(LLM が「### ### 1. …」と書くことがある)。先頭の記号だけを残す
+_DOUBLED_HEADING = re.compile(r"^(#{1,6})(?:[ \t]+#{1,6})+(?=[ \t])", re.MULTILINE)
 
 # モード(projects.mode)ごとに生成する文書。詳細設計モードは要件定義・外部設計だけを生成し、
 # 内部設計・実装計画に当たる部分は段階(docs/internal_design.md 3.3節「4. 詳細設計モード」)
@@ -506,7 +510,7 @@ class DocGeneratorService:
 
         async def _call() -> str:
             response = await llm.ainvoke(messages)
-            return extract_text_content(response.content)
+            return _collapse_doubled_headings(extract_text_content(response.content))
 
         return await invoke_with_retry(_call, messages=messages)
 
@@ -527,6 +531,12 @@ class DocGeneratorService:
             return extract_text_content(response.content)
 
         return await invoke_with_retry(_call, messages=messages)
+
+
+def _collapse_doubled_headings(markdown: str) -> str:
+    """見出しの記号の重なり(`### ### 1.`)を1つにまとめる(`### 1.`)。手順書の index などが
+    文書の見出しをそのまま写すため、生成の時点で直しておく。"""
+    return _DOUBLED_HEADING.sub(r"\1", markdown)
 
 
 def _render_transcript(history: list[ChatHistory]) -> str:

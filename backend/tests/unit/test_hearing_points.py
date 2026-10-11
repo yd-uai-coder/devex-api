@@ -91,6 +91,7 @@ def test_merge_takes_decisions_with_evidence_and_keeps_others() -> None:
             JudgedPoint("users", "decided", " 倉庫の担当者 ", ("m2",)),
             JudgedPoint("security", "adopted", "本人だけ", ("m3",)),
         ],
+        user_messages={"m2", "m3"},
     )
 
     assert merged["purpose"] == previous["purpose"]  # 返らなかった観点は前のまま
@@ -100,16 +101,42 @@ def test_merge_takes_decisions_with_evidence_and_keeps_others() -> None:
 
 def test_merge_ignores_decisions_without_evidence() -> None:
     """根拠の発言が無い決定は取り込まない(AI の推測を決定と数えない)。"""
-    merged = merge_judgement(initial_states(), [JudgedPoint("tech", "decided", "Next.js", ())])
+    merged = merge_judgement(
+        initial_states(), [JudgedPoint("tech", "decided", "Next.js", ())], user_messages=set()
+    )
 
     assert merged["tech"].status == "open"
+
+
+def test_merge_takes_adoption_and_scale_only_from_user_messages() -> None:
+    """初期入力(intake)だけを根拠にした採用と、規模・技術スタックは取り込まない。ほかの観点の
+    決定は初期入力からでもよい。"""
+    judged = [
+        JudgedPoint("tech", "decided", "PostgreSQL", ("intake",)),
+        JudgedPoint("scale", "decided", "社内", ("intake",)),
+        JudgedPoint("core", "decided", "一覧と登録", ("intake",)),
+        JudgedPoint("security", "adopted", "本人だけ", ("intake", "m2")),
+    ]
+
+    merged = merge_judgement(initial_states(), judged, user_messages={"m2"})
+
+    assert merged["tech"].status == "open"
+    assert merged["scale"].status == "open"
+    assert merged["core"].status == "decided"
+    assert merged["security"].status == "adopted"
+
+
+def test_only_scale_and_tech_are_confirmed_in_chat() -> None:
+    assert [d.key for d in POINT_DEFS if d.confirm_in_chat] == ["scale", "tech"]
 
 
 def test_merge_accepts_reopening_without_evidence() -> None:
     previous = initial_states()
     previous["scope"] = PointState("scope", "decided", "一覧だけ", ("m1",))
 
-    merged = merge_judgement(previous, [JudgedPoint("scope", "open", "", ())])
+    merged = merge_judgement(
+        previous, [JudgedPoint("scope", "open", "", ())], user_messages=set()
+    )
 
     assert merged["scope"].status == "open"
 
@@ -118,6 +145,7 @@ def test_merge_ignores_unknown_keys_and_statuses() -> None:
     merged = merge_judgement(
         initial_states(),
         [JudgedPoint("budget", "decided", "x", ("m1",)), JudgedPoint("core", "done", "x", ("m1",))],
+        user_messages={"m1"},
     )
 
     assert merged == initial_states()

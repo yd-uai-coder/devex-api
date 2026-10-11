@@ -7,6 +7,7 @@ RequirementRow を直接作って渡す。
 
 from app.detailed_design.api_list import extract_api_endpoints
 from app.documents.external_design import (
+    NO_BODY,
     ApiDraft,
     ApiRow,
     ExternalDesignDraft,
@@ -228,6 +229,19 @@ def test_validate_reports_each_issue() -> None:
     assert issues["UNLINKED_ROWS"].targets == ("SCR-001", "GET /b")
     assert issues["UNKNOWN_SCREEN_REF"].targets == ("SCR-404",)
     assert covered_by(model, "FR-001") == ([], ["POST /a"])
+
+
+def test_validate_accepts_no_body_marker() -> None:
+    """本文の要らない POST は、本文の欄に「なし」と書けば警告しない(空欄だけを警告する)。"""
+    model = ExternalDesignModel(
+        apis=[
+            ApiRow(method="POST", path="/generate", body=NO_BODY),
+            ApiRow(method="PUT", path="/a/{id}"),
+        ]
+    )
+
+    [issue] = [i for i in validate_external_design(model) if i.code == "API_BODY_MISSING"]
+    assert issue.targets == ("PUT /a/{id}",)
 
 
 def test_validate_skips_requirement_checks_without_requirements_copy() -> None:

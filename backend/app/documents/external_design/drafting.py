@@ -16,7 +16,7 @@ from app.documents.external_design.assemble import (
     IntegrationDraft,
     ScreenDraft,
 )
-from app.documents.external_design.model import ExternalDesignModel
+from app.documents.external_design.model import NO_BODY, ExternalDesignModel
 
 _REQ_IDS_DESCRIPTION = "関係する要件ID(【要件定義書】の FR-001・NFR-001・CON-001 など。1つ以上)"
 
@@ -53,7 +53,7 @@ class GeneratedApi(BaseModel):
     body: str = Field(
         default="",
         description="リクエストの本文の主な項目(`email, password`など)。POST・PUT・PATCH は必ず"
-        "書く。本文の無い API は空",
+        f"書き、本文の要らないもの(生成の開始など)は`{NO_BODY}`と書く。GET・DELETE は空",
     )
     response: str = Field(description="成功時の応答(`201 予約`など)")
     errors: str = Field(default="", description="主なエラー(`404 対象なし、409 重複`など)")
@@ -96,7 +96,8 @@ SYSTEM_PROMPT = (
     "【要件定義書】に無い ID を作らない\n"
     "- Must の機能要件には、それを担う画面か API を必ず置く。Won't の機能要件の画面・API は"
     "作らない\n"
-    "- API は本システム自身が提供するものをすべて書く。POST・PUT・PATCH には本文の項目を書く\n"
+    "- API は本システム自身が提供するものをすべて書く。POST・PUT・PATCH には本文の項目を書く"
+    f"(本文の要らないものは「{NO_BODY}」)\n"
     "- 画面ID は SCR-001 の形。【前の版の画面】に同じ画面があれば、その ID を使う。"
     "API の関連画面は画面ID で書く\n"
     "- 主要画面には UI 仕様(構成要素)を書く\n"

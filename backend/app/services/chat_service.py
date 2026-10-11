@@ -1,4 +1,5 @@
 import json
+import re
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -96,12 +97,27 @@ _POINTS_JUDGE_PROMPT = (
     "判定の規則:\n"
     "・根拠(evidence)は、その観点を決めたユーザー側の発言の番号だけを挙げる。AIの発言は根拠にしない。\n"
     "・AIが提案・推測しただけで、ユーザーが答えていない観点はopenにする。\n"
+    "・decided・adoptedにするのは、その観点の「決まったと言える条件」を満たすときだけ。"
+    "一部しか分からない(例: 技術スタックでDBの名前だけ)ならopenにする。"
+    "ほかの観点のことを書いた発言を、この観点の根拠にしない。\n"
+    "・ユーザーが自分の言葉で内容を書いたら、AIの例や選択肢と似ていてもdecidedにする。"
+    "adoptedは、選択肢を選んだ・AIの提案に「それでよい」などと同意しただけの場合。\n"
     "・今の状態がopen以外の観点は、ユーザーが言い直した場合だけ変える。\n"
-    "・summaryは、決めたことを1文で簡潔に書く(openなら空でよい)。\n"
+    "・summaryは、決めたことを1文で簡潔に書く(openなら空でよい)。ただし技術スタック(tech)は、"
+    "ユーザーが挙げた言語・フレームワーク・DB・使うAI(LLM)・置き場所などの名前を1つも落とさずに書く"
+    "(設計書の生成はこの要約を読むため)。\n"
     "・scaleは、規模の観点が決まったときだけ、personal(自分と数人)/internal(社内)/"
     "public(誰でも登録できるサービス)のどれかにする。\n"
-    "観点の表(キー|観点|場面で聞く問いの例|今の状態|決めたこと):\n"
+    "観点の表(キー|観点|場面で聞く問いの例|決まったと言える条件|今の状態|決めたこと):\n"
     "{table}"
+)
+
+# 直前のAIの問いの観点を、判定のプロンプトに添える。判定のLLMは16観点を一度に見るので、
+# 最新の答えを取りこぼして未決のまま残すことがある(同じカードが付け直され、利用者が同じことを
+# 二度答える)。どの観点への答えかをコードが示す
+_LATEST_QUESTION_NOTE = (
+    "\n直前のAIの問いは、観点 {points} についてのもの。最新のユーザーの発言がその答えなら、"
+    "その観点を必ず判定する。"
 )
 
 # 観点の表の画面から「対象外」にした観点の、決めたことの文
@@ -143,8 +159,17 @@ _MISSING_POINTS_NOTE = (
     "この一覧が残っている間は、要件がそろった・設計書を生成できる・生成ボタンを押す、などとは"
     "書かないでください。一覧の観点を聞いてください。"
 )
+# それでも返信のAIが完了を宣言した文(_drop_completion_claimsが除く)
+_COMPLETION_CLAIM = re.compile(
+    r"(揃|そろ)(いました|った)|すべて.*(確認|把握)(でき|し)ました|準備が(整|ととの)い"
+    r"|設計書を生成(して|でき|する)|生成(の)?ボタン|ボタンを押"
+)
 # 返信に問いもカードも無いときに、コードが足す次の問い
 _NEXT_QUESTION_TEMPLATE = "次に、{label}について教えてください。(例: {question})"
+# 「？」が無くても、利用者に答えを求める文(依頼・問いの言い切り)なら問いとみなす
+_QUESTION_ENDING = re.compile(
+    r"(ください|ますか|ませんか|ですか|でしょうか)(?=[。．.!！」)）]|\s|$)"
+)
 _EMPTY_REPLY_WITH_CARDS = "次の点を、カードから選ぶか、チャットで答えてください。"
 
 _SUMMARY_REPLY_TEMPLATE = (
@@ -274,6 +299,8 @@ class ChatService:
             code_card=carried[0] if carried else None,
             llm=llm,
         )
+        if not is_sufficient(states, as_scale(project.hearing_scale)):
+            message = _drop_completion_claims(message)
         message = _ensure_question(message, cards, targets)
         await self._chat_histories.add(
             project_id=project.id,
@@ -402,9 +429,18 @@ class ChatService:
         previous = await self._load_states(project)
         numbered = number_messages([(str(entry.id), entry.sender) for entry in history])
         numbers = {message_id: number for message_id, number, _ in numbered}
+        prompt = _POINTS_JUDGE_PROMPT.format(table=_points_table(previous))
+        latest_ai = next((e for e in reversed(history) if e.sender == "ai"), None)
+        asked = [card.point_key for card in cards_from_json(latest_ai.cards if latest_ai else None)]
+        if latest_ai is not None and not asked:
+            # 文で聞いた問いは記録していないが、返信と同じ計算で、前の表から聞いた観点が分かる
+            asked = [d.key for d in _next_targets(previous, as_scale(project.hearing_scale))]
+        if asked:
+            points = "・".join(f"{key}({point_def(key).label})" for key in asked)
+            prompt += _LATEST_QUESTION_NOTE.format(points=points)
         messages = [
             *_build_messages(history, project, template, numbers=numbers),
-            HumanMessage(content=_POINTS_JUDGE_PROMPT.format(table=_points_table(previous))),
+            HumanMessage(content=prompt),
         ]
 
         llm = llm or get_gemini_llm()
@@ -417,6 +453,7 @@ class ChatService:
 
         result = await invoke_with_retry(_call, messages=messages)
         ids_by_number = {number: message_id for message_id, number in numbers.items()}
+        user_messages = {str(entry.id) for entry in history if entry.sender == "user"}
         judged = [
             JudgedPoint(
                 key=point.key,
@@ -428,7 +465,7 @@ class ChatService:
             )
             for point in result.points
         ]
-        states = merge_judgement(previous, judged)
+        states = merge_judgement(previous, judged, user_messages=user_messages)
         project.hearing_scale = scale_after(
             states, as_scale(project.hearing_scale), result.scale
         )
@@ -596,7 +633,10 @@ def _build_messages(
             f"\n\n[まだ確認できていない観点]\n{lines}\n{_MISSING_POINTS_NOTE}"
         )
     if card_targets:
-        targets = "\n".join(f"- {d.key}: {d.label}(例: {d.question})" for d in card_targets)
+        targets = "\n".join(
+            f"- {d.key}: {d.label}(例: {d.question})。決まったと言える条件: {d.done_when}"
+            for d in card_targets
+        )
         system_prompt += _CARD_INSTRUCTIONS.format(targets=targets)
     if code_card_label is not None:
         system_prompt += _CODE_CARD_NOTE.format(label=code_card_label)
@@ -634,14 +674,27 @@ def _next_targets(states: Mapping[str, PointState], scale: Scale | None) -> list
     return open_optional(states, scale)[:CARD_LIMIT]
 
 
+def _drop_completion_claims(message: str) -> str:
+    """未決の必須が残っているのに、返信の AI が「そろった」「生成できる」と書いた文を除く。
+    プロンプトで止めても書くことがあり、画面(生成ボタンが出ない)と食い違うため。"""
+    sentences = re.findall(r"[^。！!\n]*(?:[。！!]|\n|$)", message)
+    kept = [s for s in sentences if not _COMPLETION_CLAIM.search(s)]
+    return "".join(kept).strip()
+
+
 def _ensure_question(message: str, cards: Sequence[Card], targets: Sequence[PointDef]) -> str:
     """カードが無く、聞くべき観点が残っているのに、返信の本文に問いが無いときは、次の問いを足す。
     返信のAIが問いを書き忘れると、利用者には次に何を答えるかが見えず、止まったように見えるため。"""
-    if cards or not targets or "？" in message or "?" in message:
+    if cards or not targets or _has_question(message):
         return message
     point = targets[0]
     question = _NEXT_QUESTION_TEMPLATE.format(label=point.label, question=point.question)
     return f"{message}\n\n{question}"
+
+
+def _has_question(message: str) -> bool:
+    """返信の本文に、利用者へ答えを求める文があるか(「？」、または依頼・問いの言い切り)。"""
+    return "？" in message or "?" in message or _QUESTION_ENDING.search(message) is not None
 
 
 @dataclass(frozen=True)
@@ -655,7 +708,8 @@ class ReplyCards:
 def _points_table(states: Mapping[str, PointState]) -> str:
     """判定のプロンプトに埋める観点の表(1行1観点)。"""
     return "\n".join(
-        f"{d.key}|{d.label}|{d.question}|{states[d.key].status}|{states[d.key].summary}"
+        f"{d.key}|{d.label}|{d.question}|{d.done_when}|{states[d.key].status}|"
+        f"{states[d.key].summary}"
         for d in POINT_DEFS
     )
 

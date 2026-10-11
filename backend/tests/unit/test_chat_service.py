@@ -19,6 +19,7 @@ from app.hearing import (
     card_to_dict,
     initial_states,
     is_required,
+    point_def,
     scale_card,
 )
 from app.models.chat_history import ChatHistory
@@ -42,6 +43,7 @@ from app.services.chat_service import (
     _CODE_CARD_NOTE,
     _EMPTY_REPLY_WITH_CARDS,
     _HEARING_SYSTEM_PROMPT,
+    _LATEST_QUESTION_NOTE,
     _MISSING_POINTS_NOTE,
     _NEXT_QUESTION_TEMPLATE,
     _OPENING_SCALE_CARD_LINE,
@@ -49,6 +51,7 @@ from app.services.chat_service import (
     ChatService,
     ReplyCards,
     _build_messages,
+    _drop_completion_claims,
 )
 from app.services.errors import (
     DocGenerationInProgressError,
@@ -288,6 +291,35 @@ async def test_judge_points_shows_numbered_messages_and_current_table(
     assert all(not str(m.content).startswith("[#") for m in sent if isinstance(m, AIMessage))
     assert human[-1].startswith(_POINTS_JUDGE_PROMPT.split("{table}")[0][:20])
     assert "purpose|目的・課題|" in human[-1]
+    assert point_def("tech").done_when in human[-1]  # 決まったと言える条件も表で渡す
+
+
+async def test_judge_points_names_point_of_latest_ai_card(db_session: AsyncSession) -> None:
+    """直前のAIの発言のカードの観点を、判定のプロンプトに添える(最新の答えの取りこぼしを防ぐ)。"""
+    project = await _create_project(db_session)
+    await _add_history(db_session, project, "intake")
+    await _add_ai_with_cards(db_session, project, _availability_card())
+    await _add_history(db_session, project, "user")
+    llm = _RecordingLLM()
+
+    await ChatService(db_session).judge_points(project, llm=llm)
+
+    prompt = str(llm.judge_messages[0][-1].content)
+    assert prompt.endswith(_LATEST_QUESTION_NOTE.format(points="availability(可用性)"))
+
+
+async def test_judge_points_names_next_point_when_latest_ai_asked_in_text(
+    db_session: AsyncSession,
+) -> None:
+    """カードの無い問いは、前の表から次に聞く観点(返信と同じ計算)を添える。"""
+    project = await _create_project(db_session)
+    await _add_history(db_session, project, "intake", "ai", "user")
+    llm = _RecordingLLM()
+
+    await ChatService(db_session).judge_points(project, llm=llm)
+
+    prompt = str(llm.judge_messages[0][-1].content)
+    assert prompt.endswith(_LATEST_QUESTION_NOTE.format(points="scale(規模)"))
 
 
 async def test_judge_points_sets_scale_only_when_scale_point_is_settled(
@@ -387,6 +419,39 @@ async def test_stream_reply_passes_open_required_points_to_reply_when_insufficie
     assert project.hearing_check is not None
     assert project.hearing_check["is_sufficient"] is False
     assert project.hearing_check["missing_points"][0] == "規模"
+
+
+async def test_stream_reply_drops_completion_claims_while_required_points_are_open(
+    db_session: AsyncSession,
+) -> None:
+    """未決の必須が残っている間に返信のAIが「そろった」と書いても、その文はコードが除く。"""
+    project = await _create_project(db_session)
+    llm = _reply_llm(
+        "必要な要件がすべて揃いました。準備が整いました。右上のボタンから設計書を生成してください。"
+    )
+
+    chunks = [
+        c async for c in ChatService(db_session).stream_reply(project, user_message="はい", llm=llm)
+    ]
+
+    text = "".join(c for c in chunks if isinstance(c, str))
+    assert "揃いました" not in text
+    assert "準備が整い" not in text
+    assert "生成してください" not in text
+
+
+def test_drop_completion_claims_keeps_other_sentences() -> None:
+    question = "夜中に止まったら、どのくらいで困りますか？"
+    message = f"承知しました。これで要件がそろいました。\n{question}"
+
+    assert _drop_completion_claims(message) == f"承知しました。\n{question}"
+
+
+def test_build_messages_shows_done_when_of_card_targets() -> None:
+    """カードにする観点には、決まったと言える条件も渡す(一語で決まる答えを引き出さないため)。"""
+    messages = _build_messages([], _project(), card_targets=[point_def("security")])
+
+    assert f"決まったと言える条件: {point_def('security').done_when}" in messages[0].content
 
 
 async def test_stream_reply_keeps_table_and_clears_check_when_judgement_fails(
@@ -640,11 +705,11 @@ async def test_generate_opening_reply_persists_ai_message(db_session: AsyncSessi
     )
 
 
-async def test_generate_opening_reply_skips_points_written_in_intake(
+async def test_generate_opening_reply_skips_points_written_in_intake_but_asks_scale(
     db_session: AsyncSession,
 ) -> None:
-    """初期入力に書いてある観点(規模・目的)は作成時の判定で決まり、最初の問いは次の未決の観点に
-    なる(書いてあることを聞き直さない)。"""
+    """初期入力に書いてある観点(目的)は作成時の判定で決まる。規模は初期入力から推し量らず
+    (利用者の発言が根拠のときだけ取り込む)、最初の問いは規模のカードになる。"""
     project = await _create_project(db_session)
     await ChatHistoryRepository(db_session).add(
         project_id=project.id, sender="intake", message="社内の在庫の見える化"
@@ -654,18 +719,22 @@ async def test_generate_opening_reply_skips_points_written_in_intake(
         points=[
             JudgedPointOut(key="scale", status="decided", summary="社内", evidence=[1]),
             JudgedPointOut(key="purpose", status="decided", summary="在庫の見える化", evidence=[1]),
+            JudgedPointOut(key="tech", status="adopted", summary="PostgreSQL", evidence=[1]),
         ],
     )
     llm = _RecordingLLM(judgement, reply=HearingReplyOut(message="伺います"))
 
     reply = await ChatService(db_session).generate_opening_reply(project, llm=llm)
 
-    assert project.hearing_scale == "internal"
-    system_prompt = llm.reply_messages[0][0].content
-    assert "- users: 利用者と使う場面" in system_prompt
-    assert "- scale:" not in system_prompt
-    # 本文に問いもカードも無いので、次の観点の問いをコードが足す
-    assert reply.endswith("(例: 誰が、どんなときに開きますか)")
+    assert project.hearing_scale is None
+    states = {
+        r.point_key: r.status
+        for r in await HearingPointRepository(db_session).list_for_project(project.id)
+    }
+    assert states["purpose"] == "decided"
+    assert states["scale"] == "open"
+    assert states["tech"] == "open"  # 初期入力だけを根拠にした採用は取り込まない
+    assert reply.endswith(_OPENING_SCALE_CARD_LINE)
 
 
 async def test_generate_opening_reply_survives_judgement_failure(
@@ -1115,7 +1184,8 @@ async def test_stream_reply_adds_next_question_when_reply_has_no_question(
     db_session: AsyncSession,
 ) -> None:
     """返信のAIが問いもカードも出さないとき、次に聞く未決の必須をコードが本文に足す
-    (止まったように見えないように)。本文に問いがあれば足さない。"""
+    (止まったように見えないように)。本文に問い(「？」、または「〜ください。」などの言い切り)が
+    あれば足さない。"""
     project = await _project_with_scale_decided(db_session)
     llm = _RecordingLLM(reply=HearingReplyOut(message="設計を進めます。"))
 
@@ -1140,6 +1210,17 @@ async def test_stream_reply_adds_next_question_when_reply_has_no_question(
         )
     ]
     assert chunks == ["目的を教えてください？"]
+
+    # 「？」が無くても、依頼・問いの言い切りで終わる本文は問いとみなし、二重に足さない
+    asking = "利用者と使う場面について教えてください。"
+    requested = _RecordingLLM(reply=HearingReplyOut(message=asking))
+    chunks = [
+        chunk
+        async for chunk in ChatService(db_session).stream_reply(
+            project, user_message="続き2", llm=requested
+        )
+    ]
+    assert chunks == [asking]
 
 
 async def test_stream_reply_continues_with_optional_points_when_asked(
