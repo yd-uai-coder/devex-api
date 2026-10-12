@@ -4,8 +4,11 @@
   (`renamed_task_ids`。書かれた ID が並び順と違っても、指したタスクを保つ)。
 - 処理: `df-01`を`DF-1`にそろえる。内部設計書に在るかは検証が見る。
 - 要件: 要件ID の形(`FR-001`)にそろえ、形の違う値は捨てる。要件定義書に在るかは検証が見る。
-- キー: 前の版に model があれば、タスク名で前の版のキーを引き継ぎ(`carry_over_unit_keys`)、
-  残りに次の番号を振る。前の版に model が無ければ全部新しく振る。
+- キー: 前の版に model があれば、AI が`prev_key`で指した前の版のタスク・タスク名・処理と要件の
+  重なりの順に前の版のキーを引き継ぎ(`carry_over_unit_keys`)、残りに次の番号を振る。前の版に
+  model が無ければ全部新しく振る。
+- 変更なし(`unchanged`): `prev_key`のタスクが前の版にあれば、その中身(依存先を除く)をそのまま
+  使う(`app.documents.revision`)。依存先は並び順の ID なので、今回の並びで書いたものを使う。
 - 名前の無いマイルストーン・タスクは捨てる。
 """
 
@@ -44,6 +47,8 @@ class TaskDraft:
     depends_on: tuple[str, ...] = ()
     modules: tuple[str, ...] = ()
     config_files: tuple[str, ...] = ()
+    prev_key: str = ""
+    unchanged: bool = False
 
 
 @dataclass(frozen=True)
@@ -96,31 +101,41 @@ def _priority(value: str) -> Priority:
     return value if value in PRIORITIES else "Must"  # type: ignore[return-value]
 
 
-def _milestones(drafts: Sequence[MilestoneDraft]) -> list[Milestone]:
+def _milestones(
+    drafts: Sequence[MilestoneDraft], previous: ImplementationPlanModel | None
+) -> list[Milestone]:
     kept = [
         (m, [t for t in m.tasks if t.title.strip()]) for m in drafts if m.name.strip()
     ]
     renames = renamed_task_ids([[t.id for t in tasks] for _, tasks in kept])
+    same = {t.key: t for m in previous.milestones for t in m.tasks} if previous else {}
     return [
         Milestone(
             name=m.name.strip(),
             goal=m.goal.strip(),
             priority=_priority(m.priority),
-            tasks=[
-                PlanTask(
-                    kind=_kind(t.kind),
-                    title=t.title.strip(),
-                    function_ids=_dataflow_ids(t.dataflow_ids),
-                    depends_on=[renames.get(d.upper(), d.upper()) for d in _values(t.depends_on)],
-                    modules=_values(t.modules),
-                    config_files=_values(t.config_files),
-                    req_ids=_req_ids(t.req_ids),
-                )
-                for t in tasks
-            ],
+            tasks=[_task(t, renames, same) for t in tasks],
         )
         for m, tasks in kept
     ]
+
+
+def _task(t: TaskDraft, renames: dict[str, str], same: dict[str, PlanTask]) -> PlanTask:
+    depends_on = [renames.get(d.upper(), d.upper()) for d in _values(t.depends_on)]
+    key = t.prev_key.strip().upper()
+    prev = same.get(key)
+    if prev is not None and t.unchanged:
+        return prev.model_copy(update={"depends_on": depends_on})
+    return PlanTask(
+        key=key if prev is not None else "",
+        kind=_kind(t.kind),
+        title=t.title.strip(),
+        function_ids=_dataflow_ids(t.dataflow_ids),
+        depends_on=depends_on,
+        modules=_values(t.modules),
+        config_files=_values(t.config_files),
+        req_ids=_req_ids(t.req_ids),
+    )
 
 
 def build_model(
@@ -132,7 +147,7 @@ def build_model(
 ) -> ImplementationPlanModel:
     """下書きから model を作る。生成した時点の内部設計書の処理別データフローの ID と、要件定義書の
     要件ID を写して持つ(検証が読む)。"""
-    plan = PlanModel(milestones=_milestones(draft.milestones))
+    plan = PlanModel(milestones=_milestones(draft.milestones, previous))
     plan = (
         carry_over_unit_keys(plan, previous.to_plan())
         if previous is not None

@@ -28,6 +28,7 @@ docs/internal_design.md 3.3節「4. 詳細設計モード」。
 
 from collections import Counter
 from collections.abc import Iterable, Sequence
+from difflib import SequenceMatcher
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -36,6 +37,10 @@ from app.detailed_design.procedure import resolve_callee
 
 # 横断事項と実装計画の段階の番号
 PLAN_STAGE = 7
+
+# 再生成でキーを引き継ぐ、タスク名の似ている度合い(difflib の比。言い換え「初期化 → 初期構成」を
+# 拾い、別のタスクの名前は拾わない程度)
+_TITLE_SIMILARITY = 0.6
 
 Priority = Literal["Must", "Should", "Could"]
 # 単位の種別。feature = 処理を持つ縦割りの単位(機能)、base = 処理の無い準備・デプロイ(基盤)
@@ -155,27 +160,54 @@ def assign_unit_keys(model: PlanModel) -> PlanModel:
 
 
 def carry_over_unit_keys(model: PlanModel, previous: PlanModel) -> PlanModel:
-    """作り直した計画に、前の計画のキーを引き継ぐ(タスク名が同じタスクだけ。前の計画で同じ名前が
-    2つあるものは引き継がない)。番号は前の計画から続け、残りは`assign_unit_keys`が振る。
+    """作り直した計画に、前の計画のキーを引き継ぐ。番号は前の計画から続け、残りは
+    `assign_unit_keys`が振る。作り直しは全体を置き換えるが、同じ作業単位の手順書(段階8)と変更の
+    影響の印を付けたままにするため。次の順に1対1で引き継ぐ:
 
-    作り直しは全体を置き換えるが、同じ作業単位の手順書(段階8)を付けたままにするため。"""
-    counts = Counter(
-        task.title.strip() for milestone in previous.milestones for task in milestone.tasks
-    )
-    keys = {
-        task.title.strip(): task.key
-        for milestone in previous.milestones
-        for task in milestone.tasks
-        if task.key and counts[task.title.strip()] == 1
-    }
+    1. すでに前の計画のキーを持つタスク(書き手が前の版のタスクを指したもの)
+    2. タスク名が同じタスク(前の計画で同じ名前が2つあるものは除く)
+    3. 種別が同じで、処理・要件の重なり(Jaccard)が大きい順。重なりが無ければ、タスク名が似ている
+       もの(`_TITLE_SIMILARITY`以上。前の計画で同じ名前が2つあるものは除く)。再生成でタスク名が
+       言い換えられても引き継ぐため。"""
+    prev_tasks = [t for m in previous.milestones for t in m.tasks if t.key]
+    tasks = [t for m in model.milestones for t in m.tasks]
+    counts = Counter(t.title.strip() for t in prev_tasks)
+    unique = [t for t in prev_tasks if counts[t.title.strip()] == 1]
+    keys: list[str] = ["" for _ in tasks]
+    used: set[str] = set()
+
+    def take(index: int, key: str) -> None:
+        if not keys[index] and key not in used:
+            keys[index] = key
+            used.add(key)
+
+    prev_keys = {t.key for t in prev_tasks}
+    for i, task in enumerate(tasks):
+        if task.key.strip() in prev_keys:
+            take(i, task.key.strip())
+    by_title = {t.title.strip(): t.key for t in unique}
+    for i, task in enumerate(tasks):
+        if task.title.strip() in by_title:
+            take(i, by_title[task.title.strip()])
+    pairs: list[tuple[float, float, int, str]] = []
+    for i, task in enumerate(tasks):
+        for prev in prev_tasks:
+            if keys[i] or prev.key in used or prev.kind != task.kind:
+                continue
+            overlap = _overlap(task, prev)
+            similarity = (
+                SequenceMatcher(None, task.title.strip(), prev.title.strip()).ratio()
+                if prev in unique
+                else 0.0
+            )
+            if overlap > 0 or similarity >= _TITLE_SIMILARITY:
+                pairs.append((overlap, similarity, i, prev.key))
+    for _, _, i, key in sorted(pairs, key=lambda p: (-p[0], -p[1], p[2])):
+        take(i, key)
+    keyed = iter(keys)
     milestones = [
         milestone.model_copy(
-            update={
-                "tasks": [
-                    task.model_copy(update={"key": keys.get(task.title.strip(), "")})
-                    for task in milestone.tasks
-                ]
-            }
+            update={"tasks": [t.model_copy(update={"key": next(keyed)}) for t in milestone.tasks]}
         )
         for milestone in model.milestones
     ]
@@ -183,6 +215,14 @@ def carry_over_unit_keys(model: PlanModel, previous: PlanModel) -> PlanModel:
     return assign_unit_keys(
         model.model_copy(update={"milestones": milestones, "next_unit_seq": seq})
     )
+
+
+def _overlap(task: PlanTask, other: PlanTask) -> float:
+    """2つのタスクの処理・要件の重なり(Jaccard。どちらも空なら 0)。"""
+    a = {f"f:{x.strip()}" for x in task.function_ids} | {f"r:{x.strip()}" for x in task.req_ids}
+    b = {f"f:{x.strip()}" for x in other.function_ids} | {f"r:{x.strip()}" for x in other.req_ids}
+    union = a | b
+    return len(a & b) / len(union) if union else 0.0
 
 
 def _key_seq(key: str) -> int:

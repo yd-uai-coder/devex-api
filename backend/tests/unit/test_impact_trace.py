@@ -76,21 +76,55 @@ def test_requirement_change_reaches_function_and_its_elements():
 
     assert by_key["fn:F-01"].path == ("req:FR-001", "fn:F-01")
     assert by_key["fn:F-01"].reason == "この要件を持つ"
+    # 作業単位の手順書は、手順を実装する手順書として届く
     assert by_key["unit:U-002"].path == ("req:FR-001", "fn:F-01", "proc:F-01", "unit:U-002")
-    assert by_key["task:U-002"].reason == "この処理に属する"
     # 処理に属するモジュールは共有されるので示さない(直接の参照元でもない)
     assert not [k for k in by_key if k.startswith("module:")]
 
 
+def test_document_change_hides_crud_task_and_summary_of_reached_function():
+    """要件の変更では、届いた処理の CRUD・作業単位・要約を示さない(手順と、その先は示す)。"""
+    keys = _keys(impact_of(_elements(), Change("req:FR-001")))
+
+    assert "proc:F-01" in keys
+    assert not [k for k in keys if k.startswith(("crud:", "task:", "summary:"))]
+
+
+def test_api_change_shows_summary_and_entry_module_but_not_crud_or_task():
+    """API の変更は要約(入出力)を示し、API を受ける入口のモジュールも直接の参照元として示す。"""
+    items = impact_of(_elements(), Change("api:GET /api/v1/reservations"))
+    by_key = {i.key: i for i in items}
+
+    assert "summary:F-02" in by_key
+    assert by_key[f"module:{ROUTE}"].path == ("api:GET /api/v1/reservations", f"module:{ROUTE}")
+    assert by_key[f"module:{ROUTE}"].reason == EDGE_REASON["receives"] == "この API を受ける"
+    assert not [k for k in by_key if k.startswith(("crud:", "task:"))]
+    # 入口でない層のモジュールは示さない
+    assert f"module:{SERVICE}" not in by_key
+
+
+def test_requirement_change_does_not_spread_through_shared_screen():
+    """FR-001 を持つ画面 SCR-001 は F-02(一覧)の画面でもあるが、要件の変更は画面を通って
+    別の処理へ広げない。画面そのものの変更なら、その画面の処理すべてに届く。"""
+    keys = _keys(impact_of(_elements(), Change("req:FR-001")))
+
+    assert "screen:SCR-001" in keys
+    assert "fn:F-02" not in keys
+    assert "unit:U-003" not in keys
+    screen_keys = _keys(impact_of(_elements(), Change("screen:SCR-001")))
+    assert {"fn:F-01", "fn:F-02"} <= set(screen_keys)
+
+
 def test_shared_module_does_not_spread_to_other_function():
-    """処理から先はモジュールを通らないので、文書の要素(画面)を共有しない別の処理には広がらない
+    """処理から先はモジュールを通らないので、文書の要素を共有しない別の処理には広がらない
     (F-02 の画面と GET の画面を外すと、F-01 と F-02 が共有するのはモジュールだけになる)。"""
     stages = impact_stages()
     stages[1]["functions"][1]["screens"] = []
     documents = impact_documents()
     documents["external_design"]["apis"][1]["screens"] = []
-    items = impact_of(_elements(stages, documents), Change("req:FR-001"))
+    items = impact_of(_elements(stages, documents), Change("screen:SCR-001"))
 
+    assert "fn:F-01" in _keys(items)
     assert "fn:F-02" not in _keys(items)
     assert "proc:F-02" not in _keys(items)
     assert "unit:U-003" not in _keys(items)
@@ -160,7 +194,8 @@ def test_non_functional_requirement_reaches_units_through_crosscutting():
 # --- その他 ---
 
 
-def test_table_change_reaches_repository_crud_and_procedure_functions():
+def test_table_change_reaches_users_and_implementers_but_not_functions():
+    """テーブルの変更は、読み書きする要素と、その手順を実装する処理ロジック・手順書まで。"""
     items = impact_of(_elements(), Change("table:reservations"))
     by_key = {i.key: i for i in items}
 
@@ -170,8 +205,10 @@ def test_table_change_reaches_repository_crud_and_procedure_functions():
         "table:reservations",
         "module:app/repositories/reservation.py",
     )
-    assert by_key["fn:F-02"].path == ("table:reservations", "crud:F-02×reservations", "fn:F-02")
-    assert "unit:U-003" in by_key
+    assert by_key["unit:U-003"].path == ("table:reservations", "proc:F-02", "unit:U-003")
+    assert f"logic:{SERVICE}::list" in by_key
+    # 処理とその要約・作業単位には上らない
+    assert not [k for k in by_key if k.startswith(("fn:", "summary:", "task:"))]
 
 
 def test_unknown_or_unreferenced_change_shows_nothing():

@@ -1,7 +1,7 @@
 """変わったもの(承認時の写しと今の model の、要素の単位の差分)のテスト。
 
 SUT: diff_elements / to_trace_changes / ElementChange(app/detailed_design/impact/diff.py)、
-     Element.body(app/detailed_design/impact/elements.py)、パッケージの re-export
+     Element.body・task_body(app/detailed_design/impact/elements.py)、パッケージの re-export
      (app/detailed_design/impact)
 ドライバ: 各テスト関数
 スタブ不要 ── どれも純粋関数(副作用なし)で、DB や LLM を呼ばないため。前と後の model は fixture の
@@ -187,3 +187,22 @@ def test_table_definitions_from_er_are_compared():
 
     assert _summary(changes) == [("table:reservations", "content")]
     assert changes[0].after is not None and '"note"' in changes[0].after
+
+
+def test_task_dependency_shifted_only_by_reorder_is_not_a_change():
+    """マイルストーンの挿入で表示の ID(`M-01-T02` → `M-02-T01`)がずれても、依存先が同じタスクを
+    指していれば変わったものにしない(依存先は単位のキーに読み替えて比べる)。指す先が変われば変更。"""
+    before = impact_stages()
+    before[7]["milestones"][0]["tasks"][2]["depends_on"] = ["M-01-T02"]
+    after = copy.deepcopy(before)
+    after[7]["milestones"] = [
+        {"name": "準備", "tasks": [after[7]["milestones"][0]["tasks"][0]]},
+        {"name": "予約", "tasks": after[7]["milestones"][0]["tasks"][1:]},
+    ]
+    after[7]["milestones"][1]["tasks"][1]["depends_on"] = ["M-02-T01"]
+
+    assert diff_elements(_elements(before), _elements(after), stages=[7]) == []
+    after[7]["milestones"][1]["tasks"][1]["depends_on"] = ["M-01-T01"]
+    assert _summary(diff_elements(_elements(before), _elements(after), stages=[7])) == [
+        ("task:U-003", "content")
+    ]

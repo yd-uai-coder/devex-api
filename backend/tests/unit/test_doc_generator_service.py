@@ -367,7 +367,7 @@ async def test_regenerate_external_design_keeps_screen_ids(db_session: AsyncSess
 
     await service.generate(project.id, project.user_id, llm=fake_llm)
 
-    assert "SCR-001|予約画面" in fake_llm.structured_messages[1][-1].content
+    assert '"id": "SCR-001", "name": "予約画面"' in fake_llm.structured_messages[1][-1].content
     document = await GeneratedDocumentRepository(db_session).get_current(
         project_id=project.id, doc_type="external_design"
     )

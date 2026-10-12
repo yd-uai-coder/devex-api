@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime
 
 import structlog
@@ -59,6 +60,12 @@ from app.documents.requirements.drafting import (
     RequirementsGenerationOutput,
     build_requirements_messages,
     to_draft,
+)
+from app.documents.revision import (
+    changed_rows,
+    external_design_rows,
+    internal_design_rows,
+    requirement_rows,
 )
 from app.hearing import as_scale
 from app.models.chat_history import ChatHistory
@@ -265,6 +272,10 @@ class DocGeneratorService:
             new_models: dict[str, dict | None] = {}
             for doc_type in doc_types:
                 model: dict | None = None
+                # 再生成を前の版の差分にとどめるため、上流の文書で変わった行を渡す
+                changed = upstream_changes(
+                    doc_type, previous_models, requirements, external, internal
+                )
                 if doc_type == "requirements":
                     content, requirements = await self._generate_requirements(
                         project, transcript, llm=llm
@@ -272,17 +283,17 @@ class DocGeneratorService:
                     model = requirements.model_dump(mode="json")
                 elif doc_type == "external_design":
                     content, external = await self._generate_external_design(
-                        project, generated["requirements"], requirements, llm=llm
+                        project, generated["requirements"], requirements, changed, llm=llm
                     )
                     model = external.model_dump(mode="json")
                 elif doc_type == "internal_design":
                     content, internal = await self._generate_internal_design(
-                        project, generated, external, llm=llm
+                        project, generated, external, changed, llm=llm
                     )
                     model = internal.model_dump(mode="json")
                 else:
                     content, plan = await self._generate_implementation_plan(
-                        project, generated, requirements, internal, llm=llm
+                        project, generated, requirements, internal, changed, llm=llm
                     )
                     model = plan.model_dump(mode="json")
                 await self._documents.create_version(
@@ -421,17 +432,18 @@ class DocGeneratorService:
         project: Project,
         requirements_md: str,
         requirements: RequirementsModel | None,
+        changed_upstream: list[str],
         *,
         llm,
     ) -> tuple[str, ExternalDesignModel]:
-        """外部設計書を構造化出力で下書きし、model と md を作る。入力は要件定義書の md と前の版の
-        画面(画面ID を引き継ぐため)。要件ID の照合用に要件定義書の model を写す
-        (app/documents/external_design)。"""
+        """外部設計書を構造化出力で下書きし、model と md を作る。入力は要件定義書の md、前の版の
+        画面・API(画面ID を引き継ぎ、変えない行をそのまま使うため)と、要件定義書の変わった行。
+        要件ID の照合用に要件定義書の model を写す(app/documents/external_design)。"""
         current = await self._documents.get_current(
             project_id=project.id, doc_type="external_design"
         )
         previous = parse_external_design_model(current.model if current else None)
-        messages = build_external_design_messages(requirements_md, previous)
+        messages = build_external_design_messages(requirements_md, previous, changed_upstream)
         output = await invoke_structured(llm, ExternalDesignGenerationOutput, messages)
         model = build_external_design_model(
             to_external_design_draft(output), previous, requirements
@@ -443,18 +455,20 @@ class DocGeneratorService:
         project: Project,
         generated: dict[str, str],
         external: ExternalDesignModel | None,
+        changed_upstream: list[str],
         *,
         llm,
     ) -> tuple[str, InternalDesignModel]:
         """内部設計書を構造化出力で下書きし、model と md を作る(app/documents/internal_design)。
-        入力は要件定義書・外部設計書の md。処理別データフローの ID は前の版の model から引き継ぎ、
-        外部設計書の API(検証が照らす)は外部設計書の model から写す。"""
+        入力は要件定義書・外部設計書の md、前の版の行と上流の変わった行。処理別データフローの ID
+        は前の版の model から引き継ぎ、外部設計書の API(検証が照らす)は外部設計書の model から
+        写す。"""
         current = await self._documents.get_current(
             project_id=project.id, doc_type="internal_design"
         )
         previous = parse_internal_design_model(current.model if current else None)
         messages = build_internal_design_messages(
-            generated["requirements"], generated["external_design"]
+            generated["requirements"], generated["external_design"], previous, changed_upstream
         )
         output = await invoke_structured(llm, InternalDesignGenerationOutput, messages)
         apis = [a.label for a in external.apis] if external else []
@@ -467,18 +481,20 @@ class DocGeneratorService:
         generated: dict[str, str],
         requirements: RequirementsModel | None,
         internal: InternalDesignModel | None,
+        changed_upstream: list[str],
         *,
         llm,
     ) -> tuple[str, ImplementationPlanModel]:
         """実装計画書を構造化出力で下書きし、model と md を作る(app/documents/implementation_plan)。
-        入力は要件定義書・内部設計書の md。タスクのキーは前の版の model からタスク名で引き継ぎ、
-        処理別データフローの ID と要件ID(検証が照らす)は内部設計書・要件定義書の model から写す。"""
+        入力は要件定義書・内部設計書の md、前の版のタスクと上流の変わった行。タスクのキーは前の版の
+        model から引き継ぎ、処理別データフローの ID と要件ID(検証が照らす)は内部設計書・
+        要件定義書の model から写す。"""
         current = await self._documents.get_current(
             project_id=project.id, doc_type="implementation_plan"
         )
         previous = parse_implementation_plan_model(current.model if current else None)
         messages = build_implementation_plan_messages(
-            generated["requirements"], generated["internal_design"]
+            generated["requirements"], generated["internal_design"], previous, changed_upstream
         )
         output = await invoke_structured(llm, ImplementationPlanGenerationOutput, messages)
         model = build_implementation_plan_model(
@@ -522,6 +538,40 @@ def _render_transcript(history: list[ChatHistory]) -> str:
         if entry.sender != "others"
     ]
     return "\n".join(lines)
+
+
+def upstream_changes(
+    doc_type: str,
+    previous_models: Mapping[str, dict | None],
+    requirements: RequirementsModel | None,
+    external: ExternalDesignModel | None,
+    internal: InternalDesignModel | None,
+) -> list[str]:
+    """文書の上流(_DOC_TYPE_INPUTS)で、前の版から今回の生成で変わった行(後続の再生成を前の版の
+    差分にとどめる手がかり。app/documents/revision.py)。上流の前の版が無ければ空。"""
+    rows = {
+        "requirements": (
+            requirement_rows(parse_requirements_model(previous_models.get("requirements"))),
+            requirement_rows(requirements),
+        ),
+        "external_design": (
+            external_design_rows(
+                parse_external_design_model(previous_models.get("external_design"))
+            ),
+            external_design_rows(external),
+        ),
+        "internal_design": (
+            internal_design_rows(
+                parse_internal_design_model(previous_models.get("internal_design"))
+            ),
+            internal_design_rows(internal),
+        ),
+    }
+    return [
+        change
+        for upstream in _DOC_TYPE_INPUTS.get(doc_type, ())
+        for change in changed_rows(*rows[upstream])
+    ]
 
 
 def parse_requirements_model(raw: dict | None) -> RequirementsModel | None:

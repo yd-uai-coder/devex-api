@@ -7,11 +7,16 @@ docs/external_design.md 2.10節・docs/internal_design.md 3.3節「7. 変更影�
 
 1. 変わった要素の直接の参照元(1段)は、種類によらず示す。
 2. 改名(参照の文字列だけが変わる変更)は、1 だけで止める。
-3. 変更が届く処理(段階1)を決める。変わった要素が処理ならそれ自身、文書の要素(要件・画面・API)
-   なら、文書の要素だけを通って届く処理。テーブル・モジュールなら、それを使う CRUD・手順の処理。
-4. 届いた処理に属する要素(要約・CRUD・手順・作業単位)と、その先の処理ロジック・手順書を示す。
-   モジュールは処理に属するが、共有されるので示さず、その先へも広げない。
-5. 横断事項は処理を持たないので、横断事項の参照元(対象のモジュールを含む手順書)まで示す。
+3. テーブルの変更は処理まで上らない。テーブルを読み書きする要素(1)と、その手順を実装する処理
+   ロジック・手順書までを示す(処理のすべての要素を示すと、テーブルを使う処理の数だけ広がるため)。
+4. 変更が届く処理(段階1)を決める。変わった要素が処理ならそれ自身、文書の要素(要件・画面・API)
+   なら、文書の要素だけを通って届く処理。ただし画面は、変わった要素そのもののときだけ通る(要件が
+   共有の画面を通って、別の処理へ広がらないため)。モジュールなら、それを使う CRUD・手順の処理。
+5. 届いた処理に属する要素(要約・CRUD・手順・作業単位)と、その先の処理ロジック・手順書を示す。
+   モジュールは処理に属するが、共有されるので示さず、その先へも広げない。文書の要素の変更では、
+   CRUD と作業単位を示さない(テーブルの使い方と作業の分け方は文書の変更で変わらないため)。
+   要件・画面の変更では要約も示さない(要約は入出力の表で、直接変えるのは API の変更だけのため)。
+6. 横断事項は処理を持たないので、横断事項の参照元(対象のモジュールを含む手順書)まで示す。
 
 簡易ドキュメントモード(simple.py の要素)では、処理別データフロー(DF)を処理の代わりの軸にする。
 実装計画書のタスク(置き場0)も、要件を直接持つ(詳細設計モードで処理が要件を持つのに当たる)ので
@@ -22,7 +27,7 @@ docs/external_design.md 2.10節・docs/internal_design.md 3.3節「7. 変更影�
 """
 
 from collections import deque
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -44,6 +49,7 @@ EDGE_REASON: dict[EdgeKind, str] = {
     "implements": "この設計を手順書で実装する",
     "unit": "この作業単位の手順書",
     "covers": "この横断事項の対象のモジュールを含む",
+    "receives": "この API を受ける",
 }
 
 # テーブル・モジュールの変更が、それを使う処理に届くときの理由
@@ -53,6 +59,14 @@ USER_REASON = "変わった要素を使う処理"
 _TOWARD_FUNCTION: frozenset[ElementKind] = frozenset({"requirement", "screen", "api"})
 # 処理に属する要素の、さらに先で示す要素(手順を呼ぶ処理ロジック・作業単位の手順書)
 _FOLLOW_OWN: frozenset[ElementKind] = frozenset({"logic", "unit"})
+# テーブルの変更で、読み書きする要素の先にたどる辺(手順 → 処理ロジック・手順書)
+_IMPLEMENTED_BY: frozenset[EdgeKind] = frozenset({"called_by", "implements"})
+# 文書の要素の変更で、届いた処理に属していても示さない要素(作業単位は軸でないものだけ)
+_HIDDEN_OWN: dict[ElementKind, frozenset[ElementKind]] = {
+    "requirement": frozenset({"crud", "task", "summary"}),
+    "screen": frozenset({"crud", "task", "summary"}),
+    "api": frozenset({"crud", "task"}),
+}
 # 部分再生成できる段階(5 手順・6 処理ロジック・8 単位の手順書)
 REGENERATION_STAGES: frozenset[int] = frozenset({5, 6, 8})
 
@@ -111,24 +125,49 @@ def impact_of(elements: Sequence[Element], change: Change) -> list[ImpactItem]:
         add((change.key, b.src), EDGE_REASON[b.edge])
     if change.kind == "rename":
         return _sorted(found.values(), by_key)
+    changed_kind = kind_of(change.key)
+    if changed_kind == "table":
+        _add_implementers(change.key, direct, back, add)
+        return _sorted(found.values(), by_key)
 
     for b in direct:
         if kind_of(b.src) == "crosscutting":
             for u in back.get(b.src, []):
                 add((change.key, b.src, u.src), EDGE_REASON[u.edge])
 
+    hidden = _HIDDEN_OWN.get(changed_kind, frozenset()) if changed_kind else frozenset()
     functions = _reached_functions(change, direct, back, by_key)
     for fid, (path, reason) in functions.items():
         if fid != change.key:
             add(path, reason)
         for own in back.get(fid, []):
-            if kind_of(own.src) == "module":
+            element = by_key.get(own.src)
+            if element is None or element.kind == "module":
                 continue
-            add((*path, own.src), EDGE_REASON[own.edge])
+            if element.kind not in hidden or _is_axis(element):
+                add((*path, own.src), EDGE_REASON[own.edge])
             for nxt in back.get(own.src, []):
                 if kind_of(nxt.src) in _FOLLOW_OWN:
                     add((*path, own.src, nxt.src), EDGE_REASON[nxt.edge])
     return _sorted(found.values(), by_key)
+
+
+def _add_implementers(
+    table: str,
+    direct: list[_Back],
+    back: Mapping[str, list[_Back]],
+    add: Callable[[tuple[str, ...], str], None],
+) -> None:
+    """テーブルを読み書きする要素から、それを実装する処理ロジック・手順書へ(処理には上らない)。"""
+    queue: deque[tuple[str, ...]] = deque((table, b.src) for b in direct)
+    seen = {table, *(b.src for b in direct)}
+    while queue:
+        path = queue.popleft()
+        for b in back.get(path[-1], []):
+            if b.edge in _IMPLEMENTED_BY and b.src not in seen:
+                seen.add(b.src)
+                add((*path, b.src), EDGE_REASON[b.edge])
+                queue.append((*path, b.src))
 
 
 def _reached_functions(
@@ -151,7 +190,7 @@ def _reached_functions(
             if _is_axis(by_key.get(b.src)):
                 if b.src not in functions:
                     functions[b.src] = ((*path, b.src), EDGE_REASON[b.edge])
-            elif kind in _TOWARD_FUNCTION:
+            elif kind in _TOWARD_FUNCTION and kind != "screen":
                 queue.append((*path, b.src))
     for b in direct:
         user = by_key.get(b.src)

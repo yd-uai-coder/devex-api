@@ -102,11 +102,15 @@ def test_stage_2_to_4_elements_reference_functions_tables_and_dependencies():
         ("fn:F-01", "function"),
         ("table:reservations", "table"),
     }
+    # 入口のモジュールは、手順の最初の呼び出し先として、処理のトリガーの API を受ける
     assert _refs(elements[f"module:{ROUTE}"]) == {
         ("fn:F-01", "function"),
         ("fn:F-02", "function"),
         (f"module:{SERVICE}", "depends"),
+        ("api:POST /api/v1/reservations", "receives"),
+        ("api:GET /api/v1/reservations", "receives"),
     }
+    assert ("api:GET /api/v1/reservations", "receives") not in _refs(elements[f"module:{SERVICE}"])
 
 
 def test_procedure_references_callees_and_tables_from_db_column():

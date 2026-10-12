@@ -421,3 +421,42 @@ def test_validate_warns_unknown_crosscutting_requirement():
         ("UNKNOWN_REQUIREMENT_ID", "warning", "認証")
     ]
     assert unchecked == []
+
+
+def test_carry_over_unit_keys_by_overlap_and_similar_title():
+    """タスク名が言い換えられても、処理・要件の重なりが大きい順に引き継ぐ。重なりの無い基盤の
+    タスクはタスク名が似ていれば引き継ぐ。すでに前のキーを持つタスクはそのキーのまま。"""
+    previous = PlanModel(
+        milestones=[
+            Milestone(
+                name="a",
+                tasks=[
+                    PlanTask(key="U-001", kind="base", title="プロジェクト初期化と環境構築"),
+                    PlanTask(key="U-002", title="登録", function_ids=["F-01"], req_ids=["FR-001"]),
+                    PlanTask(key="U-003", title="一覧", function_ids=["F-02"], req_ids=["FR-002"]),
+                    PlanTask(key="U-004", title="削除", function_ids=["F-03"]),
+                ],
+            )
+        ],
+        next_unit_seq=5,
+    )
+    regenerated = PlanModel(
+        milestones=[
+            Milestone(
+                name="b",
+                tasks=[
+                    PlanTask(kind="base", title="プロジェクト初期構成と環境構築"),
+                    PlanTask(title="一覧の表示", function_ids=["F-02"], req_ids=["FR-002"]),
+                    PlanTask(
+                        title="登録と確認", function_ids=["F-01", "F-04"], req_ids=["FR-001"]
+                    ),
+                    PlanTask(key="U-004", title="取り消し", function_ids=["F-09"]),
+                    PlanTask(title="通知", function_ids=["F-05"]),
+                ],
+            )
+        ]
+    )
+    carried = carry_over_unit_keys(regenerated, previous)
+
+    assert _keys(carried) == ["U-001", "U-003", "U-002", "U-004", "U-005"]
+    assert carried.next_unit_seq == 6

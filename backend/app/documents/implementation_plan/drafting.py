@@ -2,9 +2,12 @@
 
 AI には要件定義書・内部設計書から、マイルストーンとタスク(実装手順書の作業単位)の行と本文の節を
 書かせる。タスクの ID は依存先を指すためだけに書かせ、保存する ID は並び順から導く
-(`assemble.build_model`)。
+(`assemble.build_model`)。再生成では、前の版のタスク(キー付き)と上流の文書の変わった行を見せ、
+同じタスクのキーを`prev_key`で指させ、変えないタスクを`unchanged`と答えさせる
+(`app.documents.revision`)。
 """
 
+from collections.abc import Sequence
 from typing import Literal
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
@@ -15,6 +18,13 @@ from app.documents.implementation_plan.assemble import (
     MilestoneDraft,
     RiskDraft,
     TaskDraft,
+)
+from app.documents.implementation_plan.model import ImplementationPlanModel
+from app.documents.revision import (
+    REVISION_RULE,
+    UNCHANGED_DESCRIPTION,
+    changed_rows_text,
+    rows_text,
 )
 
 _BODY_GUIDE = "Markdown。見出し(#)は書かない"
@@ -45,6 +55,15 @@ class GeneratedTask(BaseModel):
     )
     config_files: list[str] = Field(
         description="Dockerfile・docker-compose.yml のような環境・設定のファイル"
+    )
+    prev_key: str = Field(
+        default="",
+        description="【前の版のタスク】に同じタスクがあれば、その key(U-001 など)。"
+        "タスク名を言い直しただけのタスクも同じタスク。新しいタスクは空",
+    )
+    unchanged: bool = Field(
+        default=False,
+        description=f"{UNCHANGED_DESCRIPTION}。prev_key のタスクの中身(依存先を除く)を変えない",
     )
 
 
@@ -88,14 +107,25 @@ SYSTEM_PROMPT = (
     "Won't have の機能はタスクにしない\n"
     "- タスクの依存先は、前に書いたタスクだけを指す\n"
     "- モジュールは【内部設計書】のモジュール一覧のパスを使う\n"
-    "- 要件定義書・内部設計書に無い技術を創作しない"
+    "- 要件定義書・内部設計書に無い技術を創作しない\n"
+    "- 【前の版のタスク】に同じタスクがあれば、その key を prev_key に書く\n"
+    f"{REVISION_RULE}(【前の版】は【前の版のタスク】。【上流の変わった行】は要件定義書・"
+    "内部設計書の行)"
 )
 
 
 def build_implementation_plan_messages(
-    requirements_md: str, internal_design_md: str
+    requirements_md: str,
+    internal_design_md: str,
+    previous: ImplementationPlanModel | None = None,
+    changed_upstream: Sequence[str] = (),
 ) -> list[BaseMessage]:
-    human = f"## 要件定義書\n{requirements_md}\n\n## 内部設計書\n{internal_design_md}"
+    tasks = [t for m in previous.milestones for t in m.tasks] if previous else []
+    human = (
+        f"## 前の版のタスク\n{rows_text(tasks)}\n\n"
+        f"## 上流の変わった行\n{changed_rows_text(changed_upstream)}\n\n"
+        f"## 要件定義書\n{requirements_md}\n\n## 内部設計書\n{internal_design_md}"
+    )
     return [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=human)]
 
 
@@ -117,6 +147,8 @@ def to_draft(output: ImplementationPlanGenerationOutput) -> ImplementationPlanDr
                         tuple(t.depends_on),
                         tuple(t.modules),
                         tuple(t.config_files),
+                        t.prev_key,
+                        t.unchanged,
                     )
                     for t in m.tasks
                 ),

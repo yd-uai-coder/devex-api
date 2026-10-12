@@ -28,6 +28,7 @@ from app.detailed_design.impact.elements import (
     add_document_elements,
     parse_model,
     row_body,
+    task_body,
 )
 from app.detailed_design.plan import PlanModel, normalize_plan
 from app.detailed_design.procedure_doc import ProcedureDocModel, plan_units
@@ -128,7 +129,7 @@ def _tasks_and_units(
     units = plan_units(plan)
     for unit in units:
         label = f"{unit.unit_id} {unit.task.title}"
-        key = b.add(f"task:{unit.key}", "task", DOCUMENT_STAGE, label, row_body(unit.task, "key"))
+        key = b.add(f"task:{unit.key}", "task", DOCUMENT_STAGE, label, task_body(unit, units))
         for df in unit.task.function_ids:
             b.ref(key, f"df:{df.strip()}", "function")
         for req in unit.task.req_ids:

@@ -2,7 +2,8 @@
 
 AI には会話と観点の表から、要件の中身・出どころ・根拠の観点を書かせる。ID は書かせず、前の版の
 同じ要件の ID を`prev_id`で指させるだけにする(`assemble.assign_ids`が決める)。出どころは
-観点の表の状態を上限に、`assemble.cap_source`が直す。
+観点の表の状態を上限に、`assemble.cap_source`が直す。再生成では、変えない要件を`unchanged`と
+答えさせ、前の版の行をそのまま使う(`app.documents.revision`)。
 """
 
 from collections.abc import Mapping
@@ -17,6 +18,7 @@ from app.documents.requirements.assemble import (
     UserSceneDraft,
 )
 from app.documents.requirements.model import RequirementsModel
+from app.documents.revision import NONE_TEXT, REVISION_RULE, UNCHANGED_DESCRIPTION
 from app.hearing import POINT_DEFS, SCALE_LABEL, STATUS_LABEL, PointState, Scale
 
 _SOURCE_DESCRIPTION = (
@@ -47,6 +49,7 @@ class GeneratedRequirement(BaseModel):
     text: str = Field(description="要件を1〜2文で。利用者の言葉と決めたことをそのまま使う")
     source: Literal["user", "adopted", "assumed"] = Field(description=_SOURCE_DESCRIPTION)
     points: list[str] = Field(description="根拠の観点のキー(【観点の表】の key。1つ以上)")
+    unchanged: bool = Field(default=False, description=UNCHANGED_DESCRIPTION)
 
 
 class GeneratedUserScene(BaseModel):
@@ -89,7 +92,8 @@ SYSTEM_PROMPT = (
     "- セキュリティの観点で、ログインが要る・本人以外に見せないと決めたなら、認証(登録・"
     "ログイン)の機能要件を Must で書く。方法を利用者が言っていなければ、その要件は assumed\n"
     "- 要件ID は書かない(システムが振る)。【前の版の要件】に同じ要件があれば、"
-    "その ID を prev_id に書く。中身を言い直しただけの要件も同じ要件として扱う"
+    "その ID を prev_id に書く。中身を言い直しただけの要件も同じ要件として扱う\n"
+    f"{REVISION_RULE}(【前の版】は【前の版の要件】)"
 )
 
 
@@ -107,7 +111,7 @@ def points_table(states: Mapping[str, PointState], scale: Scale | None) -> str:
 def previous_rows_text(previous: RequirementsModel | None) -> str:
     """前の版の要件(ID の引き継ぎに使う)。無ければ「なし」。"""
     if previous is None or not previous.rows:
-        return "なし"
+        return NONE_TEXT
     return "\n".join(f"{r.id}|{r.text}" for r in previous.rows)
 
 
@@ -144,5 +148,6 @@ def _requirement_draft(r: GeneratedRequirement) -> RequirementDraft:
         priority=r.priority,
         category=r.category,
         prev_id=r.prev_id,
+        unchanged=r.unchanged,
     )
 

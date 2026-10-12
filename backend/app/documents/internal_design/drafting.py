@@ -2,8 +2,11 @@
 
 AI には要件定義書・外部設計書から、テーブル・API・モジュール・処理別データフローの行と本文の節を
 書かせる。処理別データフローの ID は書かせない(`assemble.build_model`が前の版から引き継ぐ)。
+再生成では、前の版の行と上流の文書の変わった行を見せ、変えない行を`unchanged`と答えさせる
+(`app.documents.revision`)。
 """
 
+from collections.abc import Sequence
 from typing import Literal
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
@@ -18,6 +21,13 @@ from app.documents.internal_design.assemble import (
     InternalDesignDraft,
     ModuleDraft,
     TableDraft,
+)
+from app.documents.internal_design.model import InternalDesignModel
+from app.documents.revision import (
+    REVISION_RULE,
+    UNCHANGED_DESCRIPTION,
+    changed_rows_text,
+    rows_text,
 )
 
 _BODY_GUIDE = "Markdown。見出し(#)は書かない。構造はコードブロックのテキスト図で示してよい"
@@ -34,12 +44,19 @@ class GeneratedTable(BaseModel):
     name: str = Field(description="テーブル名(英字の識別子)")
     description: str = Field(default="", description="テーブルの役割(1文)")
     columns: list[GeneratedColumn] = Field(description="全カラム")
+    unchanged: bool = Field(
+        default=False, description=f"{UNCHANGED_DESCRIPTION}。前の版の同じ名前のテーブルを指す"
+    )
 
 
 class GeneratedInternalApi(BaseModel):
     method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
     path: str = Field(description="【外部設計書】2.6 の API と同じパス")
     summary: str = Field(description="内部の担当(ルート・サービス)の観点の概要")
+    unchanged: bool = Field(
+        default=False,
+        description=f"{UNCHANGED_DESCRIPTION}。前の版の同じメソッド・パスの API を指す",
+    )
 
 
 class GeneratedModule(BaseModel):
@@ -48,6 +65,9 @@ class GeneratedModule(BaseModel):
     responsibility: str = Field(description="責務(1文)")
     depends_on: list[str] = Field(
         description="主な依存先(一覧の他のモジュールのパス、または外部のライブラリ名)"
+    )
+    unchanged: bool = Field(
+        default=False, description=f"{UNCHANGED_DESCRIPTION}。前の版の同じパスのモジュールを指す"
     )
 
 
@@ -73,6 +93,10 @@ class GeneratedDataFlow(BaseModel):
     )
     flows: list[GeneratedFlow] = Field(description="データの流れ(元 → 先の順)")
     data_items: list[GeneratedDataItem] = Field(description="この処理に登場するデータ項目")
+    unchanged: bool = Field(
+        default=False,
+        description=f"{UNCHANGED_DESCRIPTION}。前の版の同じトリガーの処理別データフローを指す",
+    )
 
 
 class InternalDesignGenerationOutput(BaseModel):
@@ -115,14 +139,27 @@ SYSTEM_PROMPT = (
     "データストア(テーブル名)のいずれかにする\n"
     "- テーブルは全カラムを書く\n"
     "- 要件定義書に無い技術・外部サービスを創作しない\n"
-    "- 一覧性の高い情報は行に、説明は本文の節に書く。本文に見出し(#)は書かない"
+    "- 一覧性の高い情報は行に、説明は本文の節に書く。本文に見出し(#)は書かない\n"
+    f"{REVISION_RULE}(【前の版】は【前の版のテーブル】【前の版の API】【前の版のモジュール】"
+    "【前の版の処理別データフロー】。【上流の変わった行】は要件定義書・外部設計書の行)"
 )
 
 
 def build_internal_design_messages(
-    requirements_md: str, external_design_md: str
+    requirements_md: str,
+    external_design_md: str,
+    previous: InternalDesignModel | None = None,
+    changed_upstream: Sequence[str] = (),
 ) -> list[BaseMessage]:
-    human = f"## 要件定義書\n{requirements_md}\n\n## 外部設計書\n{external_design_md}"
+    prev = previous or InternalDesignModel()
+    human = (
+        f"## 前の版のテーブル\n{rows_text(prev.tables)}\n\n"
+        f"## 前の版の API\n{rows_text(prev.apis)}\n\n"
+        f"## 前の版のモジュール\n{rows_text(prev.modules)}\n\n"
+        f"## 前の版の処理別データフロー\n{rows_text(prev.dataflows)}\n\n"
+        f"## 上流の変わった行\n{changed_rows_text(changed_upstream)}\n\n"
+        f"## 要件定義書\n{requirements_md}\n\n## 外部設計書\n{external_design_md}"
+    )
     return [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=human)]
 
 
@@ -137,13 +174,16 @@ def to_draft(output: InternalDesignGenerationOutput) -> InternalDesignDraft:
                 tuple(
                     ColumnDraft(c.name, c.type, c.constraints, c.description) for c in t.columns
                 ),
+                t.unchanged,
             )
             for t in output.tables
         ),
         module_policy=output.module_policy,
-        apis=tuple(InternalApiDraft(a.method, a.path, a.summary) for a in output.apis),
+        apis=tuple(
+            InternalApiDraft(a.method, a.path, a.summary, a.unchanged) for a in output.apis
+        ),
         modules=tuple(
-            ModuleDraft(m.path, m.layer, m.responsibility, tuple(m.depends_on))
+            ModuleDraft(m.path, m.layer, m.responsibility, tuple(m.depends_on), m.unchanged)
             for m in output.modules
         ),
         dataflows=tuple(
@@ -151,6 +191,7 @@ def to_draft(output: InternalDesignGenerationOutput) -> InternalDesignDraft:
                 d.trigger,
                 tuple(FlowDraft(f.source, f.data, f.transform, f.target) for f in d.flows),
                 tuple(DataItemDraft(i.name, tuple(i.fields)) for i in d.data_items),
+                d.unchanged,
             )
             for d in output.dataflows
         ),
