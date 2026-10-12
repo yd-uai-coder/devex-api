@@ -40,9 +40,12 @@ from app.detailed_design.impact import (
     DOCUMENT_STAGE,
     REGENERATION_STAGES,
     DesignModels,
+    Element,
+    SimpleModels,
     StageImpact,
     blocking_marks,
     build_elements,
+    build_simple_elements,
     diff_elements,
     doc_source,
     group_by_stage,
@@ -60,7 +63,7 @@ from app.detailed_design.procedure_output import (
 )
 from app.detailed_design.sequence import to_sequence
 from app.detailed_design.sequence_svg import to_sequence_svg
-from app.detailed_design.stages import STAGE_INPUTS, StageInputs, stage_inputs
+from app.detailed_design.stages import StageInputs, stage_inputs
 from app.detailed_design.validation import (
     ComponentDiagramSummary,
     DfdDiagramSummary,
@@ -111,8 +114,11 @@ logger = structlog.get_logger(__name__)
 # 人が保存した段階の状態('draft'はAIの下書きだけが作る。UML図のSTATUS_AFTER_EDITと同じ考え方)
 STATUS_AFTER_EDIT = "reviewing"
 
-# 変更の影響を求める文書(model を持つ文書。詳細設計モードの段階の入力)
-IMPACT_DOCUMENTS: tuple[str, ...] = ("requirements", "external_design")
+# 変更の影響を求める文書(model を持つ文書。モードの段階の入力)。簡易モードは4文書とも model を持つ
+IMPACT_DOCUMENTS: dict[str, tuple[str, ...]] = {
+    "detailed": ("requirements", "external_design"),
+    "simple": ("requirements", "external_design", "internal_design", "implementation_plan"),
+}
 # 段階3の写しに添える ER のテーブル定義の欄(ER は段階の model の外の図にあるため、承認したときの
 # 定義を写しに残し、テーブルの内容(列の追加など)の差分を取れるようにする)
 ER_SNAPSHOT_KEY = "er_snapshot"
@@ -285,22 +291,36 @@ class DesignStageService:
         after_model: dict | None,
     ) -> None:
         """文書の表示中の版が切り替わったとき(再生成・復元)、前に表示していた版の model と比べて、
-        変更の影響を段階に印として記録する。詳細設計モードで、model を持つ文書だけ。どちらかの版に
-        model が無ければ比べない。呼び出し元の版の切り替えと同じトランザクションで使うため、
-        commitしない。"""
-        if project.mode != "detailed" or doc_type not in IMPACT_DOCUMENTS:
+        変更の影響を段階に印として記録する。model を持つ文書だけ(簡易モードは4文書、詳細設計モードは
+        要件定義書・外部設計書)。どちらかの版に model が無ければ比べない。呼び出し元の版の切り替えと
+        同じトランザクションで使うため、commitしない。"""
+        if doc_type not in IMPACT_DOCUMENTS.get(project.mode, ()):
             return
         if not before_model or not after_model:
             return
         rows = {row.stage: row for row in await self._stages.list_for_project(project.id)}
         if all(row.approved_version is None for row in rows.values()):
             return
-        documents = await self._current_documents(project.id, STAGE_INPUTS)
+        inputs = stage_inputs(project.mode)
+        documents = await self._current_documents(project.id, inputs)
         docs = _document_models(documents)
         stages = {stage: row.model for stage, row in rows.items()}
-        er_tables = await self._er_tables(project.id)
-        before = DesignModels.from_dicts(stages, {**docs, doc_type: before_model}, er_tables)
-        after = DesignModels.from_dicts(stages, {**docs, doc_type: after_model}, er_tables)
+        if project.mode == "simple":
+            # 簡易モードは段階8だけを持ち、単位の手順書が4文書を直接参照する
+            before = build_simple_elements(
+                SimpleModels.from_dicts(stages.get(8), {**docs, doc_type: before_model})
+            )
+            after = build_simple_elements(
+                SimpleModels.from_dicts(stages.get(8), {**docs, doc_type: after_model})
+            )
+        else:
+            er_tables = await self._er_tables(project.id)
+            before = build_elements(
+                DesignModels.from_dicts(stages, {**docs, doc_type: before_model}, er_tables)
+            )
+            after = build_elements(
+                DesignModels.from_dicts(stages, {**docs, doc_type: after_model}, er_tables)
+            )
         _record_impact(rows, doc_source(doc_type), before, after, stages=(DOCUMENT_STAGE,))
 
     async def review_marks(
@@ -357,12 +377,14 @@ class DesignStageService:
         stages = {s: row.model for s, row in rows.items()}
         docs = _document_models(documents)
         er = await self._er_tables(project.id)
-        after = DesignModels.from_dicts(stages, docs, er)
+        after = build_elements(DesignModels.from_dicts(stages, docs, er))
         pending: dict[int, list[StageImpact]] = {}
         for stage in edited:
             snapshot = rows[stage].approved_model or {}
-            before = DesignModels.from_dicts(
-                {**stages, stage: snapshot}, docs, _snapshot_er(stage, snapshot, er)
+            before = build_elements(
+                DesignModels.from_dicts(
+                    {**stages, stage: snapshot}, docs, _snapshot_er(stage, snapshot, er)
+                )
             )
             found = _impact_by_stage(stage_source(stage), before, after, stages=(stage,))
             for target, impact in found.items():
@@ -578,10 +600,12 @@ def _record_stage_change(
     """段階の承認時の写しと今の内容の差分から、変更の影響を印として記録する。"""
     stages = {s: row.model for s, row in rows.items()}
     docs = _document_models(documents)
-    before = DesignModels.from_dicts(
-        {**stages, stage: snapshot}, docs, _snapshot_er(stage, snapshot, er)
+    before = build_elements(
+        DesignModels.from_dicts(
+            {**stages, stage: snapshot}, docs, _snapshot_er(stage, snapshot, er)
+        )
     )
-    after = DesignModels.from_dicts(stages, docs, er)
+    after = build_elements(DesignModels.from_dicts(stages, docs, er))
     _record_impact(rows, stage_source(stage), before, after, stages=(stage,))
 
 
@@ -594,11 +618,13 @@ def _snapshot_er(stage: int, snapshot: dict, er: dict[str, dict]) -> dict[str, d
 
 
 def _impact_by_stage(
-    source: str, before: DesignModels, after: DesignModels, *, stages: tuple[int, ...]
+    source: str,
+    before_elements: list[Element],
+    after_elements: list[Element],
+    *,
+    stages: tuple[int, ...],
 ) -> dict[int, StageImpact]:
-    """前と後の差分(置き場`stages`の要素)から印を求め、届く段階ごとの記録にする。"""
-    before_elements = build_elements(before)
-    after_elements = build_elements(after)
+    """前と後の要素の差分(置き場`stages`の要素)から印を求め、届く段階ごとの記録にする。"""
     changes = diff_elements(before_elements, after_elements, stages=stages)
     if not changes:
         return {}
@@ -617,8 +643,8 @@ def _records_impact(row: DesignStage | None) -> bool:
 def _record_impact(
     rows: dict[int, DesignStage],
     source: str,
-    before: DesignModels,
-    after: DesignModels,
+    before: list[Element],
+    after: list[Element],
     *,
     stages: tuple[int, ...],
 ) -> None:

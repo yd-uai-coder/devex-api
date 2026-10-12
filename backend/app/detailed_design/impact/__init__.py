@@ -1,6 +1,7 @@
 """変更影響分析(ステージ7)の純粋関数。
 
 - elements: 設計の要素と参照の導出(文書の model と段階1〜8 の model から)
+- simple: 簡易ドキュメントモードの要素と参照の導出(4文書の model と段階8の model から)
 - trace: 変更の影響のたどり方(処理を軸)と理由・再生成の候補
 - diff: 変わったもの(承認時の写しと今の model の、要素の単位の差分)
 - marks: 見直しの印と「確認済み」(段階に記録する形・承認を止める印)
@@ -35,6 +36,7 @@ from app.detailed_design.impact.marks import (
     set_reviewed,
     stage_source,
 )
+from app.detailed_design.impact.simple import SimpleModels, build_simple_elements
 from app.detailed_design.impact.trace import (
     EDGE_REASON,
     REGENERATION_STAGES,
@@ -63,9 +65,11 @@ __all__ = [
     "Mark",
     "RecordedChange",
     "Ref",
+    "SimpleModels",
     "StageImpact",
     "blocking_marks",
     "build_elements",
+    "build_simple_elements",
     "diff_elements",
     "doc_source",
     "group_by_stage",

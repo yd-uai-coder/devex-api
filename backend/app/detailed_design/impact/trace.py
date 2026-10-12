@@ -13,6 +13,10 @@ docs/external_design.md 2.10節・docs/internal_design.md 3.3節「7. 変更影�
    モジュールは処理に属するが、共有されるので示さず、その先へも広げない。
 5. 横断事項は処理を持たないので、横断事項の参照元(対象のモジュールを含む手順書)まで示す。
 
+簡易ドキュメントモード(simple.py の要素)では、処理別データフロー(DF)を処理の代わりの軸にする。
+実装計画書のタスク(置き場0)も、要件を直接持つ(詳細設計モードで処理が要件を持つのに当たる)ので
+軸に含める。軸に届けば、そのタスク・単位の手順書を示す。WBS の依存とモジュールの共有からは広げない。
+
 理由は、たどった最後の辺の種類からコードが文にする(LLM は使わない)。同じ要素に複数の道があれば、
 短い道を残す。
 """
@@ -22,7 +26,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from app.detailed_design.impact.elements import EdgeKind, Element, ElementKind
+from app.detailed_design.impact.elements import DOCUMENT_STAGE, EdgeKind, Element, ElementKind
 
 # 変更の種類。content = 内容の変更、rename = 改名(参照の文字列だけが変わる)
 ChangeKind = Literal["content", "rename"]
@@ -135,7 +139,7 @@ def _reached_functions(
 ) -> dict[str, tuple[tuple[str, ...], str]]:
     """変更が届く処理(処理のキー → 道と理由)。文書の要素だけを通る幅優先で、短い道から見つける。"""
     functions: dict[str, tuple[tuple[str, ...], str]] = {}
-    if _kind(by_key, change.key) == "function":
+    if _is_axis(by_key.get(change.key)):
         functions[change.key] = ((change.key,), "")
     queue: deque[tuple[str, ...]] = deque([(change.key,)])
     while queue:
@@ -144,8 +148,9 @@ def _reached_functions(
             if b.src in path:
                 continue
             kind = _kind(by_key, b.src)
-            if kind == "function" and b.src not in functions:
-                functions[b.src] = ((*path, b.src), EDGE_REASON[b.edge])
+            if _is_axis(by_key.get(b.src)):
+                if b.src not in functions:
+                    functions[b.src] = ((*path, b.src), EDGE_REASON[b.edge])
             elif kind in _TOWARD_FUNCTION:
                 queue.append((*path, b.src))
     for b in direct:
@@ -156,6 +161,15 @@ def _reached_functions(
             if ref.edge == "function" and ref.to not in functions:
                 functions[ref.to] = ((change.key, b.src, ref.to), USER_REASON)
     return functions
+
+
+def _is_axis(element: Element | None) -> bool:
+    """たどり方の軸か。処理(段階1)・簡易モードの処理別データフローと、文書のタスク(簡易モード)。"""
+    if element is None:
+        return False
+    if element.kind in ("function", "dataflow"):
+        return True
+    return element.kind == "task" and element.stage == DOCUMENT_STAGE
 
 
 def _kind(by_key: Mapping[str, Element], key: str) -> ElementKind | None:

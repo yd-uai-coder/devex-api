@@ -13,6 +13,12 @@
 
 `create_impact_project`は、この設計で段階1〜8 をすべて承認済み(写しあり)にしたプロジェクトを
 DB に作る(印の記録のテスト用。承認の検証を通さず、行を直接作る)。
+
+簡易ドキュメントモードの設計(`simple_impact_documents`・`simple_impact_stage8`)は、同じ要件・
+外部設計書に、内部設計書(テーブル reservations・users、層ごとのモジュール一覧、DF-1 = POST・
+DF-2 = GET)と実装計画書(U-001 基盤、U-002 登録 = DF-1・FR-001、U-003 一覧 = DF-2・FR-002、
+U-003 は U-002 に依存し、サービスの層を持たない)を足し、段階8は3単位すべての手順書を持つ。
+`create_simple_impact_project`は、それを段階8承認済みにしたプロジェクトを作る。
 """
 
 import uuid
@@ -212,5 +218,131 @@ async def create_impact_project(session: AsyncSession) -> Project:
                 approved_model=model,
             )
         )
+    await session.commit()
+    return project
+
+
+# 簡易モードの内部設計書のモジュール一覧の行(層ごとにまとめた行)
+SIMPLE_ROUTES = "app/api/routes/*.py"
+SIMPLE_SERVICES = "app/services/*.py"
+SIMPLE_REPOSITORIES = "app/repositories/*.py"
+
+
+def simple_impact_documents() -> dict[str, dict]:
+    """簡易モードの4文書の model(保存された形の dict)。"""
+
+    def module(path: str, layer: str) -> dict:
+        return {"path": path, "layer": layer, "responsibility": layer}
+
+    def task(key: str, kind: str, title: str, dfs: list[str], reqs: list[str], **extra) -> dict:
+        return {
+            "key": key,
+            "kind": kind,
+            "title": title,
+            "function_ids": dfs,
+            "req_ids": reqs,
+            **extra,
+        }
+
+    documents = impact_documents()
+    documents["internal_design"] = {
+        "tables": [
+            {"name": "reservations", "columns": [{"name": "id", "type": "UUID"}]},
+            {"name": "users", "columns": [{"name": "id", "type": "UUID"}]},
+        ],
+        "modules": [
+            module(SIMPLE_ROUTES, "api"),
+            module(SIMPLE_SERVICES, "service"),
+            module(SIMPLE_REPOSITORIES, "repository"),
+        ],
+        "dataflows": [
+            {
+                "id": "DF-1",
+                "trigger": "POST /api/v1/reservations",
+                "flows": [
+                    {"source": "利用者", "data": "予約", "target": "`reservations` テーブル"},
+                    {"source": "`users` テーブル", "data": "利用者", "target": "サービス"},
+                ],
+            },
+            {
+                "id": "DF-2",
+                "trigger": "GET /api/v1/reservations",
+                "flows": [
+                    {"source": "`reservations` テーブル", "data": "予約", "target": "利用者"}
+                ],
+            },
+        ],
+        "next_dataflow_seq": 3,
+    }
+    documents["implementation_plan"] = {
+        "milestones": [
+            {"name": "基盤", "tasks": [task("U-001", "base", "土台を作る", [], [])]},
+            {
+                "name": "予約",
+                "tasks": [
+                    task(
+                        "U-002",
+                        "feature",
+                        "予約を登録する",
+                        ["DF-1"],
+                        ["FR-001"],
+                        modules=[ROUTE, SERVICE, REPOSITORY],
+                        depends_on=["M-01-T01"],
+                    ),
+                    task(
+                        "U-003",
+                        "feature",
+                        "予約の一覧を見る",
+                        ["DF-2"],
+                        ["FR-002"],
+                        modules=[ROUTE, REPOSITORY],
+                        depends_on=["M-02-T01"],
+                    ),
+                ],
+            },
+        ],
+        "next_unit_seq": 4,
+    }
+    return documents
+
+
+def simple_impact_stage8() -> dict:
+    """簡易モードの段階8の model(3単位すべての手順書)。"""
+    return {
+        "units": [
+            {"unit_id": "M-01-T01", "unit_key": "U-001", "title": "土台を作る"},
+            {"unit_id": "M-02-T01", "unit_key": "U-002", "title": "予約を登録する"},
+            {"unit_id": "M-02-T02", "unit_key": "U-003", "title": "予約の一覧を見る"},
+        ]
+    }
+
+
+async def create_simple_impact_project(
+    session: AsyncSession, *, approved: bool = True
+) -> Project:
+    """簡易モードのプロジェクトに、4文書(1版ずつ)と段階8(`approved`なら承認済み)を作る。"""
+    user = User(email=f"impact-{uuid.uuid4()}@example.com", hashed_password="x")
+    session.add(user)
+    await session.flush()
+    project = Project(user_id=user.id, title="p", mode="simple", status="completed")
+    session.add(project)
+    await session.flush()
+    documents = GeneratedDocumentRepository(session)
+    for doc_type, model in simple_impact_documents().items():
+        await documents.create_version(
+            project_id=project.id, doc_type=doc_type, content=f"# {doc_type}", model=model
+        )
+    model = simple_impact_stage8()
+    session.add(
+        DesignStage(
+            project_id=project.id,
+            stage=8,
+            status="approved" if approved else "reviewing",
+            model=model,
+            version=1,
+            approved_version=1 if approved else None,
+            approved_model=model if approved else None,
+        )
+    )
     await session.commit()
     return project

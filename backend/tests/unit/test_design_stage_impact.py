@@ -16,7 +16,13 @@ import copy
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
-from tests.fixtures.change_impact import create_impact_project, impact_documents, impact_stages
+from tests.fixtures.change_impact import (
+    create_impact_project,
+    create_simple_impact_project,
+    impact_documents,
+    impact_stages,
+    simple_impact_documents,
+)
 from tests.fixtures.detailed_design import create_stage4_project, crud_model, er_model
 from tests.fixtures.external_design import upstream_outputs
 from tests.fixtures.fake_llm import FakeLLM
@@ -27,7 +33,7 @@ from app.api.routes.design_stages import (
     list_design_stages,
     review_impact_marks,
 )
-from app.detailed_design.impact import Mark, StageImpact
+from app.detailed_design.impact import Mark, StageImpact, blocking_marks
 from app.models.design_stage import DesignStage
 from app.models.project import Project
 from app.repositories.design_stage import DesignStageRepository
@@ -203,7 +209,7 @@ async def test_generating_documents_records_marks_for_detailed_project(
     assert "doc:requirements" in {s for m in stage1.marks for s in m.sources}
 
 
-async def test_document_change_is_ignored_for_simple_project_or_missing_model(
+async def test_document_change_is_ignored_for_missing_model_or_other_documents(
     db_session: AsyncSession,
 ) -> None:
     project = await create_impact_project(db_session)
@@ -211,10 +217,102 @@ async def test_document_change_is_ignored_for_simple_project_or_missing_model(
     before = impact_documents()["requirements"]
 
     await service.record_document_change(project, "requirements", None, before)
-    project.mode = "simple"
-    await service.record_document_change(project, "requirements", before, {"rows": []})
+    # 詳細設計モードの内部設計書・実装計画書は段階の入力でないので比べない
+    await service.record_document_change(project, "internal_design", {"x": 1}, {"x": 2})
 
     assert await _impacts(db_session, project, range(1, 9)) == [None] * 8
+
+
+# --- 簡易ドキュメントモード(4文書の版の差分 → 段階8の単位の手順書) ---
+
+
+async def _restore_changed_internal_design(session: AsyncSession, project: Project) -> None:
+    """内部設計書の DF-1 のトリガーを変えた版2と、元に戻した版3を作り、表示中を版3から版2へ
+    切り替える(前の版の DF-1 が消え、DF-3 が増える)。"""
+    original = simple_impact_documents()["internal_design"]
+    changed = copy.deepcopy(original)
+    flow = changed["dataflows"][0]
+    flow["id"], flow["trigger"] = "DF-3", "PUT /api/v1/reservations"
+    documents = GeneratedDocumentRepository(session)
+    for content, model in (("# 改訂", changed), ("# 戻す", original)):
+        await documents.create_version(
+            project_id=project.id, doc_type="internal_design", content=content, model=model
+        )
+    await session.commit()
+    await DocGeneratorService(session).restore_version(project.id, "internal_design", 2)
+
+
+async def test_simple_document_change_marks_units_of_reached_dataflow(
+    db_session: AsyncSession,
+) -> None:
+    project = await create_simple_impact_project(db_session)
+
+    await _restore_changed_internal_design(db_session, project)
+
+    stage8 = await _impact(db_session, project, 8)
+    assert [(m.key, m.sources) for m in stage8.marks] == [
+        ("unit:U-002", ("doc:internal_design",))
+    ]
+    assert [(c.change.key, c.change.change) for c in stage8.changes] == [("df:DF-1", "removed")]
+
+
+async def test_simple_requirement_change_marks_units_through_tasks(
+    db_session: AsyncSession,
+) -> None:
+    project = await create_simple_impact_project(db_session)
+    service = DesignStageService(db_session)
+    before = simple_impact_documents()["requirements"]
+    after = copy.deepcopy(before)
+    after["rows"][1]["text"] = "予約の一覧を日付で絞り込める"
+
+    await service.record_document_change(project, "requirements", before, after)
+
+    stage8 = await _impact(db_session, project, 8)
+    assert "unit:U-003" in {m.key for m in stage8.marks}
+    assert "unit:U-001" not in {m.key for m in stage8.marks}
+
+
+async def test_simple_document_change_is_not_recorded_before_first_approval(
+    db_session: AsyncSession,
+) -> None:
+    project = await create_simple_impact_project(db_session, approved=False)
+
+    await _restore_changed_internal_design(db_session, project)
+
+    assert (await _row(db_session, project, 8)).impact is None
+
+
+async def test_simple_unreviewed_marks_block_stage8_approval(db_session: AsyncSession) -> None:
+    project = await create_simple_impact_project(db_session)
+    await _restore_changed_internal_design(db_session, project)
+    service = DesignStageService(db_session)
+    row8 = await _row(db_session, project, 8)
+    version = row8.version
+    await service.save(project, stage=8, expected_version=version, model=row8.model or {})
+
+    with pytest.raises(DesignStageUnreviewedImpactError):
+        await service.approve(project, stage=8, expected_version=version + 1)
+
+    await service.review_marks(project, stage=8, keys=["unit:U-002"], reviewed=True)
+    assert blocking_marks(await _impact(db_session, project, 8), 8) == []
+
+
+async def test_simple_routes_return_stage8_marks_and_regeneration_targets(
+    db_session: AsyncSession,
+) -> None:
+    project = await create_simple_impact_project(db_session)
+    await _restore_changed_internal_design(db_session, project)
+
+    impact = await get_design_impact(db_session, project)
+    stages = await list_design_stages(db_session, project)
+
+    assert [item.stage for item in impact.stages] == [8]
+    assert [(m.key, m.label, m.pending) for m in impact.stages[0].marks] == [
+        ("unit:U-002", "M-02-T01 の手順書", False)
+    ]
+    assert impact.stages[0].changes[0].source == "doc:internal_design"
+    assert [t.key for t in impact.regeneration_targets] == ["unit:U-002"]
+    assert (stages[0].impact_open, stages[0].impact_reviewed) == (1, 0)
 
 
 # --- 確認済みと承認し直し ---

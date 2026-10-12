@@ -355,7 +355,7 @@ class DocGeneratorService:
     ) -> GeneratedDocument:
         """指定バージョンを表示中(is_current)に切り替える。バージョン番号は増やさず、新しい行も
         作らない(既存版の内容も書き換えない)。指定バージョンが存在しなければDocumentNotFoundError。
-        詳細設計モードでは、切り替える前に表示していた版と比べて、変更の影響を段階に記録する。"""
+        切り替える前に表示していた版と比べて、変更の影響を段階に記録する(model を持つ文書)。"""
         previous = await self._documents.get_current(project_id=project_id, doc_type=doc_type)
         previous_model = previous.model if previous is not None else None
         restored = await self._documents.set_current(

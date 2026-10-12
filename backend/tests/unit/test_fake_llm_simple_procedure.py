@@ -2,11 +2,12 @@
 
 ブラウザの E2E(devex-ui の `e2e/devex-flow.spec.ts`)と同じく、偽LLM の4文書から段階8を開き、
 実装計画書の WBS の全単位の手順書を生成する。E2E は生成までで、このテストは続けて承認と実装手順書の
-zip まで通す。偽LLM の出力が本物の解析(WBS・内部設計書)と検証を通ることを、ブラウザを使わずに
-固定する。
+zip まで通し、同じ出力の文書の切り替えで変更の影響の印が付かないことも確かめる。偽LLM の出力が
+本物の解析(WBS・内部設計書)と検証を通ることを、ブラウザを使わずに固定する。
 
 SUT: E2eFakeLLM の4文書と段階8の構造化出力(app/ai/llm/fake.py)と、それを受ける生成・検証・承認・
-     出力の経路(DesignStageGenerationService・DesignStageService・DetailedDesignExportService)
+     出力・変更の影響の経路(DesignStageGenerationService・DesignStageService・
+     DetailedDesignExportService)
 ドライバ: テスト関数(画面の操作と同じ順に、サービスのメソッドを呼ぶ)
 スタブ: なし ── 偽LLM は検証される側(出力の出どころ)。DB はインメモリ SQLite(`db_session`)。
 """
@@ -76,3 +77,9 @@ async def test_e2e_fake_outputs_pass_simple_stage8_and_bundle(db_session: AsyncS
     bundle = await DetailedDesignExportService(db_session).bundle_procedure(project)
     names = zipfile.ZipFile(io.BytesIO(bundle.content)).namelist()
     assert {"index.md", "implementation_procedure.html", "ai/M-01-T02.md"} <= set(names)
+
+    # 同じ出力で文書を作り直しても(版の model が同じ)、単位の手順書に変更の影響の印は付かない
+    for doc_type, (_, model) in documents.items():
+        await stages.record_document_change(project, doc_type, model, model)
+    impact = await stages.impact(project)
+    assert [(item.stage, item.marks) for item in impact.stages] == [(8, [])]
