@@ -422,7 +422,8 @@ def validate_data_model(model: Mapping[str, Any], sources: StageSources) -> list
     セルの処理IDが機能一覧に無い / セルのテーブルが ER に無い / セルの重複 /
     操作が空・C,R,U,D の順の形でない /
     DFD に読みの線があるのに R が無い / DFD に書き込みの線があるのに C/U/D が無い。
-    警告: 下書きのままのセルがある / DFD のデータストアが ER に無い /
+    警告: 下書きのままのセルがある / DFD の書き込みの線から操作を推定したセル /
+    DFD のデータストアが ER に無い /
     どの処理も触れないテーブル / 主キーの無いテーブル。
     """
     try:
@@ -492,7 +493,8 @@ def validate_data_model(model: Mapping[str, Any], sources: StageSources) -> list
         if access.kind == "write" and not set(ops) & {"C", "U", "D"}:
             message = (
                 f"DFD では {target} の書き込みの線がありますが、CRUD 図に C/U/D がありません"
-                "(C・U・D のどれかを決めてください)。"
+                "(C・U・D のどれかを決めてください。読むだけの処理なら、段階2の DFD の線の向きを"
+                "直してください)。"
             )
             issues.append(_error("DFD_WRITE_MISSING", message, target))
     for (function_id, table), ops in ops_by_cell.items():
@@ -505,6 +507,14 @@ def validate_data_model(model: Mapping[str, Any], sources: StageSources) -> list
     if drafts:
         message = f"AI の下書きのままのセルが {drafts} 個あります(承認すると確定します)。"
         issues.append(_warning("DRAFT_CELLS", message))
+    for cell in parsed.cells:
+        if cell.inferred:
+            target = f"{cell.function_id} × {cell.table}"
+            message = (
+                f"DFD の書き込みの線から、{target} の操作を「{cell.ops}」と推定しました。"
+                "読むだけの処理なら、段階2の DFD の線の向きを直してください。"
+            )
+            issues.append(_warning("DFD_WRITE_INFERRED", message, target))
     for table in store_not_in_er:
         message = f"DFD のデータストア「{table}」が、ER のテーブルにありません。"
         issues.append(_warning("STORE_NOT_IN_ER", message, table))

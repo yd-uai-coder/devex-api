@@ -15,6 +15,10 @@ DFD の処理の箱の id は段階1の処理ID、データストアの名前は
 名前で ER のテーブルと突き合わせる。W の C/U/D の区別と、DFD を描いていない処理の分は AI が
 下書きし、そのセルには`draft`の印を付ける。人が直したセルは印が外れ、段階3の承認で残りの印も
 外す(承認 = 人の確定)。
+
+DFD に書き込みの線があるのに AI が C/U/D を書かなかったセルは、処理の名前から操作を推定して補い、
+`inferred`の印を付ける(検証の警告で人に確かめさせる)。AI が書かないのは、読むだけの処理に
+DFD が誤って書き込みの線を描いた場合が多いので、警告では DFD の線を直す道も案内する。
 """
 
 from collections.abc import Iterable, Mapping, Sequence
@@ -37,6 +41,10 @@ ER_SUBJECT = ""
 CRUD_OPS = "CRUD"
 WRITE_OPS = frozenset("CUD")
 
+# 書き込みの操作を処理の名前から推定するときの手がかり(削除を先に見る。どれにも当たらなければ U)
+_DELETE_WORDS = ("削除",)
+_CREATE_WORDS = ("登録", "作成", "追加", "送信", "新規", "アップロード")
+
 AccessKind = Literal["read", "write"]
 
 
@@ -50,12 +58,15 @@ class DfdAccess:
 
 
 class CrudCell(BaseModel):
-    """CRUD 図のセル1つ(処理 × テーブル)。`draft`は AI の下書きのまま人が確定していない印。"""
+    """CRUD 図のセル1つ(処理 × テーブル)。`draft`は AI の下書きのまま人が確定していない印。
+    `inferred`は、DFD の書き込みの線から操作を推定して補った印(人が直すか、承認で外れる)。
+    付いているときだけ保存する(印の無いセルの保存の形を変えないため)。"""
 
     function_id: str
     table: str
     ops: str = ""
     draft: bool = False
+    inferred: bool = Field(default=False, exclude_if=lambda value: not value)
 
 
 class CrudModel(BaseModel):
@@ -87,6 +98,16 @@ def normalize_ops(ops: str) -> str:
 def is_canonical_ops(ops: str) -> bool:
     """`ops`が並べ直しの済んだ形(空でない・C/R/U/D だけ・重複なし・この順)か。"""
     return bool(ops) and normalize_ops(ops) == ops
+
+
+def infer_write_ops(name: str) -> str:
+    """処理の名前から書き込みの操作を推定する(「削除」→ D、「登録」「作成」など → C、
+    それ以外 → U)。"""
+    if any(word in name for word in _DELETE_WORDS):
+        return "D"
+    if any(word in name for word in _CREATE_WORDS):
+        return "C"
+    return "U"
 
 
 def er_table_names(semantic_model: Mapping[str, Any] | None) -> list[str]:
@@ -147,11 +168,13 @@ def merge_crud(
 
     - 機能一覧に無い処理・ER に無いテーブルのセルは捨てる。行は機能一覧の並び、列は ER の並び。
     - DFD に読みの線があるセルには R を足す(DFD から決まる部分。AI の下書きによらない)。
-    - DFD に書き込みの線があるセルは、AI の C/U/D が無くても残す(検証のエラーで人に決めさせる)。
+    - DFD に書き込みの線があるのに AI の C/U/D が無いセルは、処理の名前から操作を推定して補い
+      (`infer_write_ops`)、`inferred`の印を付ける。
     - `draft`: DFD の読みで決まる R 以外の操作がある、または DFD に書き込みがある(C/U/D の区別は
       AI か人が決める)セル。DFD の読みだけのセルは確定とする。
     """
     function_ids = [row.id for row in function_list.functions]
+    function_names = {row.id: row.name for row in function_list.functions}
     table_names = {table_key(name): name for name in tables}
     ops: dict[tuple[str, str], set[str]] = {}
     for draft in drafts:
@@ -166,6 +189,11 @@ def merge_crud(
             ops.setdefault(key, set())
     for key in reads & ops.keys():
         ops[key].add("R")
+    inferred: set[tuple[str, str]] = set()
+    for key in writes & ops.keys():
+        if not ops[key] & WRITE_OPS:
+            ops[key].update(infer_write_ops(function_names[key[0]]))
+            inferred.add(key)
 
     cells: list[CrudCell] = []
     for function_id in function_ids:
@@ -183,14 +211,17 @@ def merge_crud(
                     table=name,
                     ops=normalize_ops("".join(letters)),
                     draft=bool(letters - fixed) or key in writes,
+                    inferred=key in inferred,
                 )
             )
     return CrudModel(cells=cells)
 
 
 def confirm_drafts(model: Mapping[str, Any]) -> dict:
-    """段階3の承認で、残っている下書きの印をすべて外す(承認 = 人がまとめて確定したとみなす)。"""
+    """段階3の承認で、残っている下書き・推定の印をすべて外す(承認 = 人がまとめて確定したと
+    みなす)。"""
     parsed = CrudModel.model_validate(model)
     for cell in parsed.cells:
         cell.draft = False
+        cell.inferred = False
     return parsed.model_dump(mode="json")

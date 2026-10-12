@@ -124,10 +124,12 @@ def test_ambiguous_pairs_are_not_renames():
 
 
 def test_draft_flag_and_derived_refs_are_not_changes():
-    """AI の下書きの印と、別の段階から導く辺(手順の行 → モジュールのテーブル)は内容に入れない。"""
+    """AI の下書き・推定の印と、別の段階から導く辺(手順の行 → モジュールのテーブル)は内容に
+    入れない。"""
     before = impact_stages()
     after = copy.deepcopy(before)
     after[3]["cells"][0]["draft"] = True
+    after[3]["cells"][0]["inferred"] = True
     after[5]["procedures"][0]["steps"][2]["db"] = "—"
 
     changes = diff_elements(_elements(before), _elements(after), stages=[3, 4])

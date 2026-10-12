@@ -277,7 +277,7 @@ def _stages_1_to_4(b: ElementBuilder, models: DesignModels) -> None:
     for cell in models.crud.cells:
         fid, table = cell.function_id, table_key(cell.table)
         label = f"{fid} × {cell.table.strip()}"
-        body = row_body(cell, "function_id", "table", "draft")
+        body = row_body(cell, "function_id", "table", "draft", "inferred")
         key = b.add(f"crud:{fid}×{table}", "crud", 3, label, body)
         b.ref(key, f"fn:{fid}", "function")
         b.ref(key, f"table:{table}", "table")

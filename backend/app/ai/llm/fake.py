@@ -50,7 +50,11 @@ from app.detailed_design.procedure_doc_drafting import (
     ProcedureDocGenerationOutput,
     SimpleProcedureDocGenerationOutput,
 )
-from app.detailed_design.procedure_drafting import GeneratedStep, ProcedureGenerationOutput
+from app.detailed_design.procedure_drafting import (
+    GeneratedBranch,
+    GeneratedStep,
+    ProcedureGenerationOutput,
+)
 from app.detailed_design.structure_drafting import GeneratedModuleRow, ModuleListGenerationOutput
 from app.documents.external_design.drafting import (
     ExternalDesignGenerationOutput,
@@ -396,19 +400,7 @@ _UML_OUTPUTS[ProcedureGenerationOutput] = ProcedureGenerationOutput(
             action="本文を型で検証する",
             result="ReservationCreate",
             db="—",
-            branch="1a へ",
-            is_branch=False,
-        ),
-        GeneratedStep(
-            caller="",
-            callee="",
-            call="",
-            data="",
-            action="本文の型が不正",
-            result="",
-            db="",
-            branch="422",
-            is_branch=True,
+            branches=[GeneratedBranch(condition="本文の型が不正", result="422")],
         ),
         GeneratedStep(
             caller="app/api/routes/reservations.py",
@@ -418,8 +410,6 @@ _UML_OUTPUTS[ProcedureGenerationOutput] = ProcedureGenerationOutput(
             action="重複を確かめて予約を保存する",
             result="予約",
             db="reservations C",
-            branch="—",
-            is_branch=False,
         ),
         GeneratedStep(
             caller="app/api/routes/reservations.py",
@@ -429,8 +419,6 @@ _UML_OUTPUTS[ProcedureGenerationOutput] = ProcedureGenerationOutput(
             action="応答に詰めて返す",
             result="201 Created",
             db="—",
-            branch="—",
-            is_branch=False,
             kind="return",
         ),
     ],

@@ -10,6 +10,9 @@
 - 06(処理ロジックの詳細)との紐づけは書かせない。段階6が(呼び出し先, 関数)の一致から導く。
 - 行の種別(同期・非同期・戻り)を書かせる。シーケンス図の矢印になり、戻りを呼び出しとして書く
   誤り(入れ子が崩れる)を減らす。
+- 分岐・例外は、元の手順の中に入れ子で書かせる(`branches`)。分岐の行と「1a へ」の参照は書かせず、
+  `to_procedure_draft`が元の手順の直後に分岐の行を並べ、`merge_procedure`が参照を振る
+  (AI が番号を振り違えたり、分岐の行を別の手順の後ろに置いたりしないように)。
 """
 
 from collections.abc import Sequence
@@ -25,32 +28,40 @@ from app.detailed_design.prompt_rules import NAMING_RULES
 from app.detailed_design.structure import ModuleRow
 
 
+class GeneratedBranch(BaseModel):
+    """AIが下書きする、手順の分岐・例外1つ。"""
+
+    condition: str = Field(description="分岐する条件(例: 予約が見つからない)")
+    result: str = Field(description="その結果(例: NotFoundError → 404)")
+
+
 class GeneratedStep(BaseModel):
-    """AIが下書きする手順の表の1行。"""
+    """AIが下書きする手順の表の1行。分岐・例外は`branches`に入れ子で書く。"""
 
     caller: str = Field(
-        description="呼び出し元。モジュール一覧のパス、または外部の役者(利用者・スケジューラなど)。"
-        "分岐の行は空"
+        description="呼び出し元。モジュール一覧のパス、または外部の役者(利用者・スケジューラなど)"
     )
     callee: str = Field(
         description="呼び出し先。【モジュール一覧】のパスをそのまま書く。"
-        "利用者へ返す手順は外部の役者の名前(利用者など)。分岐の行は空"
+        "利用者へ返す手順は外部の役者の名前(利用者など)"
     )
     call: str = Field(
         description="呼び出し先で呼ぶ関数・メソッド(例: ReservationService.create)。"
         "外部の役者や、同じモジュールの中の処理なら空"
     )
     data: str = Field(description="渡すデータ")
-    action: str = Field(description="処理内容。分岐の行は分岐する条件")
+    action: str = Field(description="処理内容")
     result: str = Field(description="結果(返す値)")
     db: str = Field(description="DB 操作(例: reservations R)。無ければ —")
-    branch: str = Field(description="分岐・例外。分岐の行はその結果(例: NotFoundError → 404)")
-    is_branch: bool = Field(description="分岐の行なら true(元の手順の直後に置く)")
     kind: StepKind = Field(
         default="call",
         description="行の種別。call = 同期の呼び出し(戻りを待つ)、async = 非同期の呼び出し"
         "(バックグラウンドの起動など、戻りを待たない)、return = 戻り(呼び出し元へ値を返す。"
-        "呼び出し先には、値を受け取る呼び出し元を書く)。分岐の行は call",
+        "呼び出し先には、値を受け取る呼び出し元を書く)",
+    )
+    branches: list[GeneratedBranch] = Field(
+        default_factory=list,
+        description="この手順で起きる分岐・例外(条件と結果)。無ければ空",
     )
 
 
@@ -73,14 +84,13 @@ PROCEDURE_SYSTEM_PROMPT = (
     "- 呼び出し元(caller)も同じ書き方にする。最初の手順の呼び出し元は、処理のトリガー"
     "(利用者・スケジューラなど)にする\n"
     "- call には呼び出し先で呼ぶ関数・メソッドの名前を書く。同じ関数は同じ名前で書く\n"
-    "- 分岐・例外は、元の手順の直後に is_branch=true の行として置き、元の手順の branch 列には"
-    "『1a へ』のように書く。分岐の行は action に条件、branch に結果を書き、caller・callee・call は"
-    "空にする\n"
+    "- 分岐・例外は、それが起きる手順の branches に、条件(condition)と結果(result)の組で書く。"
+    "分岐を独立した手順として書かず、『1a へ』のような参照も書かない(システムが元の手順の直後に"
+    "分岐の行を置き、番号と参照を振る)\n"
     "- kind は呼び出しなら call、戻りを待たない起動なら async にする。利用者や呼び出し元へ値を"
     "返す行は return にし、呼び出し先にはその受け取り手(呼び出し元)を書く。戻りの行は call を空に"
     "する。戻りは、呼ばれた側が値を返すことを明示したいときだけ書けばよい(書かなければ図で補う)\n"
-    "- 手順番号は書かない(システムが振る)。分岐の行の番号は、元の手順の番号に a, b を付けたもの"
-    "になる\n"
+    "- 手順番号は書かない(システムが振る)\n"
     "- DB 操作は『テーブル名 C/R/U/D』の形で書き、【CRUD図】【DFDの読み書き】と食い違わない"
     "ようにする\n"
     "- 1つの処理の手順は、分岐を除いて 3〜12 行に収める。設定の読み込みのような定型の手順は省く\n"
@@ -140,9 +150,13 @@ def build_procedure_messages(
 
 
 def to_procedure_draft(output: ProcedureGenerationOutput) -> ProcedureDraft:
-    """構造化出力を、merge_procedure の入力に変える。"""
-    return ProcedureDraft(
-        reason=output.reason,
-        note=output.note,
-        steps=tuple(ProcedureStep(**step.model_dump()) for step in output.steps),
-    )
+    """構造化出力を、merge_procedure の入力に変える。入れ子の分岐は、元の手順の直後の分岐の行
+    (`action`に条件、`branch`に結果)にして平らに並べる。"""
+    steps: list[ProcedureStep] = []
+    for step in output.steps:
+        steps.append(ProcedureStep(**step.model_dump(exclude={"branches"})))
+        steps.extend(
+            ProcedureStep(action=branch.condition, branch=branch.result, is_branch=True)
+            for branch in step.branches
+        )
+    return ProcedureDraft(reason=output.reason, note=output.note, steps=tuple(steps))
