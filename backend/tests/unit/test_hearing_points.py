@@ -34,20 +34,51 @@ def _decide_all(states: dict[str, PointState], *, except_keys: tuple[str, ...] =
 
 
 def test_point_defs_cover_function_and_nonfunctional_points_in_order() -> None:
-    """機能面10 + IPA の6大項目。規模を最初に聞く(定義の順 = 画面の順)。"""
+    """機能面10 + 非機能10(IPA の6大項目と、その2つ目以降の側面4つ)。規模を最初に聞く
+    (定義の順 = 画面の順)。"""
     assert [d.key for d in POINT_DEFS] == list(POINT_KEYS)
     assert POINT_DEFS[0].key == "scale"
     assert sum(1 for d in POINT_DEFS if d.kind == "function") == 10
-    assert sum(1 for d in POINT_DEFS if d.kind == "nonfunctional") == 6
+    assert sum(1 for d in POINT_DEFS if d.kind == "nonfunctional") == 10
+    assert all(d.done_when for d in POINT_DEFS)
+
+
+def test_aspect_points_follow_their_ipa_category_point() -> None:
+    """側面の観点は、大項目の観点のすぐ後ろ(続けて聞く)。大項目は6つにそろう。"""
+    keys = [d.key for d in POINT_DEFS if d.kind == "nonfunctional"]
+    assert keys == [
+        "availability",
+        "backup",
+        "performance",
+        "operability",
+        "data_retention",
+        "migration",
+        "security",
+        "logging",
+        "abuse",
+        "environment",
+    ]
+    categories = {d.key: d.ipa_category for d in POINT_DEFS if d.kind == "nonfunctional"}
+    assert categories["backup"] == "可用性"
+    assert categories["data_retention"] == "運用・保守性"
+    assert categories["logging"] == categories["abuse"] == "セキュリティ"
+    assert categories["availability"] == "可用性"  # 大項目の観点はラベルのまま
+    assert len(set(categories.values())) == 6
 
 
 def test_required_points_switch_by_scale() -> None:
-    assert len(open_required(initial_states(), "personal")) == 10
-    assert len(open_required(initial_states(), "internal")) == 14
-    assert len(open_required(initial_states(), "public")) == 15
+    assert len(open_required(initial_states(), "personal")) == 12
+    assert len(open_required(initial_states(), "internal")) == 18
+    assert len(open_required(initial_states(), "public")) == 19
     # 技術スタックは規模によらず必須、体制・期間はどの規模でも任意
     assert all(is_required("tech", s) for s in ("personal", "internal", "public"))
     assert not any(is_required("schedule", s) for s in ("personal", "internal", "public"))
+    # データの保全・保持と削除はどの規模でも必須、ログ・不正利用は社内以上で必須
+    for key in ("backup", "data_retention"):
+        assert all(is_required(key, s) for s in ("personal", "internal", "public"))
+    for key in ("logging", "abuse"):
+        assert not is_required(key, "personal")
+        assert is_required(key, "internal") and is_required(key, "public")
 
 
 def test_undecided_scale_counts_with_personal_column() -> None:
@@ -192,7 +223,15 @@ def test_open_optional_lists_open_points_not_required_for_scale() -> None:
     states["schedule"] = PointState("schedule", "decided", "1人", ("m",))
 
     personal = [d.key for d in open_optional(states, "personal")]
-    assert personal == ["daily_flow", "future", "operability", "migration", "environment"]
+    assert personal == [
+        "daily_flow",
+        "future",
+        "operability",
+        "migration",
+        "logging",
+        "abuse",
+        "environment",
+    ]
     assert [d.key for d in open_optional(states, "public")] == []
     assert describe_points(open_optional(states, "internal")) == [
         "将来の拡張(例: 後で足したいと思っているものはありますか)"

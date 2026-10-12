@@ -38,7 +38,9 @@ _STATUS_CAP: dict[str, RequirementSource] = {
 # ただし制約(CON)の行は規模そのもの(公開か社内か)を述べるので、規模も根拠に数える
 _NOT_GROUNDING: frozenset[str] = frozenset({"scale"})
 _SCALE_GROUNDS_KINDS: frozenset[str] = frozenset({"CON"})
-_NFR_CATEGORY: dict[str, str] = {d.key: d.label for d in POINT_DEFS if d.kind == "nonfunctional"}
+_NFR_CATEGORY: dict[str, str] = {
+    d.key: d.ipa_category for d in POINT_DEFS if d.kind == "nonfunctional"
+}
 _OTHER_CATEGORY = "その他"
 # 1.2(利用者と使う場面)の根拠の観点
 _USER_POINTS = ("users", "daily_flow")
