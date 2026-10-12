@@ -717,7 +717,9 @@ def _ensure_stage(project: Project, stage: int) -> None:
 
 def _basis(sources: StageSources) -> ProcedureBasis:
     """段階8の土台(作業単位と参照の出どころ。モードで変わる)。"""
-    return procedure_basis(sources.mode, sources.stages, sources.documents)
+    return procedure_basis(
+        sources.mode, sources.stages, sources.documents, sources.document_models
+    )
 
 
 def _ensure_open(view: StageView) -> None:

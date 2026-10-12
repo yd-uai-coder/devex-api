@@ -116,6 +116,17 @@ def task_id(milestone_index: int, task_index: int) -> str:
     return f"{milestone_id(milestone_index)}-T{task_index + 1:02d}"
 
 
+def renamed_task_ids(written: Sequence[Sequence[str]]) -> dict[str, str]:
+    """マイルストーンごとに並べたタスクの書かれた ID(`M-01-T01`)→ 並び順から導いた ID。
+    同じ ID が2つ書かれていれば、最初のタスクを指す。依存先を導いた ID に読み替えるのに使う
+    (書き手は並べ替えや書き損じで、並び順と違う ID を書くことがある)。"""
+    renames: dict[str, str] = {}
+    for m, task_ids in enumerate(written):
+        for t, written_id in enumerate(task_ids):
+            renames.setdefault(written_id.strip().upper(), task_id(m, t))
+    return renames
+
+
 def unit_key(seq: int) -> str:
     """単位のキーを番号から作る(`U-001`…)。"""
     return f"U-{seq:03d}"

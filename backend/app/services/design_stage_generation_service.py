@@ -438,7 +438,9 @@ async def generate_procedure_docs(context: StageGenerationContext) -> dict:
     単位が参照する設計を展開したもの(詳細設計モードは承認済みの段階1〜7から、簡易モードは
     4文書から。`procedure_basis`)。簡易モードは、指摘の直す先を文書で書かせる。"""
     sources = context.sources
-    basis = procedure_basis(sources.mode, sources.stages, sources.documents)
+    basis = procedure_basis(
+        sources.mode, sources.stages, sources.documents, sources.document_models
+    )
     plan = basis.plan
     model = ProcedureDocModel.model_validate(context.previous or {})
     for unit_id in context.targets:
@@ -559,7 +561,9 @@ def _plan(sources: StageSources | None) -> PlanModel:
     """段階8の作業単位(モードの土台から)。"""
     if sources is None:
         return PlanModel()
-    return procedure_basis(sources.mode, sources.stages, sources.documents).plan
+    return procedure_basis(
+        sources.mode, sources.stages, sources.documents, sources.document_models
+    ).plan
 
 
 def _check_request(

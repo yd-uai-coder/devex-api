@@ -6,9 +6,11 @@ docs/internal_design.md 3.3節「5. 実装手順書」。
 モードによって出どころだけが違い、手順書の形とその後の処理は同じにする(作成方針 3章)。
 
 - 詳細設計モード: 作業単位は段階7、参照は段階3〜6、共通の節は段階7(07章・開発環境)と段階4。
-- 簡易ドキュメントモード: 作業単位は実装計画書の WBS(`parse_wbs`)、参照は内部設計書
-  (`parse_internal_design`)、共通の節は内部設計書 3.1・3.4節と実装計画書 4.3節。WBS の
-  モジュールは、段階7の下書きと同じ規則でモジュール一覧のパスにそろえる(`normalize_plan`)。
+- 簡易ドキュメントモード: 作業単位は実装計画書の WBS、参照は内部設計書、共通の節は内部設計書
+  3.1・3.4節と実装計画書 4.3節。文書が model を持つ版は model から(実装計画書の`to_plan`・
+  `book_from_model`)、model の無い以前の版は md の解析(`parse_wbs`・`parse_internal_design`)
+  から読む。WBS のモジュールは、段階7の下書きと同じ規則でモジュール一覧のパスにそろえる
+  (`normalize_plan`)。
 
 検証(validation.py)がこのモジュールを使うので、ここから validation は import しない。
 """
@@ -16,6 +18,8 @@ docs/internal_design.md 3.3節「5. 実装手順書」。
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
+
+from pydantic import BaseModel, ValidationError
 
 from app.detailed_design.function_list import FunctionListModel, FunctionRow
 from app.detailed_design.plan import PLAN_STAGE, PlanModel, PlanTask, normalize_plan
@@ -32,12 +36,16 @@ from app.detailed_design.requirement_trace import unit_req_ids
 from app.detailed_design.simple_procedure import (
     SimpleDesignBook,
     WbsIssue,
+    WbsParse,
+    book_from_model,
     parse_internal_design,
     parse_wbs,
     simple_unit_context,
     simple_unit_refs,
 )
 from app.detailed_design.stages import ProjectMode
+from app.documents.implementation_plan.model import ImplementationPlanModel
+from app.documents.internal_design.model import InternalDesignModel
 
 # 段階4のモジュール一覧から引く実装ルール(どの単位にも共通)
 MODULE_RULE = "モジュールは、段階4のモジュール一覧の依存先にだけ依存する(層を飛び越さない)。"
@@ -138,11 +146,12 @@ def procedure_basis(
     mode: ProjectMode,
     stages: Mapping[int, Mapping[str, Any]],
     documents: Mapping[str, str],
+    document_models: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> ProcedureBasis:
     """モードの土台を作る。詳細設計モードは承認済みの段階(`stages`)から、簡易モードは
-    生成済みの文書(`documents`。文書の種類 → 本文)から。"""
+    生成済みの文書(`documents`。文書の種類 → 本文。`document_models`は文書の種類 → model)から。"""
     if mode == "simple":
-        return _simple_basis(documents)
+        return _simple_basis(documents, document_models or {})
     plan = PlanModel.model_validate(stages.get(PLAN_STAGE) or {})
     rules = (MODULE_RULE, *(f"07章 {row.topic}: {row.policy}" for row in plan.crosscutting))
     return ProcedureBasis(
@@ -156,11 +165,23 @@ def procedure_basis(
     )
 
 
-def _simple_basis(documents: Mapping[str, str]) -> ProcedureBasis:
-    book = parse_internal_design(
-        documents.get("internal_design", ""), documents.get("external_design", "")
+def _simple_basis(
+    documents: Mapping[str, str], models: Mapping[str, Mapping[str, Any]]
+) -> ProcedureBasis:
+    """内部設計書・実装計画書は、model を持つ版なら model から、無い(以前の)版なら md から読む。"""
+    external = documents.get("external_design", "")
+    internal = _parse(InternalDesignModel, models.get("internal_design"))
+    book = (
+        book_from_model(internal, external)
+        if internal is not None
+        else parse_internal_design(documents.get("internal_design", ""), external)
     )
-    wbs = parse_wbs(documents.get("implementation_plan", ""))
+    plan_model = _parse(ImplementationPlanModel, models.get("implementation_plan"))
+    wbs = (
+        _wbs_from_model(plan_model)
+        if plan_model is not None
+        else parse_wbs(documents.get("implementation_plan", ""))
+    )
     plan = normalize_plan(wbs.plan, list(book.modules))
     environment = "\n\n".join(t for t in (plan.environment, book.architecture.strip()) if t)
     rules = (SIMPLE_MODULE_RULE, *(f"3.4 {line}" for line in _bullets(book.error_policy)))
@@ -173,6 +194,26 @@ def _simple_basis(documents: Mapping[str, str]) -> ProcedureBasis:
         book=book,
         wbs_issues=wbs.issues,
     )
+
+
+def _parse[M: BaseModel](schema: type[M], raw: Mapping[str, Any] | None) -> M | None:
+    """保存した文書の model を読む。無い・壊れていれば None(md を解析する)。"""
+    if not raw:
+        return None
+    try:
+        return schema.model_validate(raw)
+    except ValidationError:
+        return None
+
+
+def _wbs_from_model(model: ImplementationPlanModel) -> WbsParse:
+    """実装計画書の model の計画。書式の指摘は無い(構造化出力のため)が、タスクが1つも無ければ
+    md の解析と同じく最重要の指摘にする。"""
+    plan = model.to_plan()
+    if any(m.tasks for m in plan.milestones):
+        return WbsParse(plan)
+    message = "実装計画書にタスクがありません(実装計画書を再生成してください)。"
+    return WbsParse(plan, (WbsIssue("WBS_MISSING", message, "critical"),))
 
 
 def _bullets(text: str) -> list[str]:

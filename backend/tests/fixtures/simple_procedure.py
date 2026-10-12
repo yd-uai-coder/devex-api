@@ -238,13 +238,14 @@ def sample_simple_procedure_source(*, state: StageState = "approved") -> Procedu
 
 
 async def create_simple_procedure_project(
-    session: AsyncSession, **overrides: str
+    session: AsyncSession, *, models: dict[str, dict] | None = None, **overrides: str
 ) -> Project:
     """簡易モードのプロジェクト(4文書`simple_documents()`を1版ずつ持ち、段階8が開いている)。
-    要件定義書は model(`simple_document_models()`)も持つ。"""
+    要件定義書は model(`simple_document_models()`)も持つ。`models`でほかの文書の model も足す
+    (内部設計書・実装計画書の model があれば、段階8は md でなく model を読む)。"""
     project = await create_detailed_project(session, mode="simple", with_documents=False)
     documents = GeneratedDocumentRepository(session)
-    models = simple_document_models()
+    models = {**simple_document_models(), **(models or {})}
     for doc_type, content in simple_documents(**overrides).items():
         await documents.create_version(
             project_id=project.id, doc_type=doc_type, content=content, model=models.get(doc_type)

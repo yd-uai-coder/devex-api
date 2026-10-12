@@ -289,7 +289,9 @@ def procedure_source(
     return procedure_output_source(
         title,
         states[PROCEDURE_DOC_STAGE],
-        procedure_basis(sources.mode, sources.stages, sources.documents),
+        procedure_basis(
+            sources.mode, sources.stages, sources.documents, sources.document_models
+        ),
         model,
         validate_stage(PROCEDURE_DOC_STAGE, model, sources) if model is not None else [],
         sources.documents.get("requirements", ""),

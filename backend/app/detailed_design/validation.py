@@ -860,7 +860,9 @@ def validate_procedure_doc(
         parsed = ProcedureDocModel.model_validate(model)
     except ValidationError as exc:
         return [_error("INVALID_MODEL", f"実装手順書の形が正しくありません: {exc}")]
-    basis = procedure_basis(sources.mode, sources.stages, sources.documents)
+    basis = procedure_basis(
+        sources.mode, sources.stages, sources.documents, sources.document_models
+    )
     issues, matched = _matched_procedures(parsed, basis)
     if basis.mode == "simple":
         return issues + _simple_procedure_issues(basis, sources)

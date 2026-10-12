@@ -14,9 +14,9 @@ SUT: E2eFakeLLM の4文書と段階8の構造化出力(app/ai/llm/fake.py)と、
 import io
 import zipfile
 
-from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 from tests.fixtures.external_design import e2e_fake_external_design_md
+from tests.fixtures.simple_documents import e2e_fake_simple_documents
 from tests.fixtures.simple_procedure import create_simple_procedure_project
 
 from app.ai.llm.fake import E2eFakeLLM
@@ -24,23 +24,26 @@ from app.detailed_design import has_errors, validate_stage
 from app.services.design_stage_generation_service import DesignStageGenerationService
 from app.services.design_stage_service import DesignStageService
 from app.services.detailed_design_export_service import DetailedDesignExportService
-from app.services.doc_generator_service import _DOC_TYPE_PROMPTS
 
 
-async def _fake_documents(llm: E2eFakeLLM) -> dict[str, str]:
-    """偽LLM が、4文書それぞれのプロンプトに返す本文(文書の種類 → 本文)。"""
-    documents: dict[str, str] = {}
-    for doc_type, prompt in _DOC_TYPE_PROMPTS.items():
-        reply = await llm.ainvoke([SystemMessage(content=prompt), HumanMessage(content="dummy")])
-        documents[doc_type] = str(reply.content)
-    # 外部設計書は構造化出力 → model → md(段階8は 2.6 の API 一覧を読む)
-    documents["external_design"] = await e2e_fake_external_design_md(llm)
+async def _fake_documents(llm: E2eFakeLLM) -> dict[str, tuple[str, dict | None]]:
+    """偽LLM の4文書を、生成と同じく構造化出力 → model → md にしたもの
+    (文書の種類 → (本文, model))。段階8は内部設計書・実装計画書の model を読む。"""
+    documents: dict[str, tuple[str, dict | None]] = {
+        "external_design": (await e2e_fake_external_design_md(llm), None),
+    }
+    documents.update(await e2e_fake_simple_documents(llm))
     return documents
 
 
 async def test_e2e_fake_outputs_pass_simple_stage8_and_bundle(db_session: AsyncSession) -> None:
     llm = E2eFakeLLM()
-    project = await create_simple_procedure_project(db_session, **await _fake_documents(llm))
+    documents = await _fake_documents(llm)
+    project = await create_simple_procedure_project(
+        db_session,
+        models={k: model for k, (_, model) in documents.items() if model is not None},
+        **{k: content for k, (content, _) in documents.items()},
+    )
     stages = DesignStageService(db_session)
 
     # 段階8だけが開き、作業単位は偽の実装計画書の WBS から読める(文書の指摘は無い)

@@ -7,9 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tests.fixtures.external_design import external_design_output, upstream_outputs
 from tests.fixtures.fake_llm import FakeLLM
 from tests.fixtures.requirements import requirements_output
+from tests.fixtures.simple_documents import implementation_plan_output, internal_design_output
 
 from app.documents.external_design import ExternalDesignModel
 from app.documents.external_design.drafting import ExternalDesignGenerationOutput
+from app.documents.implementation_plan import ImplementationPlanModel
+from app.documents.implementation_plan.drafting import ImplementationPlanGenerationOutput
+from app.documents.internal_design import InternalDesignModel
+from app.documents.internal_design.drafting import InternalDesignGenerationOutput
 from app.documents.requirements import RequirementsModel
 from app.documents.requirements.drafting import RequirementsGenerationOutput
 from app.hearing import PointState
@@ -21,7 +26,6 @@ from app.repositories.generated_document import DOC_TYPES, GeneratedDocumentRepo
 from app.repositories.hearing_point import HearingPointRepository
 from app.services.doc_generator_service import (
     DocGeneratorService,
-    _collapse_doubled_headings,
     _render_transcript,
     document_read,
 )
@@ -46,23 +50,18 @@ async def _create_project(session: AsyncSession) -> Project:
     return project
 
 
-# 構造化出力で作る文書(要件定義書・外部設計書)。残りは ainvoke で md を返させる
-_STRUCTURED_DOC_TYPES = ("requirements", "external_design")
-
-
 def _fake_llm_for_generation(
     requirements: RequirementsGenerationOutput | None = None,
     external_design: ExternalDesignGenerationOutput | None = None,
+    internal_design: InternalDesignGenerationOutput | None = None,
+    implementation_plan: ImplementationPlanGenerationOutput | None = None,
 ) -> FakeLLM:
-    # 要件定義書・外部設計書は構造化出力(各1回)、残りの2文書の生成 + 自己診断(1件) = 計3回の
-    # ainvoke呼び出しを想定した順序のcontent。
-    contents: list[str | list[str | dict[Any, Any]]] = [
-        f"# {doc_type}\n内容" for doc_type in DOC_TYPES if doc_type not in _STRUCTURED_DOC_TYPES
-    ]
-    contents.append("## 自己診断\n最重要: 特になし")
+    # 4文書は構造化出力(各1回)、自己診断(1件)だけが ainvoke。
     return FakeLLM(
-        content_sequence=contents,
-        structured_by_schema=upstream_outputs(requirements, external_design),
+        content_sequence=["## 自己診断\n最重要: 特になし"],
+        structured_by_schema=upstream_outputs(
+            requirements, external_design, internal_design, implementation_plan
+        ),
     )
 
 
@@ -203,11 +202,8 @@ async def test_generate_extracts_text_from_thought_signature_content(
     生成された文書・自己診断結果がrepr化されずプレーンテキストで保存されることを確認する。"""
     project = await _create_project(db_session)
     contents: list[str | list[str | dict[Any, Any]]] = [
-        [{"type": "text", "text": f"# {doc_type}\n内容", "extras": {"signature": "sig"}}]
-        for doc_type in DOC_TYPES
-        if doc_type not in _STRUCTURED_DOC_TYPES
+        [{"type": "text", "text": "## 自己診断\n特になし", "extras": {"signature": "sig"}}]
     ]
-    contents.append([{"type": "text", "text": "## 自己診断\n最重要: 特になし"}])
     fake_llm = FakeLLM(content_sequence=contents, structured_by_schema=upstream_outputs())
     service = DocGeneratorService(db_session)
 
@@ -230,40 +226,43 @@ async def test_generate_chains_each_document_from_prior_confirmed_documents(
     入力にする(連鎖構成)ことを、実際にLLMへ渡されたHumanMessageの中身で確認する。
     external_designはrequirementsのみ、internal_designはrequirements+external_design、
     implementation_planはrequirements+internal_design(external_designは含めない)を
-    入力にする、という参照関係を検証する。要件定義書・外部設計書は model から組み立てた md が
-    後段に渡る(どちらも構造化出力)。"""
+    入力にする、という参照関係を検証する。4文書とも構造化出力で、model から組み立てた md が
+    後段に渡る。"""
     project = await _create_project(db_session)
-    contents = ["INTERNAL_DESIGN_マーカー", "IMPLEMENTATION_PLAN_マーカー", "自己診断結果"]
     fake_llm = FakeLLM(
-        content_sequence=list(contents),
+        content_sequence=["自己診断結果"],
         structured_by_schema=upstream_outputs(
             requirements_output(text="REQUIREMENTS_マーカー"),
             external_design_output(overview="EXTERNAL_DESIGN_マーカー"),
+            internal_design_output(architecture="INTERNAL_DESIGN_マーカー"),
+            implementation_plan_output(phases="IMPLEMENTATION_PLAN_マーカー"),
         ),
     )
     service = DocGeneratorService(db_session)
 
     await service.generate(project.id, project.user_id, llm=fake_llm)
 
-    requirements_input = fake_llm.structured_messages[0][-1].content
-    external_input = fake_llm.structured_messages[1][-1].content
-    human_contents = [messages[-1].content for messages in fake_llm.invoke_messages]
+    inputs = [messages[-1].content for messages in fake_llm.structured_messages]
+    diagnosis_input = fake_llm.invoke_messages[0][-1].content
 
     # requirements: チャット全履歴(transcript)を直接読む
-    assert "備品予約システムを作りたい" in requirements_input
+    assert "備品予約システムを作りたい" in inputs[0]
 
     # external_design: requirementsの生成結果のみ
-    assert "REQUIREMENTS_マーカー" in external_input
-    assert "備品予約システムを作りたい" not in external_input
+    assert "REQUIREMENTS_マーカー" in inputs[1]
+    assert "備品予約システムを作りたい" not in inputs[1]
 
     # internal_design: requirements + external_designの生成結果
-    assert "REQUIREMENTS_マーカー" in human_contents[0]
-    assert "EXTERNAL_DESIGN_マーカー" in human_contents[0]
+    assert "REQUIREMENTS_マーカー" in inputs[2]
+    assert "EXTERNAL_DESIGN_マーカー" in inputs[2]
 
     # implementation_plan: requirements + internal_designの生成結果(external_designは含めない)
-    assert "REQUIREMENTS_マーカー" in human_contents[1]
-    assert "INTERNAL_DESIGN_マーカー" in human_contents[1]
-    assert "EXTERNAL_DESIGN_マーカー" not in human_contents[1]
+    assert "REQUIREMENTS_マーカー" in inputs[3]
+    assert "INTERNAL_DESIGN_マーカー" in inputs[3]
+    assert "EXTERNAL_DESIGN_マーカー" not in inputs[3]
+
+    # 自己診断は4文書の md をまとめて読む
+    assert "IMPLEMENTATION_PLAN_マーカー" in diagnosis_input
 
 
 async def _decide_points(session: AsyncSession, project: Project, **statuses: str) -> None:
@@ -287,6 +286,8 @@ async def test_generate_requirements_builds_model_from_points_table(
     assert fake_llm.structured_output_calls == [
         RequirementsGenerationOutput,
         ExternalDesignGenerationOutput,
+        InternalDesignGenerationOutput,
+        ImplementationPlanGenerationOutput,
     ]
     prompt = fake_llm.structured_messages[0][-1].content
     assert "core|コア機能|ユーザーが決定|coreの決定" in prompt
@@ -375,6 +376,69 @@ async def test_regenerate_external_design_keeps_screen_ids(db_session: AsyncSess
     # 前の版に無い仮の ID は次の番号に振り直し、API の関連画面も付け替える
     assert [s.id for s in model.screens] == ["SCR-002"]
     assert model.apis[0].screens == ["SCR-002"]
+
+
+async def test_generate_internal_design_and_plan_build_models(db_session: AsyncSession) -> None:
+    """内部設計書・実装計画書も構造化出力 → model → md。上流の model から照合用の写し(外部設計書の
+    API・処理の ID・要件ID)を取り、文書の応答に行数と検証の指摘を付ける。"""
+    project = await _create_project(db_session)
+
+    await DocGeneratorService(db_session).generate(
+        project.id, project.user_id, llm=_fake_llm_for_generation()
+    )
+
+    repo = GeneratedDocumentRepository(db_session)
+    internal_doc = await repo.get_current(project_id=project.id, doc_type="internal_design")
+    assert internal_doc is not None and internal_doc.model is not None
+    internal = InternalDesignModel.model_validate(internal_doc.model)
+    assert internal.external_apis == ["POST /api/v1/reservations"]
+    assert [f.id for f in internal.dataflows] == ["DF-1"]
+    assert "#### DF-1: POST /api/v1/reservations" in internal_doc.content
+    read = document_read(internal_doc)
+    assert read.internal_design is not None
+    assert read.internal_design.counts == {"tables": 0, "apis": 1, "modules": 2, "dataflows": 1}
+    assert read.internal_design.issues == []
+
+    plan_doc = await repo.get_current(project_id=project.id, doc_type="implementation_plan")
+    assert plan_doc is not None and plan_doc.model is not None
+    plan = ImplementationPlanModel.model_validate(plan_doc.model)
+    assert plan.known_dataflow_ids == ["DF-1"]
+    assert plan.must_fr_ids == ["FR-001"]
+    assert plan.milestones[0].tasks[0].key == "U-001"
+    assert "- [ ] M-01-T01 [機能] 予約を登録する" in plan_doc.content
+    read = document_read(plan_doc)
+    assert read.implementation_plan is not None and read.internal_design is None
+    assert read.implementation_plan.counts == {"milestones": 1, "tasks": 1, "risks": 0}
+    assert read.implementation_plan.issues == []
+
+
+async def test_regenerate_keeps_dataflow_ids_and_unit_keys(db_session: AsyncSession) -> None:
+    """再生成では、同じ名前のタスクは前の版のキーを引き継ぐ。別の API の処理は次の DF の番号。"""
+    project = await _create_project(db_session)
+    service = DocGeneratorService(db_session)
+    await service.generate(project.id, project.user_id, llm=_fake_llm_for_generation())
+    fake_llm = _fake_llm_for_generation(
+        internal_design=internal_design_output(trigger="GET /api/v1/reservations"),
+    )
+
+    await service.generate(project.id, project.user_id, llm=fake_llm)
+
+    repo = GeneratedDocumentRepository(db_session)
+    internal_doc = await repo.get_current(project_id=project.id, doc_type="internal_design")
+    assert internal_doc is not None and internal_doc.version == 2
+    internal = InternalDesignModel.model_validate(internal_doc.model)
+    # 別の API の処理は次の番号(消えた DF-1 は使い回さない)
+    assert [f.id for f in internal.dataflows] == ["DF-2"]
+    plan_doc = await repo.get_current(project_id=project.id, doc_type="implementation_plan")
+    assert plan_doc is not None
+    plan = ImplementationPlanModel.model_validate(plan_doc.model)
+    assert plan.milestones[0].tasks[0].key == "U-001"
+    read = document_read(plan_doc)
+    assert read.implementation_plan is not None
+    # 計画は DF-1 を指したまま → 内部設計書に無い処理と、どのタスクにも入らない DF-2
+    # (要件定義書の見本は prev_id を持たないので、要件ID も振り直されて指摘が出る)
+    codes = [i.code for i in read.implementation_plan.issues]
+    assert [c for c in codes if "DATAFLOW" in c] == ["UNKNOWN_DATAFLOW", "UNPLANNED_DATAFLOW"]
 
 
 async def test_adopt_requirement_rewrites_same_version(db_session: AsyncSession) -> None:
@@ -528,15 +592,6 @@ async def test_get_document_raises_not_found_for_unknown_id(db_session: AsyncSes
         await service.get_document(project=project, doc_id=uuid.uuid4())
 
 
-def test_collapse_doubled_headings_keeps_the_first_marks() -> None:
-    """LLM が重ねた見出しの記号は先頭だけを残す。本文中の「#」やコードは変えない。"""
-    markdown = "## 4.3 開発環境\n\n### ### 1. ツール\n## ### 2. 構成\n- issue #12\n#タグ\n"
-
-    assert _collapse_doubled_headings(markdown) == (
-        "## 4.3 開発環境\n\n### 1. ツール\n## 2. 構成\n- issue #12\n#タグ\n"
-    )
-
-
 def test_render_transcript_excludes_others_sender() -> None:
     history = [
         ChatHistory(sender="user", message="要望A"),
@@ -549,41 +604,3 @@ def test_render_transcript_excludes_others_sender() -> None:
     assert "要望A" in transcript
     assert "応答A" in transcript
     assert "自己診断結果" not in transcript
-
-
-def test_internal_design_prompt_asks_for_fixed_format_headings_for_uml_generation() -> None:
-    """内部設計書プロンプトが
-    テーブル見出しと処理別データフロー(DF見出し)の固定形式を指示していること。"""
-    from app.services.doc_generator_service import _DOC_TYPE_PROMPTS
-
-    prompt = _DOC_TYPE_PROMPTS["internal_design"]
-
-    assert "### テーブル: <テーブル名>" in prompt
-    assert "### 処理別データフロー" in prompt
-    assert "#### DF-<連番>: <HTTPメソッド> <パス>" in prompt
-    assert "元/データ/変換/先" in prompt
-
-
-def test_implementation_plan_prompt_asks_for_vertical_units_with_ids() -> None:
-    """実装計画書プロンプトが、WBSを縦割り・ID付きの決まった書式で書くよう指示していること
-    (簡易モードの実装手順書が、この書式を作業単位として決定的に読むため)。"""
-    from app.detailed_design.simple_procedure import parse_wbs
-    from app.services.doc_generator_service import _DOC_TYPE_PROMPTS
-
-    prompt = _DOC_TYPE_PROMPTS["implementation_plan"]
-
-    assert "### M-<2桁の連番>: <マイルストーン名> ── 【Must/Should/Could】" in prompt
-    assert "- [ ] M-<2桁>-T<2桁> [機能] <タスク名>" in prompt
-    for field in (
-        "処理: DF-<連番>",
-        "要件: FR-<3桁>",
-        "依存: M-<2桁>-T<2桁>",
-        "モジュール: <パス>",
-        "環境・設定:",
-    ):
-        assert field in prompt
-    # 例の WBS も、決まった書式どおりに読める(要件の欄を含む)
-    example = prompt.split("```\n")[1]
-    tasks = parse_wbs("## 4.2 タスク分解（WBS）\n" + example).plan.milestones[0].tasks
-    assert [task.req_ids for task in tasks] == [[], ["FR-001"]]
-    assert "タスクに番号を付けない" not in prompt
