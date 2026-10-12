@@ -1,8 +1,9 @@
 """簡易ドキュメントモードの実装手順書の材料(純粋関数)。
 
 簡易モードには段階1〜7が無いので、実装手順書の作業単位と参照する設計を、生成済みの4文書
-(実装計画書の WBS・内部設計書)から決定的に読み取る。読み取った結果は段階7と同じ形
-(`PlanModel`)にそろえ、段階8の部品(検証・生成・出力)を詳細設計モードと共有する。
+(実装計画書の WBS・内部設計書)から決定的に読み取る。文書が model を持つ版は model から
+読み(`book_from_model`・実装計画書の`to_plan`)、model の無い以前の版は md を解析する。
+読み取った結果は段階7と同じ形(`PlanModel`)にそろえ、段階8の部品(検証・生成・出力)を詳細設計モードと共有する。
 
 親パッケージ(app.detailed_design)の`__init__`からは re-export しない(使うのは段階8の部品だけ)。
 """
@@ -10,6 +11,7 @@
 from app.detailed_design.simple_procedure.internal_design import (
     DataFlow,
     SimpleDesignBook,
+    book_from_model,
     module_layer,
     parse_internal_design,
 )
@@ -34,6 +36,7 @@ __all__ = [
     "SimpleDesignBook",
     "WbsIssue",
     "WbsParse",
+    "book_from_model",
     "expand_simple_ref",
     "module_layer",
     "parse_internal_design",

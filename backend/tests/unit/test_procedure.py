@@ -1,7 +1,7 @@
 """段階5 主要処理の手順の組み立てと検証のテスト。
 
 SUT: number_steps / step_id / is_external_actor / calls_function / resolve_callee /
-     merge_procedure / pending_function_ids(app/detailed_design/procedure.py)、
+     link_branch_refs / merge_procedure / pending_function_ids(app/detailed_design/procedure.py)、
      validate_procedures / STAGE_VALIDATORS(app/detailed_design/validation.py)、
      パッケージの re-export(app/detailed_design/__init__.py)
 ドライバ: 各テスト関数
@@ -28,6 +28,7 @@ from app.detailed_design import (
     calls_function,
     has_errors,
     is_external_actor,
+    link_branch_refs,
     merge_procedure,
     number_steps,
     pending_function_ids,
@@ -155,6 +156,39 @@ def test_merge_procedure_drops_leading_branch_and_empty_rows_and_clears_branch_c
 
     assert [s.is_branch for s in steps] == [False, True]
     assert (steps[1].caller, steps[1].callee, steps[1].call) == ("", "", "")
+
+
+def _with_branch(step: ProcedureStep, branch: str) -> ProcedureStep:
+    return step.model_copy(update={"branch": branch})
+
+
+def test_link_branch_refs_rewrites_misnumbered_refs_from_row_order():
+    """AI が振り違えた参照(「2a へ」「F-02a へ」)を消し、直後の分岐の行の番号で付け直す。"""
+    steps = [
+        _with_branch(_main(), "2a へ"),
+        _branch(),
+        _with_branch(_main(), "F-02b へ"),  # 直後に分岐の行が無い手順は、参照を消す
+        _with_branch(_main(), "—"),
+        _with_branch(_branch(), "1a へ"),  # 分岐の行に書いた参照も消す
+        _branch(),
+    ]
+
+    linked = link_branch_refs(steps)
+
+    assert [s.branch for s in linked] == ["1a へ", "400", "", "3a へ、3b へ", "", "400"]
+    assert linked[0].callee == ROUTE  # 分岐の欄の他は変えない
+
+
+def test_link_branch_refs_keeps_other_text_before_refs():
+    steps = [_with_branch(_main(), "ValidationError → 400、1a・1b へ"), _branch()]
+    assert link_branch_refs(steps)[0].branch == "ValidationError → 400(1a へ)"
+
+
+def test_merge_procedure_links_branch_refs_after_dropping_empty_rows():
+    steps = (ProcedureStep(), _main(), _with_branch(_main(), "3a へ"), _branch())
+    draft = ProcedureDraft(reason="", note="", steps=steps)
+    steps = merge_procedure(ProcedureModel(), "F-01", draft, PATHS).procedures[0].steps
+    assert [s.branch for s in steps] == ["", "2a へ", "400"]
 
 
 def test_step_without_kind_is_read_as_sync_call():

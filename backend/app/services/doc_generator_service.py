@@ -1,5 +1,5 @@
-import re
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime
 
 import structlog
@@ -21,6 +21,32 @@ from app.documents.external_design.drafting import (
     build_external_design_messages,
 )
 from app.documents.external_design.drafting import to_draft as to_external_design_draft
+from app.documents.implementation_plan import (
+    ImplementationPlanModel,
+    render_implementation_plan,
+    validate_implementation_plan,
+)
+from app.documents.implementation_plan import build_model as build_implementation_plan_model
+from app.documents.implementation_plan import row_counts as implementation_plan_counts
+from app.documents.implementation_plan.drafting import (
+    ImplementationPlanGenerationOutput,
+    build_implementation_plan_messages,
+)
+from app.documents.implementation_plan.drafting import (
+    to_draft as to_implementation_plan_draft,
+)
+from app.documents.internal_design import (
+    InternalDesignModel,
+    render_internal_design,
+    validate_internal_design,
+)
+from app.documents.internal_design import build_model as build_internal_design_model
+from app.documents.internal_design import row_counts as internal_design_counts
+from app.documents.internal_design.drafting import (
+    InternalDesignGenerationOutput,
+    build_internal_design_messages,
+)
+from app.documents.internal_design.drafting import to_draft as to_internal_design_draft
 from app.documents.issues import DocumentIssue
 from app.documents.requirements import (
     RequirementsModel,
@@ -35,6 +61,12 @@ from app.documents.requirements.drafting import (
     build_requirements_messages,
     to_draft,
 )
+from app.documents.revision import (
+    changed_rows,
+    external_design_rows,
+    internal_design_rows,
+    requirement_rows,
+)
 from app.hearing import as_scale
 from app.models.chat_history import ChatHistory
 from app.models.generated_document import GeneratedDocument
@@ -46,10 +78,12 @@ from app.repositories.project import ProjectRepository
 from app.schemas.document import (
     AssumedRequirementRead,
     DocumentIssueRead,
+    DocumentSummaryRead,
     ExternalDesignSummaryRead,
     GeneratedDocumentRead,
     RequirementsSummaryRead,
 )
+from app.services.design_stage_service import DesignStageService
 from app.services.errors import (
     DocGenerationInProgressError,
     DocumentNotFoundError,
@@ -69,133 +103,18 @@ _DOC_TYPE_LABELS: dict[str, str] = {
     "implementation_plan": "実装計画書",
 }
 
-# 4文書に共通する出力上の心がけ。当プロジェクト自身の4文書(docs/requirements.md等)を
-# 実際に作成した際、個別プロンプトの指示を超えて一貫して採用されていた書式(表形式の多用・
-# 複数観点の番号付きサブセクション化・構造図のコードブロック化)を、ドメインに依存しない
-# 一般的な指針として全doc_typeへ横展開したもの。
-_COMMON_FORMAT_GUIDANCE = (
-    "\n\n出力全体の心がけ:\n"
-    "- 一覧性の高い情報(画面一覧・テーブル定義・APIエンドポイント一覧等)は"
-    "Markdownテーブルで整理する。\n"
-    "- 1つの見出しが複数の観点を含む場合は、意味のある小見出し付きの番号付きサブセクション"
-    "(### 1. ... / ### 2. ...)に展開する。\n"
-    "- システム構成・ディレクトリ構成・画面遷移フロー等の構造は、"
-    "コードブロック内のテキスト図で視覚的に示す。"
-)
-
-# doc_typeごとに特化したシステムプロンプト(docs/internal_design.md 3.3節)。
-# 出力フォーマット(見出し構成)を明示することで、4文書の粒度・構成を安定させる。
-# 要件定義書・外部設計書はここに無い(構造化出力 → model → md。app/documents/requirements・
-# app/documents/external_design の drafting.py)。外部設計書の見出し(2.1〜2.6)と 2.6 の列は
-# app/documents/external_design/markdown.py が組み立てる。
-_DOC_TYPE_PROMPTS: dict[str, str] = {
-    "internal_design": (
-        "あなたは優秀なリードエンジニア・データベース設計者です。"
-        "以下の【要件定義書】および【外部設計書】に基づき、システム内部の構造・ロジックに関する"
-        "「内部設計書」をMarkdown形式で作成してください。前置きや断り書きは不要です。"
-        "Markdown本文のみを出力してください。\n\n"
-        "出力フォーマット:\n"
-        "# 3. 内部設計書\n\n"
-        "## 3.1 技術スタック選定・アーキテクチャ方針\n"
-        "- フロントエンド / バックエンド / データベース / インフラの選定理由と構成方針\n\n"
-        "## 3.2 データモデル定義\n- 主要エンティティ一覧\n"
-        "- テーブルごとに『### テーブル: <テーブル名>』の見出しを立て、"
-        "Markdownテーブル(カラム名/データ型/制約/説明)で全カラムを列挙する\n\n"
-        "## 3.3 バックエンド処理・モジュール設計\n"
-        "- 主要処理ロジック（ビジネスロジック）の分割方針。ディレクトリ構成はコードブロックで示す\n"
-        "- APIエンドポイント一覧はMarkdownテーブル(メソッド/パス/概要)で示す。"
-        "外部設計書2.6のAPI一覧と同じメソッド・パスを使い、内部の担当(ルート・サービス)の"
-        "観点で概要を書く\n"
-        "- 続けて『### モジュール一覧』の小節を設け、ファイル単位の責務を"
-        "Markdownテーブル(パス/層/責務/主な依存先)で示す。"
-        "スキーマ・設定のような定型のファイルは省くか1行にまとめる\n"
-        "- 続けて『### 処理別データフロー』の小節を設け、APIエンドポイント・バッチ処理ごとに"
-        "『#### DF-<連番>: <HTTPメソッド> <パス>』(バッチは『#### DF-<連番>: <バッチ名>』)の"
-        "見出しを立てる\n"
-        "  - 各見出しの下に、データの流れをMarkdownテーブル(元/データ/変換/先)で示す。"
-        "元・先は外部実体(利用者・外部サービス)、処理(担当モジュール名)、"
-        "データストア(テーブル名)のいずれかとする\n"
-        "  - 続けて、その処理に登場するデータ項目を"
-        "『- データ項目: <名前>(<フィールド1>, <フィールド2>, ...)』の形式で列挙する。"
-        "同じデータ項目は全処理で同じ名前を使う\n\n"
-        "## 3.4 例外処理・エラーハンドリング・ログ設計\n"
-        "- 共通エラーレスポンス形式、例外検知・ログ出力方針"
-        + _COMMON_FORMAT_GUIDANCE
-    ),
-    "implementation_plan": (
-        "あなたは経験豊富なプロジェクトマネージャーです。"
-        "以下の設計情報（要件定義・内部設計）を踏まえ、開発を安全かつ確実に進めるための「実装計画書」を"
-        "Markdown形式で作成してください。前置きや断り書きは不要です。Markdown本文のみを出力してください。\n\n"
-        "出力フォーマット:\n"
-        "# 4. 実装計画書\n\n"
-        "## 4.1 開発フェーズ分割・マイルストーン\n"
-        "- 各フェーズの見出しに『── 【優先度】』の形式でMoSCoW優先度を明記する\n"
-        "- フェーズ1（MVP / 必須機能）、フェーズ2（拡張機能）などの段階的リリース計画\n"
-        "- 各フェーズに含めるマイルストーンを、4.2のID(M-01など)で挙げる\n\n"
-        "## 4.2 タスク分解（WBS）\n"
-        "- タスクは実装手順書の作業単位になる。機能ごとの縦割りにし、1つのタスクに"
-        "その処理のバックエンド・フロントエンド・テストを含める。処理の無い準備・デプロイは"
-        "基盤のタスクにする\n"
-        "- マイルストーンごとに『### M-<2桁の連番>: <マイルストーン名> ── 【Must/Should/Could】』"
-        "の見出しを立て、直後に『- ゴール: <動くようになること>』を書く。"
-        "この節にはマイルストーン以外の見出しを立てない\n"
-        "- タスクは『- [ ] M-<2桁>-T<2桁> [機能] <タスク名>』(処理の無いものは[基盤])の形式で書き、"
-        "マイルストーンの中で01から連番を振る\n"
-        "- 各タスクの下に、字下げした箇条書きで次の欄を書く(該当が無い欄は『なし』):\n"
-        "  - 『処理: DF-<連番>, ...』内部設計書の処理別データフローのID。"
-        "機能のタスクは原則1つ(多くても3つ)、基盤のタスクは『なし』\n"
-        "  - 『要件: FR-<3桁>, ...』そのタスクが実現する、要件定義書の機能要件のID。"
-        "要件定義書に無いIDは作らない。基盤のタスクは『なし』\n"
-        "  - 『依存: M-<2桁>-T<2桁>, ...』先に終わっている必要があるタスクのID。"
-        "前に書いたタスクだけを指す\n"
-        "  - 『モジュール: <パス>, ...』作る・直すファイル。"
-        "内部設計書のモジュール一覧のパスを使う\n"
-        "  - 『環境・設定: <ファイル>, ...』Dockerfile・docker-compose.ymlのような"
-        "環境・設定のファイル\n"
-        "- 内部設計書の処理別データフローは、すべていずれかの機能のタスクに入れる。"
-        "要件定義書の Must の機能要件は、すべていずれかのタスクの『要件』に入れる。"
-        "Won't haveの機能はタスクにしない\n"
-        "- 例:\n"
-        "```\n"
-        "### M-01: 予約の登録 ── 【Must】\n"
-        "- ゴール: 備品を予約して一覧で確かめられる\n"
-        "- [ ] M-01-T01 [基盤] 開発環境とDBを用意する\n"
-        "  - 処理: なし\n"
-        "  - 要件: なし\n"
-        "  - 依存: なし\n"
-        "  - モジュール: backend/app/main.py\n"
-        "  - 環境・設定: docker-compose.yml\n"
-        "- [ ] M-01-T02 [機能] 予約を登録する\n"
-        "  - 処理: DF-1\n"
-        "  - 要件: FR-001\n"
-        "  - 依存: M-01-T01\n"
-        "  - モジュール: backend/app/api/reservations.py, backend/app/services/reservation.py\n"
-        "  - 環境・設定: なし\n"
-        "```\n\n"
-        "## 4.3 開発環境・CI/CD・事前準備事項\n- 開発に必要なツール、"
-        "リポジトリ構成、自動テスト・CI/CD方針\n\n"
-        "## 4.4 想定リスクと対策（トレードオフ・後回し候補）\n"
-        "- 各リスクは『**リスクN: 内容**』の見出し+『*対策*: ...』の形式で記述する\n"
-        "- 想定される技術的・スケジュール的リスク\n"
-        "- 納期・予算超過時のトレードオフ策（機能削減・代替手段案）"
-        + _COMMON_FORMAT_GUIDANCE
-    ),
-}
-
 # 各doc_typeの入力として使う、前段で確定済みの文書(doc_type名のタプル)。
 # ここに無いdoc_type(requirements)は、代わりにチャット全履歴(transcript)と観点の表を読む。
-# 外部設計書(_generate_external_design)は、要件定義書の md に加えて、生成した要件定義書の
-# model(要件ID の照合)も受け取る。
-# 後続の文書は生のチャット履歴を再解釈せず、前段の確定済み文書だけを入力にすることで、
-# 4文書間の一貫性を確保する。
+# 後続の文書は生のチャット履歴を再解釈せず、前段の確定済み文書(model から組み立てた md)だけを
+# 入力にすることで、4文書間の一貫性を確保する。照合用の ID(要件ID・API・処理別データフローの ID)
+# は、前段の model から写す(app/documents の各 assemble.build_model)。
+# 4文書とも構造化出力 → model → md(app/documents の requirements・external_design・
+# internal_design・implementation_plan の drafting.py にプロンプトがある)。
 _DOC_TYPE_INPUTS: dict[str, tuple[str, ...]] = {
     "external_design": ("requirements",),
     "internal_design": ("requirements", "external_design"),
     "implementation_plan": ("requirements", "internal_design"),
 }
-
-# 見出しの記号が重なった行(LLM が「### ### 1. …」と書くことがある)。先頭の記号だけを残す
-_DOUBLED_HEADING = re.compile(r"^(#{1,6})(?:[ \t]+#{1,6})+(?=[ \t])", re.MULTILINE)
 
 # モード(projects.mode)ごとに生成する文書。詳細設計モードは要件定義・外部設計だけを生成し、
 # 内部設計・実装計画に当たる部分は段階(docs/internal_design.md 3.3節「4. 詳細設計モード」)
@@ -256,6 +175,7 @@ class DocGeneratorService:
         self._chat_histories = ChatHistoryRepository(session)
         self._documents = GeneratedDocumentRepository(session)
         self._hearing_points = HearingPointRepository(session)
+        self._stages = DesignStageService(session)
 
     async def request_generation(self, project: Project) -> str:
         """生成の要求を受け付け、`status`を`generating`にしてcommitする。戻り値は受け付ける前の状態
@@ -339,24 +259,52 @@ class DocGeneratorService:
 
             generated: dict[str, str] = {}
             requirements: RequirementsModel | None = None
+            external: ExternalDesignModel | None = None
+            internal: InternalDesignModel | None = None
             doc_types = DOC_TYPES_BY_MODE[project.mode]
+            # 詳細設計モードの変更の影響は、生成の前に表示していた版と比べる
+            previous_models: dict[str, dict | None] = {}
+            for doc_type in doc_types:
+                current = await self._documents.get_current(
+                    project_id=project_id, doc_type=doc_type
+                )
+                previous_models[doc_type] = current.model if current is not None else None
+            new_models: dict[str, dict | None] = {}
             for doc_type in doc_types:
                 model: dict | None = None
+                # 再生成を前の版の差分にとどめるため、上流の文書で変わった行を渡す
+                changed = upstream_changes(
+                    doc_type, previous_models, requirements, external, internal
+                )
                 if doc_type == "requirements":
                     content, requirements = await self._generate_requirements(
                         project, transcript, llm=llm
                     )
                     model = requirements.model_dump(mode="json")
                 elif doc_type == "external_design":
-                    content, model = await self._generate_external_design(
-                        project, generated["requirements"], requirements, llm=llm
+                    content, external = await self._generate_external_design(
+                        project, generated["requirements"], requirements, changed, llm=llm
                     )
+                    model = external.model_dump(mode="json")
+                elif doc_type == "internal_design":
+                    content, internal = await self._generate_internal_design(
+                        project, generated, external, changed, llm=llm
+                    )
+                    model = internal.model_dump(mode="json")
                 else:
-                    content = await self._generate_one(doc_type, transcript, generated, llm=llm)
+                    content, plan = await self._generate_implementation_plan(
+                        project, generated, requirements, internal, changed, llm=llm
+                    )
+                    model = plan.model_dump(mode="json")
                 await self._documents.create_version(
                     project_id=project_id, doc_type=doc_type, content=content, model=model
                 )
                 generated[doc_type] = content
+                new_models[doc_type] = model
+            for doc_type in doc_types:
+                await self._stages.record_document_change(
+                    project, doc_type, previous_models[doc_type], new_models[doc_type]
+                )
 
             diagnosis = await self._self_diagnose(generated, llm=llm)
             await self._chat_histories.add(
@@ -417,12 +365,20 @@ class DocGeneratorService:
         self, project_id: uuid.UUID, doc_type: str, version: int
     ) -> GeneratedDocument:
         """指定バージョンを表示中(is_current)に切り替える。バージョン番号は増やさず、新しい行も
-        作らない(既存版の内容も書き換えない)。指定バージョンが存在しなければDocumentNotFoundError。"""
+        作らない(既存版の内容も書き換えない)。指定バージョンが存在しなければDocumentNotFoundError。
+        切り替える前に表示していた版と比べて、変更の影響を段階に記録する(model を持つ文書)。"""
+        previous = await self._documents.get_current(project_id=project_id, doc_type=doc_type)
+        previous_model = previous.model if previous is not None else None
         restored = await self._documents.set_current(
             project_id=project_id, doc_type=doc_type, version=version
         )
         if restored is None:
             raise DocumentNotFoundError(f"{doc_type} version {version} not found")
+        project = await self._session.get(Project, project_id)
+        if project is not None:
+            await self._stages.record_document_change(
+                project, doc_type, previous_model, restored.model
+            )
         await self._session.commit()
         return restored
 
@@ -476,44 +432,78 @@ class DocGeneratorService:
         project: Project,
         requirements_md: str,
         requirements: RequirementsModel | None,
+        changed_upstream: list[str],
         *,
         llm,
-    ) -> tuple[str, dict]:
-        """外部設計書を構造化出力で下書きし、model と md を作る。入力は要件定義書の md と前の版の
-        画面(画面ID を引き継ぐため)。要件ID の照合用に要件定義書の model を写す
-        (app/documents/external_design)。"""
+    ) -> tuple[str, ExternalDesignModel]:
+        """外部設計書を構造化出力で下書きし、model と md を作る。入力は要件定義書の md、前の版の
+        画面・API(画面ID を引き継ぎ、変えない行をそのまま使うため)と、要件定義書の変わった行。
+        要件ID の照合用に要件定義書の model を写す(app/documents/external_design)。"""
         current = await self._documents.get_current(
             project_id=project.id, doc_type="external_design"
         )
         previous = parse_external_design_model(current.model if current else None)
-        messages = build_external_design_messages(requirements_md, previous)
+        messages = build_external_design_messages(requirements_md, previous, changed_upstream)
         output = await invoke_structured(llm, ExternalDesignGenerationOutput, messages)
         model = build_external_design_model(
             to_external_design_draft(output), previous, requirements
         )
-        return render_external_design(model), model.model_dump(mode="json")
+        return render_external_design(model), model
 
-    async def _generate_one(
-        self, doc_type: str, transcript: str, generated: dict[str, str], *, llm
-    ) -> str:
-        """要件定義書の後の文書を、doc_type専用のプロンプトでMarkdownとして生成する。
-        前段で確定済みの文書(generated、_DOC_TYPE_INPUTSが参照関係を定義)を入力にする。
-        単発呼び出しのためinvoke_with_retryでラップする。"""
-        system_prompt = _DOC_TYPE_PROMPTS[doc_type]
-        human_content = "\n\n".join(
-            f"## {_DOC_TYPE_LABELS[dep]}\n{generated[dep]}" for dep in _DOC_TYPE_INPUTS[doc_type]
+    async def _generate_internal_design(
+        self,
+        project: Project,
+        generated: dict[str, str],
+        external: ExternalDesignModel | None,
+        changed_upstream: list[str],
+        *,
+        llm,
+    ) -> tuple[str, InternalDesignModel]:
+        """内部設計書を構造化出力で下書きし、model と md を作る(app/documents/internal_design)。
+        入力は要件定義書・外部設計書の md、前の版の行と上流の変わった行。処理別データフローの ID
+        は前の版の model から引き継ぎ、外部設計書の API(検証が照らす)は外部設計書の model から
+        写す。"""
+        current = await self._documents.get_current(
+            project_id=project.id, doc_type="internal_design"
         )
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=human_content),
-        ]
+        previous = parse_internal_design_model(current.model if current else None)
+        messages = build_internal_design_messages(
+            generated["requirements"], generated["external_design"], previous, changed_upstream
+        )
+        output = await invoke_structured(llm, InternalDesignGenerationOutput, messages)
+        apis = [a.label for a in external.apis] if external else []
+        model = build_internal_design_model(to_internal_design_draft(output), previous, apis)
+        return render_internal_design(model), model
 
-        async def _call() -> str:
-            response = await llm.ainvoke(messages)
-            return _collapse_doubled_headings(extract_text_content(response.content))
-
-        return await invoke_with_retry(_call, messages=messages)
-
+    async def _generate_implementation_plan(
+        self,
+        project: Project,
+        generated: dict[str, str],
+        requirements: RequirementsModel | None,
+        internal: InternalDesignModel | None,
+        changed_upstream: list[str],
+        *,
+        llm,
+    ) -> tuple[str, ImplementationPlanModel]:
+        """実装計画書を構造化出力で下書きし、model と md を作る(app/documents/implementation_plan)。
+        入力は要件定義書・内部設計書の md、前の版のタスクと上流の変わった行。タスクのキーは前の版の
+        model から引き継ぎ、処理別データフローの ID と要件ID(検証が照らす)は内部設計書・
+        要件定義書の model から写す。"""
+        current = await self._documents.get_current(
+            project_id=project.id, doc_type="implementation_plan"
+        )
+        previous = parse_implementation_plan_model(current.model if current else None)
+        messages = build_implementation_plan_messages(
+            generated["requirements"], generated["internal_design"], previous, changed_upstream
+        )
+        output = await invoke_structured(llm, ImplementationPlanGenerationOutput, messages)
+        model = build_implementation_plan_model(
+            to_implementation_plan_draft(output),
+            previous,
+            dataflow_ids=[f.id for f in internal.dataflows] if internal else [],
+            requirements=requirements,
+        )
+        return render_implementation_plan(model), model
 
     async def _self_diagnose(self, generated: dict[str, str], *, llm) -> str:
         """生成済みの文書(モードにより4種または2種)をまとめて入力し、不足・不明瞭な点を
@@ -533,12 +523,6 @@ class DocGeneratorService:
         return await invoke_with_retry(_call, messages=messages)
 
 
-def _collapse_doubled_headings(markdown: str) -> str:
-    """見出しの記号の重なり(`### ### 1.`)を1つにまとめる(`### 1.`)。手順書の index などが
-    文書の見出しをそのまま写すため、生成の時点で直しておく。"""
-    return _DOUBLED_HEADING.sub(r"\1", markdown)
-
-
 def _render_transcript(history: list[ChatHistory]) -> str:
     """chat_historiesを、ドキュメント生成プロンプトに埋め込むための読みやすいテキストに変換する。
     sender='others'(過去の自己診断結果)は生成の入力には含めない。"""
@@ -554,6 +538,40 @@ def _render_transcript(history: list[ChatHistory]) -> str:
         if entry.sender != "others"
     ]
     return "\n".join(lines)
+
+
+def upstream_changes(
+    doc_type: str,
+    previous_models: Mapping[str, dict | None],
+    requirements: RequirementsModel | None,
+    external: ExternalDesignModel | None,
+    internal: InternalDesignModel | None,
+) -> list[str]:
+    """文書の上流(_DOC_TYPE_INPUTS)で、前の版から今回の生成で変わった行(後続の再生成を前の版の
+    差分にとどめる手がかり。app/documents/revision.py)。上流の前の版が無ければ空。"""
+    rows = {
+        "requirements": (
+            requirement_rows(parse_requirements_model(previous_models.get("requirements"))),
+            requirement_rows(requirements),
+        ),
+        "external_design": (
+            external_design_rows(
+                parse_external_design_model(previous_models.get("external_design"))
+            ),
+            external_design_rows(external),
+        ),
+        "internal_design": (
+            internal_design_rows(
+                parse_internal_design_model(previous_models.get("internal_design"))
+            ),
+            internal_design_rows(internal),
+        ),
+    }
+    return [
+        change
+        for upstream in _DOC_TYPE_INPUTS.get(doc_type, ())
+        for change in changed_rows(*rows[upstream])
+    ]
 
 
 def parse_requirements_model(raw: dict | None) -> RequirementsModel | None:
@@ -608,6 +626,54 @@ def external_design_summary(document: GeneratedDocument) -> ExternalDesignSummar
     )
 
 
+def parse_internal_design_model(raw: dict | None) -> InternalDesignModel | None:
+    """保存した内部設計書の model を読む。無い・壊れていれば None(md のまま使う)。"""
+    if raw is None:
+        return None
+    try:
+        return InternalDesignModel.model_validate(raw)
+    except ValidationError:
+        return None
+
+
+def parse_implementation_plan_model(raw: dict | None) -> ImplementationPlanModel | None:
+    """保存した実装計画書の model を読む。無い・壊れていれば None(md のまま使う)。"""
+    if raw is None:
+        return None
+    try:
+        return ImplementationPlanModel.model_validate(raw)
+    except ValidationError:
+        return None
+
+
+def internal_design_summary(document: GeneratedDocument) -> DocumentSummaryRead | None:
+    """プレビューに出す内部設計書の行数と検証の指摘(LLMは呼ばない)。model の無い版・ほかの
+    文書は None。"""
+    if document.doc_type != "internal_design":
+        return None
+    model = parse_internal_design_model(document.model)
+    if model is None:
+        return None
+    return DocumentSummaryRead(
+        counts=internal_design_counts(model),
+        issues=_issues_read(validate_internal_design(model)),
+    )
+
+
+def implementation_plan_summary(document: GeneratedDocument) -> DocumentSummaryRead | None:
+    """プレビューに出す実装計画書の行数と検証の指摘(LLMは呼ばない)。model の無い版・ほかの
+    文書は None。"""
+    if document.doc_type != "implementation_plan":
+        return None
+    model = parse_implementation_plan_model(document.model)
+    if model is None:
+        return None
+    return DocumentSummaryRead(
+        counts=implementation_plan_counts(model),
+        issues=_issues_read(validate_implementation_plan(model)),
+    )
+
+
 def _issues_read(issues: list[DocumentIssue]) -> list[DocumentIssueRead]:
     return [
         DocumentIssueRead(level=i.level, code=i.code, message=i.message, targets=list(i.targets))
@@ -616,9 +682,11 @@ def _issues_read(issues: list[DocumentIssue]) -> list[DocumentIssueRead]:
 
 
 def document_read(document: GeneratedDocument) -> GeneratedDocumentRead:
-    """文書の応答。要件定義書は出どころの件数・推測の要件・検証の指摘を、外部設計書は行数と
-    検証の指摘を付ける。"""
+    """文書の応答。要件定義書は出どころの件数・推測の要件・検証の指摘を、外部設計書・内部設計書・
+    実装計画書は行数と検証の指摘を付ける。"""
     read = GeneratedDocumentRead.model_validate(document)
     read.requirements = requirements_summary(document)
     read.external_design = external_design_summary(document)
+    read.internal_design = internal_design_summary(document)
+    read.implementation_plan = implementation_plan_summary(document)
     return read

@@ -7,6 +7,8 @@ AI には要件の中身・出どころ・観点だけを書かせ、ID は書�
   使い回さない(後の Phase で段階1の`req_ids`などが ID で要件を指すため)。
 - 出どころ: 観点の表の状態を上限にする(`cap_source`)。AI が「ユーザー」と書いても、観点が
   未決なら「推測」にする。Phase 34 の「根拠の無い決定は取り込まない」と同じ考え方。
+- 変更なし(`unchanged`): 前の版の同じ ID・同じ種別の行があれば、その行をそのまま使う
+  (再生成の言い換えで要件が変わらないため。`app.documents.revision`)。
 """
 
 from collections.abc import Iterable, Mapping, Sequence
@@ -38,7 +40,9 @@ _STATUS_CAP: dict[str, RequirementSource] = {
 # ただし制約(CON)の行は規模そのもの(公開か社内か)を述べるので、規模も根拠に数える
 _NOT_GROUNDING: frozenset[str] = frozenset({"scale"})
 _SCALE_GROUNDS_KINDS: frozenset[str] = frozenset({"CON"})
-_NFR_CATEGORY: dict[str, str] = {d.key: d.label for d in POINT_DEFS if d.kind == "nonfunctional"}
+_NFR_CATEGORY: dict[str, str] = {
+    d.key: d.ipa_category for d in POINT_DEFS if d.kind == "nonfunctional"
+}
 _OTHER_CATEGORY = "その他"
 # 1.2(利用者と使う場面)の根拠の観点
 _USER_POINTS = ("users", "daily_flow")
@@ -55,6 +59,7 @@ class RequirementDraft:
     priority: str = ""
     category: str = ""
     prev_id: str = ""
+    unchanged: bool = False
 
 
 @dataclass(frozen=True)
@@ -146,8 +151,13 @@ def build_model(
     ids, next_seq = assign_ids(
         [(kind, r.prev_id) for kind, r in zip(kinds, kept, strict=True)], previous
     )
+    prev_rows = {row.id: row for row in previous.rows} if previous else {}
     rows: list[RequirementRow] = []
     for req_id, kind, r in zip(ids, kinds, kept, strict=True):
+        same = prev_rows.get(req_id)
+        if r.unchanged and same is not None and same.kind == kind:
+            rows.append(same)
+            continue
         points = known_points(r.points)
         rows.append(
             RequirementRow(

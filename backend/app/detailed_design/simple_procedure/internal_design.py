@@ -11,7 +11,11 @@ docs/internal_design.md 3.3節「5. 実装手順書」の簡易モード。作�
 - 技術スタック → 内部設計書 3.1節
 - 関数の契約(段階6)・シーケンス図は簡易モードに無い(手順書の AI が「未定義」に挙げる)
 
-書式は内部設計書のプロンプト(app/services/doc_generator_service.py)で決まった見出しと表。
+書式は内部設計書の md(app/documents/internal_design/markdown.py)の見出しと表。内部設計書が
+model を持つ版は、md を解析せず model から読む(`book_from_model`)。md の解析は、model の無い
+以前の版のために残す。内部設計書の model と md は、パッケージの`__init__`でなくモジュールから
+読む(`app.documents.internal_design`の`__init__`は`app.detailed_design`を読むので、そちらが
+先に読まれたときに循環しないように)。
 """
 
 import re
@@ -27,6 +31,13 @@ from app.detailed_design.api_list import (
     table_cells,
 )
 from app.detailed_design.structure import ModuleRow, path_variants
+from app.documents.internal_design.markdown import (
+    body_text,
+    data_model_body,
+    dataflow_body,
+    table_body,
+)
+from app.documents.internal_design.model import InternalDesignModel
 from app.uml.generation.sections import extract_section
 
 ARCHITECTURE_SECTION = "3.1"
@@ -99,6 +110,32 @@ def parse_internal_design(internal_design: str, external_design: str = "") -> Si
         data_model=_body(data_model),
         architecture=_body(extract_section(internal_design, ARCHITECTURE_SECTION)),
         error_policy=_body(extract_section(internal_design, ERROR_POLICY_SECTION)),
+    )
+
+
+def book_from_model(model: InternalDesignModel, external_design: str = "") -> SimpleDesignBook:
+    """内部設計書の model(と外部設計書の 2.6節)から、`parse_internal_design`と同じ形で読む。
+    処理別データフロー・テーブルの本文は、model から組み立てる md と同じもの。"""
+    table_names = tuple(t.name for t in model.tables)
+    dataflows: dict[str, DataFlow] = {}
+    for flow in model.dataflows:
+        markdown = dataflow_body(flow)
+        dataflows[flow.id] = DataFlow(
+            id=flow.id,
+            title=flow.trigger,
+            markdown=markdown,
+            tables=_mentioned(markdown, table_names),
+        )
+    return SimpleDesignBook(
+        modules={m.path: m for m in model.modules},
+        has_module_list=bool(model.modules),
+        dataflows=dataflows,
+        apis={a.key: ApiEndpoint(a.method, a.path, a.summary, ()) for a in model.apis},
+        external_apis={a.key: a for a in extract_api_endpoints(external_design)},
+        tables={t.name: table_body(t) for t in model.tables},
+        data_model=data_model_body(model),
+        architecture=body_text(model.architecture),
+        error_policy=body_text(model.error_policy),
     )
 
 

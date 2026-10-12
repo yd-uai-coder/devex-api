@@ -37,6 +37,7 @@ from app.detailed_design.plan import (
     PlanTask,
     Priority,
     UnitKind,
+    renamed_task_ids,
     task_id,
 )
 from app.detailed_design.procedure_doc import DesignDocument, FindingLevel
@@ -222,11 +223,10 @@ def _set_req_ids(task: _Task, values: list[str]) -> list[WbsIssue]:
 def _to_plan(milestones: list[_Milestone], environment: str) -> tuple[PlanModel, list[WbsIssue]]:
     """並び順から ID を導き、書かれた ID との違いを指摘し、依存先を導いた ID に読み替える。"""
     issues: list[WbsIssue] = []
-    renames: dict[str, str] = {}
+    renames = renamed_task_ids([[t.written_id for t in m.tasks] for m in milestones])
     for m, milestone in enumerate(milestones):
         for t, task in enumerate(milestone.tasks):
             derived = task_id(m, t)
-            renames.setdefault(task.written_id, derived)
             if task.written_id != derived:
                 message = (
                     f"タスク「{task.title}」の ID {task.written_id} が、並び順の ID {derived} と"
@@ -244,7 +244,7 @@ def _to_plan(milestones: list[_Milestone], environment: str) -> tuple[PlanModel,
                         kind=task.kind,
                         title=task.title,
                         function_ids=task.function_ids,
-                        depends_on=[renames.get(d, d) for d in task.depends_on],
+                        depends_on=[renames.get(d.upper(), d) for d in task.depends_on],
                         modules=task.modules,
                         config_files=task.config_files,
                         req_ids=task.req_ids,

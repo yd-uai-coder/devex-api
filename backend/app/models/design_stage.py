@@ -33,6 +33,11 @@ class DesignStage(Base):
     最後に承認したときの`version`、`input_fingerprint`は承認したときの入力の版
     (app/detailed_design/stages.py参照)。
 
+    `approved_model`は直前に承認したときの`model`の写し(1件だけ)。次に承認するとき、写しと今の
+    `model`を要素の単位で比べて、変更の影響を求める(app/detailed_design/impact)。`impact`は、
+    他の段階・文書・この段階の変更から届いた見直しの印(`{"changes": [...], "marks": [...]}`)。
+    段階を承認すると、その段階の印は消える。
+
     `generation_*`はAIの下書きの生成の状態。生成中は保存・承認できない(AIの結果で
     人の編集を上書きしないため)。
     """
@@ -55,6 +60,8 @@ class DesignStage(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     approved_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     input_fingerprint: Mapped[dict | None] = mapped_column(PortableJSON, nullable=True)
+    approved_model: Mapped[dict | None] = mapped_column(PortableJSON, nullable=True)
+    impact: Mapped[dict | None] = mapped_column(PortableJSON, nullable=True)
     # AIの下書きの生成の状態。レビューの状態`status`とは別の軸(UML図と同じ)。
     # None = まだ生成していない / 'generating' / 'completed' / 'failed'
     generation_status: Mapped[str | None] = mapped_column(String(20), nullable=True)

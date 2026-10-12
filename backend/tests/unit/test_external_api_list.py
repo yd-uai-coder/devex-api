@@ -3,7 +3,7 @@
 SUT: extract_api_endpoints / parse_trigger / trigger_key / endpoint_key
      (app/detailed_design/api_list.py)、
      外部設計書の構造化出力のスキーマ(app/documents/external_design/drafting.py)・
-     内部設計書のプロンプト(doc_generator_service._DOC_TYPE_PROMPTS)、
+     内部設計書の構造化出力のスキーマ(app/documents/internal_design/drafting.py)、
      E2E用の偽LLMが返す外部設計書(app/ai/llm/fake.py。md は生成と同じく組み立てる)
 ドライバ: 各テスト関数
 スタブ不要 ── 表の読み取りは純粋関数で、プロンプトは定数のため。
@@ -14,7 +14,7 @@ from tests.fixtures.external_design import e2e_fake_external_design_md
 from app.ai.llm.fake import E2eFakeLLM
 from app.detailed_design import endpoint_key, extract_api_endpoints, parse_trigger, trigger_key
 from app.documents.external_design.drafting import GeneratedApi
-from app.services.doc_generator_service import _DOC_TYPE_PROMPTS
+from app.documents.internal_design.drafting import GeneratedInternalApi
 
 EXTERNAL_DESIGN = """# 2. 外部設計書
 
@@ -54,8 +54,10 @@ def test_external_design_schema_asks_for_api_path_form() -> None:
     assert "{id}" in description
 
 
-def test_internal_design_prompt_reuses_external_api_list() -> None:
-    assert "外部設計書2.6のAPI一覧と同じメソッド・パス" in _DOC_TYPE_PROMPTS["internal_design"]
+def test_internal_design_schema_reuses_external_api_list() -> None:
+    description = GeneratedInternalApi.model_fields["path"].description or ""
+
+    assert "【外部設計書】2.6 の API と同じパス" in description
 
 
 def test_extract_api_endpoints_reads_only_section_2_6() -> None:

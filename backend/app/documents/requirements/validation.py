@@ -18,7 +18,10 @@ def source_counts(model: RequirementsModel) -> dict[RequirementSource, int]:
 
 
 def validate_requirements(model: RequirementsModel) -> list[DocumentIssue]:
-    """生成した時点の観点の表(`model.point_statuses`)に対して検証する。"""
+    """生成した時点の観点の表(`model.point_statuses`)に対して検証する。
+
+    必須の未決は、表に記録した観点だけで数える(生成した後に足した観点は、その版では聞いて
+    いないので指摘しない)。"""
     statuses = model.point_statuses
     scale = as_scale(model.scale)
     issues: list[DocumentIssue] = []
@@ -29,7 +32,7 @@ def validate_requirements(model: RequirementsModel) -> list[DocumentIssue]:
     open_required = [
         d
         for d in POINT_DEFS
-        if is_required(d.key, scale) and statuses.get(d.key, "open") == "open"
+        if is_required(d.key, scale) and statuses.get(d.key) == "open"
     ]
     if open_required:
         issues.append(

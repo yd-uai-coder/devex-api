@@ -177,6 +177,28 @@ def test_build_model_assigns_ids_caps_sources_and_normalizes() -> None:
     assert model.scale == "personal"
 
 
+def test_build_model_puts_aspect_points_under_their_ipa_category() -> None:
+    """側面の観点(データの保全・ログなど)を根拠にした NFR も、IPA の6大項目にそろえる。"""
+    rows = (
+        ("毎日バックアップ", "backup"),
+        ("本文をログに残さない", "logging"),
+        ("退会は不要", "data_retention"),
+    )
+    draft = RequirementsDraft(
+        purpose="",
+        requirements=tuple(
+            RequirementDraft(
+                kind="NFR", text=text, source="user", points=(point,), category="AI の書いた種類"
+            )
+            for text, point in rows
+        ),
+    )
+
+    model = build_model(draft, None, _states(), "public")
+
+    assert [r.category for r in model.rows] == ["可用性", "セキュリティ", "運用・保守性"]
+
+
 def test_mark_adopted_changes_only_assumed_row() -> None:
     model = RequirementsModel(
         purpose="p",
@@ -283,6 +305,16 @@ def test_validate_requirements_reports_each_code() -> None:
     assert by_code["ASSUMED_REQUIREMENTS"].level == "minor"
 
 
+def test_validate_requirements_skips_points_not_recorded_in_the_version() -> None:
+    """生成した後に足した観点(以前の版の表に無い)は、未決として指摘しない。"""
+    statuses = {k: "decided" for k in _statuses() if k not in ("backup", "data_retention")}
+    model = RequirementsModel(
+        purpose="p", rows=[_row("FR-001")], point_statuses=statuses, scale="personal"
+    )
+
+    assert validate_requirements(model) == []
+
+
 def test_validate_requirements_clean_model_has_no_issues() -> None:
     keys = (
         "scale",
@@ -293,7 +325,9 @@ def test_validate_requirements_clean_model_has_no_issues() -> None:
         "exceptions",
         "tech",
         "availability",
+        "backup",
         "performance",
+        "data_retention",
         "security",
     )
     model = RequirementsModel(

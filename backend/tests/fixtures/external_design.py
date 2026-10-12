@@ -1,7 +1,8 @@
-"""外部設計書の構造化出力の見本と、上流の2文書の偽の構造化出力(生成のテストで偽の LLM が返す)。"""
+"""外部設計書の構造化出力の見本と、4文書の偽の構造化出力(生成のテストで偽の LLM が返す)。"""
 
 from pydantic import BaseModel
 from tests.fixtures.requirements import requirements_output
+from tests.fixtures.simple_documents import implementation_plan_output, internal_design_output
 
 from app.ai.llm.fake import E2eFakeLLM
 from app.documents.external_design import build_model, render_external_design
@@ -12,6 +13,8 @@ from app.documents.external_design.drafting import (
     build_external_design_messages,
     to_draft,
 )
+from app.documents.implementation_plan.drafting import ImplementationPlanGenerationOutput
+from app.documents.internal_design.drafting import InternalDesignGenerationOutput
 from app.documents.requirements import build_model as build_requirements_model
 from app.documents.requirements import render_requirements
 from app.documents.requirements.drafting import (
@@ -56,11 +59,16 @@ def external_design_output(
 def upstream_outputs(
     requirements: RequirementsGenerationOutput | None = None,
     external_design: ExternalDesignGenerationOutput | None = None,
+    internal_design: InternalDesignGenerationOutput | None = None,
+    implementation_plan: ImplementationPlanGenerationOutput | None = None,
 ) -> dict[type[BaseModel], BaseModel]:
-    """FakeLLM の structured_by_schema に渡す、要件定義書と外部設計書の構造化出力。"""
+    """FakeLLM の structured_by_schema に渡す、4文書の構造化出力(詳細設計モードは前の2つだけを
+    使う)。"""
     return {
         RequirementsGenerationOutput: requirements or requirements_output(),
         ExternalDesignGenerationOutput: external_design or external_design_output(),
+        InternalDesignGenerationOutput: internal_design or internal_design_output(),
+        ImplementationPlanGenerationOutput: implementation_plan or implementation_plan_output(),
     }
 
 

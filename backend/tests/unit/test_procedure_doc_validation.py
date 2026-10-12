@@ -58,7 +58,8 @@ def test_duplicate_unit_is_error_once() -> None:
 
 
 def test_unit_not_in_plan_is_mismatch() -> None:
-    issues = validate_procedure_doc(procedure_doc_model(unit_id="M-02-T01"), _sources())
+    model = procedure_doc_model(unit_id="M-02-T01", unit_key="")
+    issues = validate_procedure_doc(model, _sources())
 
     assert [(i.code, i.severity, i.fix_stage) for i in issues] == [("UNIT_MISMATCH", "error", 8)]
     # 直し方は画面の操作(今の単位へ付け替えるか消す)で案内する

@@ -79,6 +79,7 @@ from app.detailed_design.procedure_doc import (
     PlanUnit,
     ProcedureDocModel,
     UnitProcedure,
+    relabel_units,
     spelling_match,
     unit_refs,
 )
@@ -296,6 +297,27 @@ def _unknown_requirements(
     ]
 
 
+def _crosscutting_requirement_issues(
+    parsed: PlanModel, sources: StageSources
+) -> list[StageIssue]:
+    """横断事項の要件ID のうち、要件定義書に無いもの(警告)。照合は段階1と同じく外部設計書の
+    model に写した要件ID の一覧で、一覧が無ければ照合しない。"""
+    index = index_from_external_design(sources.document_models.get("external_design"))
+    if not index.available:
+        return []
+    known = set(index.known_ids)
+    return [
+        _warning(
+            "UNKNOWN_REQUIREMENT_ID",
+            f"横断事項「{row.topic.strip()}」の要件 {req} が要件定義書にありません。",
+            row.topic.strip(),
+        )
+        for row in parsed.crosscutting
+        for req in row.req_ids
+        if req not in known
+    ]
+
+
 def validate_data_flow(model: Mapping[str, Any], sources: StageSources) -> list[StageIssue]:
     """段階2(データフロー)の検証。
 
@@ -400,7 +422,8 @@ def validate_data_model(model: Mapping[str, Any], sources: StageSources) -> list
     セルの処理IDが機能一覧に無い / セルのテーブルが ER に無い / セルの重複 /
     操作が空・C,R,U,D の順の形でない /
     DFD に読みの線があるのに R が無い / DFD に書き込みの線があるのに C/U/D が無い。
-    警告: 下書きのままのセルがある / DFD のデータストアが ER に無い /
+    警告: 下書きのままのセルがある / DFD の書き込みの線から操作を推定したセル /
+    DFD のデータストアが ER に無い /
     どの処理も触れないテーブル / 主キーの無いテーブル。
     """
     try:
@@ -470,7 +493,8 @@ def validate_data_model(model: Mapping[str, Any], sources: StageSources) -> list
         if access.kind == "write" and not set(ops) & {"C", "U", "D"}:
             message = (
                 f"DFD では {target} の書き込みの線がありますが、CRUD 図に C/U/D がありません"
-                "(C・U・D のどれかを決めてください)。"
+                "(C・U・D のどれかを決めてください。読むだけの処理なら、段階2の DFD の線の向きを"
+                "直してください)。"
             )
             issues.append(_error("DFD_WRITE_MISSING", message, target))
     for (function_id, table), ops in ops_by_cell.items():
@@ -483,6 +507,14 @@ def validate_data_model(model: Mapping[str, Any], sources: StageSources) -> list
     if drafts:
         message = f"AI の下書きのままのセルが {drafts} 個あります(承認すると確定します)。"
         issues.append(_warning("DRAFT_CELLS", message))
+    for cell in parsed.cells:
+        if cell.inferred:
+            target = f"{cell.function_id} × {cell.table}"
+            message = (
+                f"DFD の書き込みの線から、{target} の操作を「{cell.ops}」と推定しました。"
+                "読むだけの処理なら、段階2の DFD の線の向きを直してください。"
+            )
+            issues.append(_warning("DFD_WRITE_INFERRED", message, target))
     for table in store_not_in_er:
         message = f"DFD のデータストア「{table}」が、ER のテーブルにありません。"
         issues.append(_warning("STORE_NOT_IN_ER", message, table))
@@ -709,6 +741,7 @@ def validate_plan(model: Mapping[str, Any], sources: StageSources) -> list[Stage
     for topic in missing_topics(parsed):
         message = f"横断事項に「{topic}」がありません。"
         issues.append(_warning("MISSING_TOPIC", message, topic))
+    issues += _crosscutting_requirement_issues(parsed, sources)
 
     if not parsed.milestones:
         issues.append(_error("NO_MILESTONE", "マイルストーンが1件もありません。"))
@@ -837,7 +870,9 @@ def validate_procedure_doc(
         parsed = ProcedureDocModel.model_validate(model)
     except ValidationError as exc:
         return [_error("INVALID_MODEL", f"実装手順書の形が正しくありません: {exc}")]
-    basis = procedure_basis(sources.mode, sources.stages, sources.documents)
+    basis = procedure_basis(
+        sources.mode, sources.stages, sources.documents, sources.document_models
+    )
     issues, matched = _matched_procedures(parsed, basis)
     if basis.mode == "simple":
         return issues + _simple_procedure_issues(basis, sources)
@@ -862,6 +897,7 @@ def _matched_procedures(
 ) -> tuple[list[StageIssue], list[tuple[UnitProcedure, PlanUnit]]]:
     """手順書を作業単位と突き合わせる(両モード共通)。戻り値は、手順書そのもののエラー
     (同じ単位が2つ・単位が無い・タスク名が違う)と、単位と合った手順書の組。"""
+    parsed = relabel_units(parsed, basis.plan)
     by_id = {unit.unit_id: unit for unit in basis.units}
     source = basis.labels.plan
     issues: list[StageIssue] = []
@@ -885,7 +921,7 @@ def _matched_procedures(
         if unit.task.title.strip() != doc.title.strip():
             message = (
                 f"{uid} の手順書は「{doc.title.strip()}」のものですが、{source}の {uid} は"
-                f"「{unit.task.title.strip()}」です({source}を並べ替えたか改名しました。"
+                f"「{unit.task.title.strip()}」です({source}で改名しました。"
                 f"{_STRAY_GUIDE.format(source=source)})。"
             )
             issues.append(_unit_error("UNIT_MISMATCH", message, uid))

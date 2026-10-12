@@ -6,11 +6,14 @@ from fastapi.responses import Response
 from app.api.deps import CurrentProjectDep, SessionDep
 from app.api.responses import content_disposition
 from app.schemas.design_stage import (
+    DesignImpactRead,
     DesignStageApprove,
     DesignStageGenerate,
     DesignStageRead,
     DesignStageSave,
+    ImpactReview,
     SequenceRead,
+    StageImpactRead,
     UnitAiMarkdownRead,
     UnitContextRead,
 )
@@ -36,6 +39,15 @@ async def list_design_stages(
     止まった生成(15分超)はここで回収してから返す。"""
     await DesignStageGenerationService(session).recover_stale(current_project.id)
     return await DesignStageService(session).list_stages(current_project)
+
+
+@router.get("/impact", response_model=DesignImpactRead)
+async def get_design_impact(
+    session: SessionDep, current_project: CurrentProjectDep
+) -> DesignImpactRead:
+    """変更の影響(段階ごとの変わったもの・見直しの印・再生成の候補)を取得する。まだ承認していない
+    編集から届く印は`pending`で示す(承認すると記録される)。"""
+    return await DesignStageService(session).impact(current_project)
 
 
 @router.get("/document")
@@ -154,7 +166,24 @@ async def approve_design_stage(
     session: SessionDep,
     current_project: CurrentProjectDep,
 ) -> DesignStageRead:
-    """段階を承認する(古い段階は、内容を変えずに承認し直せる)。"""
+    """段階を承認する(古い段階は、内容を変えずに承認し直せる)。他の段階・文書の変更から届いた
+    見直しの印が未確認なら409(`DESIGN_STAGE_UNREVIEWED_IMPACT`)。"""
     return await DesignStageService(session).approve(
         current_project, stage=stage, expected_version=payload.version
     )
+
+
+@router.post("/{stage}/impact/review", response_model=StageImpactRead)
+async def review_impact_marks(
+    stage: StageNumber,
+    payload: ImpactReview,
+    session: SessionDep,
+    current_project: CurrentProjectDep,
+) -> StageImpactRead:
+    """段階の見直しの印を確認済み(または未確認)にする。他の段階・文書から届いた印がすべて
+    確認済みになると、段階を承認し直せる。"""
+    service = DesignStageService(session)
+    await service.review_marks(
+        current_project, stage=stage, keys=payload.keys, reviewed=payload.reviewed
+    )
+    return await service.stage_impact(current_project, stage)

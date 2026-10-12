@@ -817,8 +817,6 @@ def _step(callee: str = "routes/reservations", *, action: str = "検証する") 
         action=action,
         result="予約",
         db="reservations C",
-        branch="—",
-        is_branch=False,
     )
 
 

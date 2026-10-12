@@ -1,9 +1,10 @@
 from langchain_core.messages import HumanMessage, SystemMessage
 from tests.fixtures.external_design import e2e_fake_external_design_md
+from tests.fixtures.simple_documents import e2e_fake_simple_documents
 
 from app.ai.llm.fake import E2eFakeLLM
 from app.detailed_design.plan import unit_ids
-from app.detailed_design.simple_procedure import parse_wbs
+from app.detailed_design.simple_procedure import parse_internal_design, parse_wbs
 from app.documents.requirements import build_model, render_requirements
 from app.documents.requirements.drafting import (
     RequirementsGenerationOutput,
@@ -22,7 +23,7 @@ from app.hearing import (
 from app.models.project import Project
 from app.schemas.hearing import HearingPointsJudgement, HearingReplyOut
 from app.services.chat_service import _build_messages
-from app.services.doc_generator_service import _DOC_TYPE_PROMPTS, _SELF_DIAGNOSIS_SYSTEM_PROMPT
+from app.services.doc_generator_service import _SELF_DIAGNOSIS_SYSTEM_PROMPT
 
 
 async def _judge(llm: E2eFakeLLM, *, human_message_count: int) -> HearingPointsJudgement:
@@ -73,39 +74,17 @@ async def test_sufficient_after_three_chat_turns() -> None:
     assert all(p.evidence == [4] for p in result.points)
 
 
-async def test_each_doc_type_prompt_produces_its_own_distinct_reply() -> None:
-    """各doc_type専用プロンプト(実際にdoc_generator_service.pyが使うもの)を渡したとき、
-    互いに異なる内容が返ることを確認する。internal_design/external_design/implementation_plan
-    のプロンプトは「以下の【要件定義書】に基づき...」のように他doc_typeのラベルを本文に含むため、
-    単純な部分一致だとrequirementsと誤判定されてしまう。"""
-    llm = E2eFakeLLM()
-    replies: dict[str, str] = {}
-    for doc_type, prompt in _DOC_TYPE_PROMPTS.items():
-        messages = [SystemMessage(content=prompt), HumanMessage(content="dummy input")]
-        result = await llm.ainvoke(messages)
-        # E2eFakeLLMは常にstrを返す(型注釈上の保証は無いため明示)
-        assert isinstance(result.content, str)
-        replies[doc_type] = result.content
+async def test_simple_documents_are_structured_and_readable_by_parsers() -> None:
+    """偽の内部設計書・実装計画書は構造化出力で返り、model から組み立てた md を、簡易モードの
+    実装手順書の解析が指摘0件で読める(E2E の画面にも「E2E Fake」が出る)。"""
+    documents = await e2e_fake_simple_documents(E2eFakeLLM())
 
-    # 要件定義書・外部設計書は構造化出力なので、文の生成のプロンプトは2種類
-    assert set(replies) == {"internal_design", "implementation_plan"}
-    assert len(set(replies.values())) == 2  # 2種類とも異なる内容であること
-    assert "内部設計書" in replies["internal_design"]
-    assert "実装計画書" in replies["implementation_plan"]
-
-
-async def test_implementation_plan_reply_is_readable_as_wbs() -> None:
-    """偽の実装計画書は、簡易モードの実装手順書が指摘0件で作業単位として読める書式で返る。"""
-    llm = E2eFakeLLM()
-    messages = [
-        SystemMessage(content=_DOC_TYPE_PROMPTS["implementation_plan"]),
-        HumanMessage(content="dummy input"),
-    ]
-
-    result = await llm.ainvoke(messages)
-
-    assert isinstance(result.content, str)
-    parsed = parse_wbs(result.content)
+    internal_md, _ = documents["internal_design"]
+    plan_md, _ = documents["implementation_plan"]
+    assert "E2E Fake" in internal_md
+    assert "E2E Fake" in plan_md
+    assert list(parse_internal_design(internal_md).dataflows) == ["DF-1"]
+    parsed = parse_wbs(plan_md)
     assert parsed.issues == ()
     assert unit_ids(parsed.plan) == ["M-01-T01", "M-01-T02"]
 

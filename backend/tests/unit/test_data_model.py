@@ -1,7 +1,7 @@
 """段階3 データモデルの組み立て(CRUD 図)と検証のテスト。
 
-SUT: dfd_accesses / merge_crud / confirm_drafts / normalize_ops / table_key / er_table_names /
-     tables_without_primary_key(app/detailed_design/data_model.py)、
+SUT: dfd_accesses / merge_crud / confirm_drafts / infer_write_ops / normalize_ops / table_key /
+     er_table_names / tables_without_primary_key(app/detailed_design/data_model.py)、
      validate_data_model / selected_dfd_accesses / STAGE_VALIDATORS
      (app/detailed_design/validation.py)、
      ErColumn・ErElement の制約・説明(app/uml/domain/er.py)、
@@ -35,6 +35,7 @@ from app.detailed_design import (
     dfd_subject,
     er_table_names,
     has_errors,
+    infer_write_ops,
     merge_crud,
     normalize_ops,
     selected_dfd_accesses,
@@ -129,15 +130,44 @@ def test_merge_crud_marks_drafts_and_keeps_dfd_reads_fixed() -> None:
     ]
 
 
-def test_merge_crud_keeps_dfd_write_without_cud_as_empty_draft() -> None:
-    accesses = [DfdAccess("F-01", "reservations", "write")]
-    model = merge_crud([], accesses, _function_list(), ["reservations"])
-    assert [(c.ops, c.draft) for c in model.cells] == [("", True)]
+def test_merge_crud_infers_write_ops_when_ai_wrote_no_cud() -> None:
+    """DFD の書き込みの線があるのに AI が C/U/D を書かないセルは、処理の名前から推定して補う。"""
+    accesses = [
+        DfdAccess("F-01", "reservations", "write"),
+        DfdAccess("F-02", "reservations", "read"),
+        DfdAccess("F-02", "reservations", "write"),
+        DfdAccess("F-03", "users", "write"),
+    ]
+    drafts = [CrudDraft("F-03", "users", "RU")]  # AI が書き込みを書いたセルは補わない
+    model = merge_crud(drafts, accesses, _function_list(), ["reservations", "users"])
+    assert [(c.function_id, c.ops, c.draft, c.inferred) for c in model.cells] == [
+        ("F-01", "C", True, True),  # 「登録」→ C
+        ("F-02", "RU", True, True),  # 読みの R はそのまま、それ以外 → U
+        ("F-03", "RU", True, False),
+    ]
+
+
+def test_infer_write_ops_from_function_name() -> None:
+    assert infer_write_ops("予約を登録する") == "C"
+    assert infer_write_ops("メッセージ送信") == "C"
+    assert infer_write_ops("登録済みの予約を削除する") == "D"  # 削除を先に見る
+    assert infer_write_ops("プロジェクト一覧取得") == "U"
 
 
 def test_confirm_drafts_clears_all_marks() -> None:
-    confirmed = confirm_drafts(crud_model(draft=True))
-    assert CrudModel.model_validate(confirmed).cells[0].draft is False
+    confirmed = confirm_drafts({"cells": [_inferred_cell()]})
+    cell = CrudModel.model_validate(confirmed).cells[0]
+    assert (cell.draft, cell.inferred) == (False, False)
+
+
+def _inferred_cell() -> dict:
+    return {
+        "function_id": "F-01",
+        "table": "reservations",
+        "ops": "U",
+        "draft": True,
+        "inferred": True,
+    }
 
 
 def test_helpers() -> None:
@@ -270,3 +300,20 @@ def test_validate_warnings() -> None:
         ("TABLE_WITHOUT_PK", "users"),
     ]
     assert selected_dfd_accesses(sources) == [stray]
+
+
+def test_validate_warns_inferred_cells_and_guides_to_dfd() -> None:
+    write = DfdAccess("F-01", "reservations", "write")
+    sources = _sources(er=_approved_er(), accesses=(write,))
+    issues = validate_data_model({"cells": [_inferred_cell()]}, sources)
+    assert [(i.code, i.target) for i in issues] == [
+        ("DRAFT_CELLS", None),
+        ("DFD_WRITE_INFERRED", "F-01 × reservations"),
+    ]
+    assert "「U」と推定" in issues[1].message
+    assert "段階2の DFD の線の向き" in issues[1].message
+    # 人が操作を消したセルは、エラーの文でも DFD を直す道を案内する
+    missing = validate_data_model(crud_model(ops=""), sources)
+    assert "段階2の DFD の線の向き" in missing[0].message
+    # 印の無いセルは、保存の形に inferred を出さない
+    assert "inferred" not in CrudModel.model_validate(crud_model()).model_dump()["cells"][0]

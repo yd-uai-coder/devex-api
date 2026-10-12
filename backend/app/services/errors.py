@@ -256,6 +256,14 @@ class DesignStageInvalidError(ConflictError):
     code: ClassVar[str | None] = "DESIGN_STAGE_INVALID"
 
 
+class DesignStageUnreviewedImpactError(ConflictError):
+    """他の段階・文書の変更から届いた見直しの印が、確認済みになっていない段階を承認しようとした場合に
+    送出する(docs/external_design.md 2.10節)。印は変更の影響の取得で確かめ、確認済みにしてから
+    承認し直す。"""
+
+    code: ClassVar[str | None] = "DESIGN_STAGE_UNREVIEWED_IMPACT"
+
+
 class DesignStageGenerationInProgressError(ConflictError):
     """段階の下書きを生成中に、その段階の生成・保存・承認を要求した場合に送出する。
     生成の結果で人の編集を上書きしないため、生成が終わるまで待たせる。"""

@@ -1,7 +1,8 @@
 """段階5の下書きの入出力(プロンプト・出力スキーマ・手順への変換)のテスト。
 
 SUT: build_procedure_messages / to_procedure_draft(app/detailed_design/procedure_drafting.py)、
-     E2E 用の固定の出力(app/ai/llm/fake.py)
+     E2E 用の固定の出力(app/ai/llm/fake.py)、merge_procedure の分岐の参照の付け直し
+     (app/detailed_design/procedure.py)
 ドライバ: 各テスト関数
 スタブ不要 ── どれも純粋関数(副作用なし)で、LLM を呼ばないため(メッセージを組み立て、
 構造化出力を受け取って変換するだけ。LLM の呼び出しはサービス層の責務)。
@@ -23,12 +24,14 @@ from app.detailed_design import (
 )
 from app.detailed_design.procedure_drafting import (
     PROCEDURE_SYSTEM_PROMPT,
+    GeneratedBranch,
     GeneratedStep,
     ProcedureGenerationOutput,
     build_procedure_messages,
     to_procedure_draft,
 )
 from app.detailed_design.prompt_rules import NAMING_RULES
+from app.detailed_design.sequence import to_sequence
 from app.detailed_design.structure_drafting import ModuleListGenerationOutput
 
 _FUNCTION = FunctionListModel.model_validate(function_list_model()).functions[0]
@@ -74,8 +77,6 @@ def test_smoke_build_messages_and_convert_output():
                 action="a",
                 result="r",
                 db="—",
-                branch="—",
-                is_branch=False,
             )
         ],
     )
@@ -134,8 +135,6 @@ def test_kind_is_passed_to_draft_and_defaults_to_call():
         action="返す",
         result="",
         db="—",
-        branch="—",
-        is_branch=False,
         kind="return",
     )
     plain = back.model_copy(update={"kind": "call"})
@@ -144,3 +143,58 @@ def test_kind_is_passed_to_draft_and_defaults_to_call():
     assert [s.kind for s in to_procedure_draft(output).steps] == ["return", "call"]
     assert "kind は呼び出しなら call" in PROCEDURE_SYSTEM_PROMPT
     assert GeneratedStep.model_fields["kind"].default == "call"
+
+
+def _step(action: str, *branches: tuple[str, str]) -> GeneratedStep:
+    return GeneratedStep(
+        caller="利用者",
+        callee="app/api/routes/reservations.py",
+        call="create_reservation",
+        data="d",
+        action=action,
+        result="r",
+        db="—",
+        branches=[GeneratedBranch(condition=c, result=r) for c, r in branches],
+    )
+
+
+def test_nested_branches_become_rows_right_after_their_step():
+    """入れ子の分岐は、元の手順の直後の分岐の行(条件 = 処理内容、結果 = 分岐の欄)になる。"""
+    output = ProcedureGenerationOutput(
+        reason="r",
+        note="",
+        steps=[
+            _step("検証する", ("不正", "422")),
+            _step("保存する", ("重複", "409"), ("無い", "404")),
+        ],
+    )
+    steps = to_procedure_draft(output).steps
+    assert [(s.action, s.branch, s.is_branch) for s in steps] == [
+        ("検証する", "", False),
+        ("不正", "422", True),
+        ("保存する", "", False),
+        ("重複", "409", True),
+        ("無い", "404", True),
+    ]
+    assert steps[1].caller == steps[1].callee == steps[1].call == ""
+    assert "branches に、条件(condition)と結果(result)の組" in PROCEDURE_SYSTEM_PROMPT
+    assert "is_branch" not in GeneratedStep.model_fields
+
+
+def test_merged_draft_links_branch_refs_without_missing_targets():
+    """merge_procedure が参照を並びから振るので、シーケンス図に MISSING_BRANCH_TARGET が出ない。"""
+    output = ProcedureGenerationOutput(
+        reason="r",
+        note="",
+        steps=[
+            _step("検証する", ("不正", "422")),
+            _step("保存する", ("重複", "409"), ("無い", "404")),
+        ],
+    )
+    paths = [m.path for m in _MODULES]
+    model = merge_procedure(ProcedureModel(), "F-01", to_procedure_draft(output), paths)
+    procedure = model.procedures[0]
+
+    assert [s.branch for s in procedure.steps] == ["1a へ", "422", "2a へ、2b へ", "409", "404"]
+    issues = to_sequence(procedure).issues
+    assert [i.code for i in issues if i.code == "MISSING_BRANCH_TARGET"] == []

@@ -1,5 +1,6 @@
 import uuid
 from collections.abc import Mapping
+from dataclasses import asdict
 
 import structlog
 from pydantic import ValidationError
@@ -8,26 +9,50 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.detailed_design import (
     DATA_MODEL_STAGE,
     ER_SUBJECT,
+    PLAN_STAGE,
     PROCEDURE_DOC_STAGE,
     PROCEDURE_STAGE,
     STRUCTURE_STAGE,
     STRUCTURE_SUBJECT,
     Fingerprint,
     ModuleListModel,
+    PlanModel,
+    ProcedureDocModel,
     ProcedureModel,
     StageRecord,
     StageView,
+    assign_unit_keys,
     can_approve,
     component_layers,
     confirm_drafts,
     current_inputs,
     derive_states,
     dfd_accesses,
+    er_table_definitions,
     er_table_names,
     find_unit,
     module_dependencies,
+    relabel_units,
     table_key,
     tables_without_primary_key,
+)
+from app.detailed_design.impact import (
+    DOCUMENT_STAGE,
+    REGENERATION_STAGES,
+    DesignModels,
+    Element,
+    SimpleModels,
+    StageImpact,
+    blocking_marks,
+    build_elements,
+    build_simple_elements,
+    diff_elements,
+    doc_source,
+    group_by_stage,
+    marks_for,
+    record,
+    set_reviewed,
+    stage_source,
 )
 from app.detailed_design.procedure_basis import ProcedureBasis, procedure_basis
 from app.detailed_design.procedure_output import (
@@ -56,11 +81,16 @@ from app.repositories.design_stage import DesignStageRepository
 from app.repositories.generated_document import GeneratedDocumentRepository
 from app.repositories.uml_diagram import UmlDiagramRepository
 from app.schemas.design_stage import (
+    DesignImpactRead,
     DesignRefRead,
     DesignStageRead,
     DfdAccessRead,
+    ElementChangeRead,
+    ImpactMarkRead,
+    RegenerationTargetRead,
     SequenceIssueRead,
     SequenceRead,
+    StageImpactRead,
     StageIssueRead,
     UnitAiMarkdownRead,
     UnitContextRead,
@@ -73,6 +103,7 @@ from app.services.errors import (
     DesignStageNotApprovableError,
     DesignStageNotFoundError,
     DesignStagesNotAvailableError,
+    DesignStageUnreviewedImpactError,
     DesignStageVersionConflictError,
     DesignUnitNotFoundError,
     DesignUnitProcedureNotFoundError,
@@ -82,6 +113,15 @@ logger = structlog.get_logger(__name__)
 
 # 人が保存した段階の状態('draft'はAIの下書きだけが作る。UML図のSTATUS_AFTER_EDITと同じ考え方)
 STATUS_AFTER_EDIT = "reviewing"
+
+# 変更の影響を求める文書(model を持つ文書。モードの段階の入力)。簡易モードは4文書とも model を持つ
+IMPACT_DOCUMENTS: dict[str, tuple[str, ...]] = {
+    "detailed": ("requirements", "external_design"),
+    "simple": ("requirements", "external_design", "internal_design", "implementation_plan"),
+}
+# 段階3の写しに添える ER のテーブル定義の欄(ER は段階の model の外の図にあるため、承認したときの
+# 定義を写しに残し、テーブルの内容(列の追加など)の差分を取れるようにする)
+ER_SNAPSHOT_KEY = "er_snapshot"
 
 
 class DesignStageService:
@@ -146,8 +186,11 @@ class DesignStageService:
         self, project: Project, *, stage: int, expected_version: int | None, model: dict
     ) -> DesignStageRead:
         """段階の内容を人の編集として保存する。承認済みの段階を保存すると承認をやり直す
-        (`reviewing`へ戻し、versionを増やす)。未着手の段階は、初めての保存で行を作る。"""
+        (`reviewing`へ戻し、versionを増やす)。未着手の段階は、初めての保存で行を作る。
+        段階7は、キーの無いタスク(画面で足したタスク)に単位のキーを振ってから保存する。"""
         _ensure_stage(project, stage)
+        if stage == PLAN_STAGE:
+            model = _with_unit_keys(model)
         rows, views, _ = await self._load(project)
         _ensure_open(views[stage])
         row = rows.get(stage)
@@ -207,6 +250,10 @@ class DesignStageService:
             raise DesignStageNotApprovableError(f"Stage {stage} is already approved")
         if not row.model:
             raise DesignStageNotApprovableError(f"Stage {stage} has no content")
+        if blocking_marks(StageImpact.from_dict(row.impact), stage):
+            raise DesignStageUnreviewedImpactError(
+                f"Stage {stage} has unreviewed impact marks"
+            )
         sources = await self._sources(project, rows, views, documents)
         if has_errors(validate_stage(stage, row.model, sources)):
             raise DesignStageInvalidError(f"Stage {stage} has validation errors")
@@ -214,8 +261,17 @@ class DesignStageService:
         if stage == DATA_MODEL_STAGE:
             # 承認 = 人の確定なので、CRUD 図に残っている AI の下書きの印を外す
             row.model = confirm_drafts(row.model)
+        # 承認でこの段階の印は消える。直前の承認の写しと今の内容の差分から、変更の影響を求めて
+        # 届いた段階(この段階を含む)に印を記録し、写しを置き換える
+        row.impact = None
+        er = await self._er_tables(project.id) if project.mode == "detailed" else {}
+        if row.approved_model and project.mode == "detailed":
+            _record_stage_change(rows, documents, stage, row.approved_model, er)
         row.status = "approved"
         row.approved_version = row.version
+        row.approved_model = (
+            {**row.model, ER_SNAPSHOT_KEY: er} if stage == DATA_MODEL_STAGE else row.model
+        )
         row.input_fingerprint = current_inputs(
             stage,
             approved_stage_versions=_approved_versions(rows, views),
@@ -226,6 +282,115 @@ class DesignStageService:
         await self._session.refresh(row)
         logger.info("design_stage_approved", project_id=str(project.id), stage=stage)
         return await self._read_one(project, stage)
+
+    async def record_document_change(
+        self,
+        project: Project,
+        doc_type: str,
+        before_model: dict | None,
+        after_model: dict | None,
+    ) -> None:
+        """文書の表示中の版が切り替わったとき(再生成・復元)、前に表示していた版の model と比べて、
+        変更の影響を段階に印として記録する。model を持つ文書だけ(簡易モードは4文書、詳細設計モードは
+        要件定義書・外部設計書)。どちらかの版に model が無ければ比べない。呼び出し元の版の切り替えと
+        同じトランザクションで使うため、commitしない。"""
+        if doc_type not in IMPACT_DOCUMENTS.get(project.mode, ()):
+            return
+        if not before_model or not after_model:
+            return
+        rows = {row.stage: row for row in await self._stages.list_for_project(project.id)}
+        if all(row.approved_version is None for row in rows.values()):
+            return
+        inputs = stage_inputs(project.mode)
+        documents = await self._current_documents(project.id, inputs)
+        docs = _document_models(documents)
+        stages = {stage: row.model for stage, row in rows.items()}
+        if project.mode == "simple":
+            # 簡易モードは段階8だけを持ち、単位の手順書が4文書を直接参照する
+            before = build_simple_elements(
+                SimpleModels.from_dicts(stages.get(8), {**docs, doc_type: before_model})
+            )
+            after = build_simple_elements(
+                SimpleModels.from_dicts(stages.get(8), {**docs, doc_type: after_model})
+            )
+        else:
+            er_tables = await self._er_tables(project.id)
+            before = build_elements(
+                DesignModels.from_dicts(stages, {**docs, doc_type: before_model}, er_tables)
+            )
+            after = build_elements(
+                DesignModels.from_dicts(stages, {**docs, doc_type: after_model}, er_tables)
+            )
+        _record_impact(rows, doc_source(doc_type), before, after, stages=(DOCUMENT_STAGE,))
+
+    async def review_marks(
+        self, project: Project, *, stage: int, keys: list[str], reviewed: bool
+    ) -> None:
+        """段階の印を確認済み(または未確認)にする。知らないキーは無視する。"""
+        _ensure_stage(project, stage)
+        row = await self._stages.get(project_id=project.id, stage=stage)
+        if row is None:
+            raise DesignStageNotFoundError(f"Stage {stage} has not been started")
+        impact = set_reviewed(StageImpact.from_dict(row.impact), keys, reviewed)
+        row.impact = impact.to_dict()
+        await self._session.commit()
+
+    async def _er_tables(self, project_id: uuid.UUID) -> dict[str, dict]:
+        """段階3の ER のテーブル名 → 定義(列と説明)。ER がまだ無ければ空。"""
+        er = await self._diagrams.get_by_subject(
+            project_id=project_id, notation="er", subject=ER_SUBJECT
+        )
+        return er_table_definitions(er.semantic_model) if er is not None else {}
+
+    async def impact(self, project: Project) -> DesignImpactRead:
+        """変更の影響(モードの全段階の、変わったものと印・再生成の候補)。記録した印に、まだ承認して
+        いない編集の差分から求めた印(`pending`。承認すると記録される)を足して返す。"""
+        rows, views, documents = await self._load(project)
+        pending = await self._pending_impact(project, rows, documents)
+        stages = [
+            _stage_impact_read(stage, rows.get(stage), pending.get(stage, [])) for stage in views
+        ]
+        return DesignImpactRead(
+            stages=stages, regeneration_targets=_regeneration_targets(stages)
+        )
+
+    async def stage_impact(self, project: Project, stage: int) -> StageImpactRead:
+        """段階1つの、変わったものと印(確認済みの切り替えの応答)。"""
+        _ensure_stage(project, stage)
+        result = await self.impact(project)
+        return next(item for item in result.stages if item.stage == stage)
+
+    async def _pending_impact(
+        self,
+        project: Project,
+        rows: dict[int, DesignStage],
+        documents: dict[str, GeneratedDocument | None],
+    ) -> dict[int, list[StageImpact]]:
+        """承認の後に編集した段階の、写しと今の内容の差分から求めた印(届く段階ごと。保存しない)。"""
+        edited = [
+            stage
+            for stage, row in rows.items()
+            if row.approved_model and row.status != "approved"
+        ]
+        if project.mode != "detailed" or not edited:
+            return {}
+        stages = {s: row.model for s, row in rows.items()}
+        docs = _document_models(documents)
+        er = await self._er_tables(project.id)
+        after = build_elements(DesignModels.from_dicts(stages, docs, er))
+        pending: dict[int, list[StageImpact]] = {}
+        for stage in edited:
+            snapshot = rows[stage].approved_model or {}
+            before = build_elements(
+                DesignModels.from_dicts(
+                    {**stages, stage: snapshot}, docs, _snapshot_er(stage, snapshot, er)
+                )
+            )
+            found = _impact_by_stage(stage_source(stage), before, after, stages=(stage,))
+            for target, impact in found.items():
+                if _records_impact(rows.get(target)):
+                    pending.setdefault(target, []).append(impact)
+        return pending
 
     async def unit_context(self, project: Project, unit_id: str) -> UnitContextRead:
         """段階8の単位1つが参照する設計を展開して返す(画面の単位の詳細が使う)。中身は承認済みの
@@ -418,6 +583,127 @@ def _doc_versions(documents: dict[str, GeneratedDocument | None]) -> dict[str, i
     }
 
 
+def _document_models(documents: dict[str, GeneratedDocument | None]) -> dict[str, dict | None]:
+    return {
+        doc_type: document.model if document is not None else None
+        for doc_type, document in documents.items()
+    }
+
+
+def _record_stage_change(
+    rows: dict[int, DesignStage],
+    documents: dict[str, GeneratedDocument | None],
+    stage: int,
+    snapshot: dict,
+    er: dict[str, dict],
+) -> None:
+    """段階の承認時の写しと今の内容の差分から、変更の影響を印として記録する。"""
+    stages = {s: row.model for s, row in rows.items()}
+    docs = _document_models(documents)
+    before = build_elements(
+        DesignModels.from_dicts(
+            {**stages, stage: snapshot}, docs, _snapshot_er(stage, snapshot, er)
+        )
+    )
+    after = build_elements(DesignModels.from_dicts(stages, docs, er))
+    _record_impact(rows, stage_source(stage), before, after, stages=(stage,))
+
+
+def _snapshot_er(stage: int, snapshot: dict, er: dict[str, dict]) -> dict[str, dict]:
+    """写しの側の ER。段階3の写しが承認したときの定義を持てばそれを、無ければ今の ER を使う
+    (この移行より前の写し・他の段階の写しは、ER の差分を取らない)。"""
+    if stage == DATA_MODEL_STAGE and isinstance(snapshot.get(ER_SNAPSHOT_KEY), dict):
+        return snapshot[ER_SNAPSHOT_KEY]
+    return er
+
+
+def _impact_by_stage(
+    source: str,
+    before_elements: list[Element],
+    after_elements: list[Element],
+    *,
+    stages: tuple[int, ...],
+) -> dict[int, StageImpact]:
+    """前と後の要素の差分(置き場`stages`の要素)から印を求め、届く段階ごとの記録にする。"""
+    changes = diff_elements(before_elements, after_elements, stages=stages)
+    if not changes:
+        return {}
+    marks = marks_for(before_elements, after_elements, changes, source)
+    return {
+        target: record(StageImpact(), source, changes, stage_marks)
+        for target, stage_marks in group_by_stage(marks).items()
+    }
+
+
+def _records_impact(row: DesignStage | None) -> bool:
+    """印を記録する段階か。一度でも承認した段階だけ(承認していない段階は、見直す前の内容が無い)。"""
+    return row is not None and row.approved_version is not None
+
+
+def _record_impact(
+    rows: dict[int, DesignStage],
+    source: str,
+    before: list[Element],
+    after: list[Element],
+    *,
+    stages: tuple[int, ...],
+) -> None:
+    """前と後の差分から印を求め、届いた段階の行に記録する(今の記録に足す)。"""
+    for target, impact in _impact_by_stage(source, before, after, stages=stages).items():
+        row = rows.get(target)
+        if not _records_impact(row):
+            continue
+        assert row is not None
+        changes = [c.change for c in impact.changes]
+        merged = record(StageImpact.from_dict(row.impact), source, changes, impact.marks)
+        row.impact = merged.to_dict()
+
+
+def _stage_impact_read(
+    stage: int, row: DesignStage | None, pending: list[StageImpact]
+) -> StageImpactRead:
+    recorded = StageImpact.from_dict(row.impact if row is not None else None)
+    # 記録した印のあとに、まだ承認していない編集から届く印を並べる
+    sources = [(recorded, False), *((impact, True) for impact in pending)]
+    changes = [
+        ElementChangeRead(source=c.source, pending=is_pending, **asdict(c.change))
+        for impact, is_pending in sources
+        for c in impact.changes
+    ]
+    marks = [
+        ImpactMarkRead(
+            key=m.key,
+            label=m.label,
+            stage=m.stage,
+            path=list(m.path),
+            reason=m.reason,
+            sources=list(m.sources),
+            reviewed=m.reviewed,
+            pending=is_pending,
+        )
+        for impact, is_pending in sources
+        for m in impact.marks
+    ]
+    return StageImpactRead(
+        stage=stage,
+        changes=changes,
+        marks=marks,
+        open=recorded.open_count,
+        reviewed=recorded.reviewed_count,
+    )
+
+
+def _regeneration_targets(stages: list[StageImpactRead]) -> list[RegenerationTargetRead]:
+    """再生成の候補: 部分再生成できる段階(5・6・8)の、未確認の印の要素(重複なし)。"""
+    targets: dict[str, RegenerationTargetRead] = {}
+    for item in stages:
+        for mark in item.marks:
+            if mark.stage in REGENERATION_STAGES and not mark.reviewed:
+                target = RegenerationTargetRead(stage=mark.stage, key=mark.key, label=mark.label)
+                targets.setdefault(mark.key, target)
+    return list(targets.values())
+
+
 def _dfd_summary(diagram: UmlDiagram) -> DfdDiagramSummary:
     elements = (diagram.semantic_model or {}).get("elements", [])
     return DfdDiagramSummary(
@@ -457,7 +743,9 @@ def _ensure_stage(project: Project, stage: int) -> None:
 
 def _basis(sources: StageSources) -> ProcedureBasis:
     """段階8の土台(作業単位と参照の出どころ。モードで変わる)。"""
-    return procedure_basis(sources.mode, sources.stages, sources.documents)
+    return procedure_basis(
+        sources.mode, sources.stages, sources.documents, sources.document_models
+    )
 
 
 def _ensure_open(view: StageView) -> None:
@@ -502,12 +790,34 @@ def _approved_versions(
     }
 
 
+def _with_unit_keys(model: dict) -> dict:
+    """段階7の内容に単位のキーを振る。形の正しくない内容はそのまま返す(検証が指摘する)。"""
+    try:
+        plan = PlanModel.model_validate(model)
+    except ValidationError:
+        return model
+    return assign_unit_keys(plan).model_dump(mode="json")
+
+
+def _relabeled(model: dict | None, basis: ProcedureBasis | None) -> dict | None:
+    """段階8の手順書の表示の ID を、作業単位の今の並び順に付け直す(画面は ID で単位に付けるため)。
+    作業単位が無い・形の正しくない内容はそのまま返す。"""
+    if not model or basis is None:
+        return model
+    try:
+        doc = ProcedureDocModel.model_validate(model)
+    except ValidationError:
+        return model
+    return relabel_units(doc, basis.plan).model_dump(mode="json")
+
+
 def _to_read(view: StageView, row: DesignStage | None, sources: StageSources) -> DesignStageRead:
     # 段階8の作業単位(詳細設計モードは段階7、簡易モードは実装計画書の WBS)。画面の単位の一覧が使う
     basis = (
         _basis(sources) if view.stage == PROCEDURE_DOC_STAGE and view.is_open else None
     )
     plan = basis.plan.model_dump(mode="json") if basis is not None else None
+    impact = StageImpact.from_dict(row.impact if row is not None else None)
     if row is not None:
         issues = validate_stage(view.stage, row.model, sources)
     elif view.is_open:
@@ -523,7 +833,7 @@ def _to_read(view: StageView, row: DesignStage | None, sources: StageSources) ->
         missing_inputs=list(view.missing_inputs),
         version=row.version if row is not None else None,
         approved_version=row.approved_version if row is not None else None,
-        model=row.model if row is not None else None,
+        model=_relabeled(row.model, basis) if row is not None else None,
         updated_at=row.updated_at if row is not None else None,
         generation_status=row.generation_status if row is not None else None,  # type: ignore[arg-type]
         generation_error=row.generation_error if row is not None else None,
@@ -531,6 +841,8 @@ def _to_read(view: StageView, row: DesignStage | None, sources: StageSources) ->
         dfd_accesses=_dfd_access_reads(sources) if view.stage == DATA_MODEL_STAGE else [],
         plan=plan,
         unit_req_ids=basis.unit_req_ids() if basis is not None else {},
+        impact_open=impact.open_count,
+        impact_reviewed=impact.reviewed_count,
     )
 
 

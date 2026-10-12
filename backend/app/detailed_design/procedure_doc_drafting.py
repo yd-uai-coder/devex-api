@@ -241,9 +241,10 @@ def _finding(finding: GeneratedFinding | GeneratedSimpleFinding) -> AiFinding:
 def to_unit_procedure(
     unit: PlanUnit, output: ProcedureDocGenerationOutput | SimpleProcedureDocGenerationOutput
 ) -> UnitProcedure:
-    """構造化出力を、単位の手順書にする(ID とタスク名は作業単位から写す)。空の行は捨てる。"""
+    """構造化出力を、単位の手順書にする(ID・キー・タスク名は作業単位から写す)。空の行は捨てる。"""
     return UnitProcedure(
         unit_id=unit.unit_id,
+        unit_key=unit.key,
         title=unit.task.title,
         purpose=output.purpose.strip(),
         files=[
