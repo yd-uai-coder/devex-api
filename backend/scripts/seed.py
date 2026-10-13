@@ -1,4 +1,4 @@
-"""開発用のシードデータ ── ブラウザで `/docs` からログインを試すためのテストユーザーを 1 人作る。
+"""開発用のシードデータ ── `/docs` からログインを試すテストユーザー(一般・superuser)を作る。
 
 使い方:
     uv run python -m scripts.seed
@@ -25,6 +25,13 @@ SEED_USER = {
     "full_name": "sample-user",
     "email": "example-user@example.com",
     "password": "Sample-user-0123",
+}
+
+# superuser(レビュー機能のオン・オフを切り替えられるアカウント)
+SEED_SUPERUSER = {
+    "full_name": "sample-super-user",
+    "email": "example-super-user@example.com",
+    "password": "Sample-super-user-0123",
 }
 
 
@@ -63,23 +70,30 @@ SEED_PROMPT_TEMPLATES = [
 
 
 async def seed() -> None:
-    """テストユーザーを1人登録し、固定プロンプトテンプレートを投入する(いずれも既存ならスキップ)。"""
+    """テストユーザー(一般・superuser)を登録し、固定プロンプトテンプレートを投入する(いずれも既存ならスキップ)。"""
     async with AsyncSessionLocal() as session:
-        await _seed_user(session)
+        await seed_users(session)
         await seed_prompt_templates(session)
 
 
-async def _seed_user(session: AsyncSession) -> None:
+async def seed_users(session: AsyncSession) -> None:
+    """一般ユーザーと superuser を作る(email 一致で冪等判定。既存ユーザーの権限は変えない)。"""
     service = UserService(session)
-    try:
-        user = await service.create_user(
-            email=SEED_USER["email"],
-            password=SEED_USER["password"],
-            full_name=SEED_USER["full_name"],
-        )
-        print(f"created user: {user.email} ({user.id})")
-    except UserAlreadyExistsError:
-        print(f"user already exists: {SEED_USER['email']} (skip)")
+    for data, is_superuser in ((SEED_USER, False), (SEED_SUPERUSER, True)):
+        try:
+            user = await service.create_user(
+                email=data["email"],
+                password=data["password"],
+                full_name=data["full_name"],
+            )
+        except UserAlreadyExistsError:
+            print(f"user already exists: {data['email']} (skip)")
+            continue
+        if is_superuser:
+            # 登録の経路(create_user)からは superuser を作れないため、作成後に昇格させる
+            user.is_superuser = True
+            await session.commit()
+        print(f"created user: {user.email} ({user.id}, superuser={user.is_superuser})")
 
 
 async def seed_prompt_templates(session: AsyncSession) -> None:

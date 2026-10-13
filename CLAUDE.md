@@ -62,7 +62,7 @@ routes (app/api/routes) → services (app/services) → repositories (app/reposi
 
 ## 開発用ツール
 
-- `backend/scripts/seed.py`（`uv run python -m scripts.seed`）は、ログインを試すための固定テストユーザーを1人だけ冪等に作成する。**dev専用**（本番DBでは実行しない）。
+- `backend/scripts/seed.py`（`uv run python -m scripts.seed`）は、ログインを試すための固定テストユーザーを2人(一般ユーザー `example-user@example.com` と superuser `example-super-user@example.com`)冪等に作成する。本番の superuser は、登録したアカウントを手で昇格させる。**dev専用**（本番DBでは実行しない）。
 - `backend/pyproject.toml`の`[tool.pyright]`は、エディタ（VSCode/Pylance）とCLI（`uvx pyright`）の解析ルートを`backend/`に固定する。ワークスペースをどのフォルダで開いても`app`パッケージがfirst-partyとして解決される。`ignore`には現時点の既知の型債務（`app/ai/graph/nodes.py`のLangGraph `GraphState`部分構築など）を列挙している。
 
 ## Docker構成
