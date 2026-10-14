@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import hash_password
 from app.models.user import User
 from app.repositories.user import UserRepository
-from app.services.errors import UserAlreadyExistsError
+from app.services.errors import ReviewNotAllowedError, UserAlreadyExistsError
 
 
 class UserService:
@@ -34,4 +34,14 @@ class UserService:
             email=email, hashed_password=hash_password(password), full_name=full_name
         )
         await self._session.commit()
+        return user
+
+    async def update_review_setting(self, user: User, *, enabled: bool) -> User:
+        """設計レビューの設定を本人が切り替える。superuser 以外は403(保存値を変えさせない。
+        実効値は superuser でなければ常にオフ ── app/review/policy.py)。"""
+        if not user.is_superuser:
+            raise ReviewNotAllowedError("設計レビューの設定は管理者だけが変えられます。")
+        user.review_enabled = enabled
+        await self._session.commit()
+        await self._session.refresh(user)
         return user

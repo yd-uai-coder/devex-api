@@ -51,6 +51,8 @@ class FakeLLM:
         self._stream_chunks = stream_chunks
         self._structured_by_schema = structured_by_schema or {}
         self.structured_output_calls: list[type[BaseModel]] = []
+        # with_structured_output の method(構造化出力の方式。省略は None)
+        self.structured_output_methods: list[str | None] = []
         self.invoke_messages: list[Any] = []
         # 構造化出力の呼び出しに渡された messages(呼び出しの順)
         self.structured_messages: list[Any] = []
@@ -75,10 +77,11 @@ class FakeLLM:
             yield _FakeChunk(piece)
 
     def with_structured_output(
-        self, schema: type[BaseModel], *, include_raw: bool = False
+        self, schema: type[BaseModel], *, include_raw: bool = False, method: str | None = None
     ) -> _FakeStructuredLLM:
-        """構造化出力用のサブクライアントを返す。呼ばれた schema を記録する。"""
+        """構造化出力用のサブクライアントを返す。呼ばれた schema と method を記録する。"""
         self.structured_output_calls.append(schema)
+        self.structured_output_methods.append(method)
         if schema in self._structured_by_schema:
             return _FakeStructuredLLM(
                 self._structured_by_schema[schema],

@@ -4,6 +4,7 @@ from app.core.errors import (
     BadGatewayError,
     BadRequestError,
     ConflictError,
+    ForbiddenError,
     NotFoundError,
     TooManyRequestsError,
     UnauthorizedError,
@@ -317,3 +318,35 @@ class RequirementNotAssumedError(ConflictError):
     """推測でない要件を「採用」にしようとした場合に送出する(画面が古いまま押したときに起きうる)。"""
 
     code: ClassVar[str | None] = "REQUIREMENT_NOT_ASSUMED"
+
+
+class ReviewNotAllowedError(ForbiddenError):
+    """設計レビューを使えないアカウント(superuser 以外・設定がオフ)が、レビューの設定の変更や
+    レビューを要求した場合に送出する。"""
+
+    code: ClassVar[str | None] = "REVIEW_NOT_ALLOWED"
+
+
+class ReviewUnavailableError(BadGatewayError):
+    """設計レビューの LLM を使えない(API キーが無い)場合に送出する。自動のレビューでは失敗として
+    記録し、自己診断に切り替える。"""
+
+    code: ClassVar[str | None] = "REVIEW_UNAVAILABLE"
+
+
+class ReviewRateLimitExceededError(TooManyRequestsError):
+    """superuser ごとの1日のレビューの回数の上限を超えた場合に送出する。"""
+
+    code: ClassVar[str | None] = "REVIEW_LIMIT_EXCEEDED"
+
+
+class ReviewInProgressError(ConflictError):
+    """同じプロジェクトでレビューが実行中のときに、レビューを再度要求した場合に送出する。"""
+
+    code: ClassVar[str | None] = "REVIEW_IN_PROGRESS"
+
+
+class ReviewDocumentsNotReadyError(ConflictError):
+    """レビューする文書がまだ無い(生成していない)プロジェクトで、レビューを要求した場合に送出する。"""
+
+    code: ClassVar[str | None] = "REVIEW_DOCUMENTS_NOT_READY"

@@ -7,6 +7,7 @@ from app.models.hearing_point import HearingPoint
 from app.models.intake_file import IntakeFile
 from app.models.project import Project
 from app.models.prompt_template import PromptTemplate
+from app.models.review import ReviewFinding, ReviewRun
 from app.models.uml_diagram import UmlDiagram
 from app.models.uml_generation_run import UmlGenerationRun
 from app.models.user import User
@@ -23,6 +24,8 @@ __all__ = [
     "Message",
     "Project",
     "PromptTemplate",
+    "ReviewFinding",
+    "ReviewRun",
     "UmlDiagram",
     "UmlGenerationRun",
     "User",

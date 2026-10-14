@@ -77,7 +77,8 @@ def unwrap_structured_result[T: BaseModel](result: dict[str, Any], schema: type[
         return parsed
     raw = result.get("raw")
     metadata = getattr(raw, "response_metadata", None) or {}
-    if metadata.get("finish_reason") == "MAX_TOKENS":
+    # Gemini は finish_reason、Claude は stop_reason で打ち切りを伝える
+    if metadata.get("finish_reason") == "MAX_TOKENS" or metadata.get("stop_reason") == "max_tokens":
         raise LLMTokenLimitError("AIの出力がトークン数の上限で打ち切られました。")
     raise LLMInvalidOutputError("AIの出力を出力スキーマとして解釈できませんでした。") from (
         result.get("parsing_error")

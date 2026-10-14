@@ -69,6 +69,7 @@ from app.documents.requirements.drafting import (
     RequirementsGenerationOutput,
 )
 from app.hearing import POINT_DEFS, is_point_key
+from app.review.schemas import ReviewFindingOut, ReviewOutput
 from app.schemas.hearing import (
     CardOptionOut,
     CardOut,
@@ -556,6 +557,32 @@ _UML_OUTPUTS[SimpleProcedureDocGenerationOutput] = SimpleProcedureDocGenerationO
     ],
 )
 
+# 設計レビューの偽物(ヒアリングが原因の指摘を1件含め、観点のキーの受け渡しを試せるようにする)
+_REVIEW_OUTPUT = ReviewOutput(
+    findings=[
+        ReviewFindingOut(
+            level="critical",
+            cause="design",
+            targets=["[E2E Fake] SCR-001"],
+            point_key=None,
+            problem="[E2E Fake] 予約の取り消しの API が無い",
+            evidence="[E2E Fake] 予約を取り消せる",
+            reason="[E2E Fake] 画面の操作に API が無い",
+            suggestion="[E2E Fake] 取り消しの API を足す",
+        ),
+        ReviewFindingOut(
+            level="major",
+            cause="hearing",
+            targets=["[E2E Fake] 観点 セキュリティ"],
+            point_key="security",
+            problem="[E2E Fake] 誰が誰の予約を見られるかが決まっていない",
+            evidence="[E2E Fake] 通信を HTTPS で暗号化する",
+            reason="[E2E Fake] 要件にアクセス制御が無い",
+            suggestion="[E2E Fake] 本人以外の閲覧の可否を聞き直す",
+        ),
+    ]
+)
+
 _HEARING_REPLY = "[E2E Fake] 承知しました。次に、想定している主なユーザー層を教えてください。"
 _SELF_DIAGNOSIS_REPLY = "[E2E Fake] 自己診断: 特に致命的な不足点はありません。"
 
@@ -698,13 +725,15 @@ class _FakeStructuredE2e:
             return _INTERNAL_DESIGN_OUTPUT
         if self._schema is plan_doc.ImplementationPlanGenerationOutput:
             return _IMPLEMENTATION_PLAN_OUTPUT
+        if self._schema is ReviewOutput:
+            return _REVIEW_OUTPUT
         # ヒアリング・UML生成スキーマ以外のスキーマが追加された場合は
         # 「対応漏れ」に気づけるよう黙って汎用値を返さず例外にする。
         raise NotImplementedError(f"E2eFakeLLMが未対応のスキーマ: {self._schema}")
 
 
 class E2eFakeLLM:
-    """`E2E_FAKE_LLM=true`のときget_gemini_llm()が返すスタブ実装。
+    """`E2E_FAKE_LLM=true`のときget_gemini_llm()・get_review_llm()が返すスタブ実装。
 
     chat_service.py・doc_generator_service.pyが実際に呼び出すメソッド(astream/ainvoke/
     with_structured_output().ainvoke)のみを実装する(invoke()の同期版は呼ばれないため
@@ -719,8 +748,9 @@ class E2eFakeLLM:
         return AIMessage(content=self._reply_for(messages))
 
     def with_structured_output(
-        self, schema: type[BaseModel], *, include_raw: bool = False
+        self, schema: type[BaseModel], *, include_raw: bool = False, method: str | None = None
     ) -> _FakeStructuredE2e:
+        # method(構造化出力の方式。設計レビューが "json_schema" を渡す)は偽物では使わない
         return _FakeStructuredE2e(schema, include_raw=include_raw)
 
     def _reply_for(self, messages: list[Any]) -> str:

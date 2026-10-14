@@ -57,6 +57,17 @@ class Settings(BaseSettings):
     # 約2.7倍のマージンを見て30秒とする(旧暫定値60秒は実測に基づかない値だった)。
     LLM_TIMEOUT_SECONDS: float = 30.0
 
+    # 設計レビュー(生成とは別のモデルが指摘だけを返す)。キーが無いときはレビューが失敗し、
+    # 生成と同じモデルの自己診断に切り替わる(app/services/review_service.py)。
+    ANTHROPIC_API_KEY: str | None = None
+    REVIEW_MODEL: str = "claude-sonnet-5-5"
+    # レビューは設計書をまとめて読むため生成の1回より長い(実測 25〜43 秒)。生成の
+    # LLM_TIMEOUT_SECONDS とは分け、約4倍のマージンを見る。
+    REVIEW_TIMEOUT_SECONDS: float = 180.0
+    REVIEW_MAX_TOKENS: int = 16000
+    # superuser ごとの1日のレビューの回数の上限(費用を抑えるため)
+    REVIEW_RATE_LIMIT_PER_DAY: int = 20
+
     # trueの場合、get_gemini_llm()は実際のGemini APIを呼ばず、
     # app/ai/llm/fake.pyの決定論的なE2eFakeLLMを返す
     # 既定はfalseで、次のバリデータによりENVIRONMENT=production下でtrueにすることは

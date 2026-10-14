@@ -1,7 +1,7 @@
 import asyncio
 import time
 from collections.abc import Awaitable, Callable, Sequence
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import structlog
 from langchain_core.messages import BaseMessage
@@ -96,7 +96,13 @@ async def invoke_with_retry[T](
 
 def _is_quota_error(exc: Exception) -> bool:
     """例外が外部APIのクォータ超過を示すものかどうかを判定する。Gemini APIの429と、Tavily(検索)の
-    利用上限超過の2つ(Tavilyは汎用チャットのワークフローが使う)。"""
+    利用上限超過(Tavilyは汎用チャットのワークフローが使う)と、Anthropic APIの429(設計レビュー)。"""
+    try:
+        from anthropic import RateLimitError as AnthropicRateLimitError
+    except ImportError:
+        AnthropicRateLimitError = None
+    if AnthropicRateLimitError is not None and isinstance(exc, AnthropicRateLimitError):
+        return True
     try:
         from google.genai.errors import APIError as GoogleAPIError
     except ImportError:
@@ -139,10 +145,22 @@ async def invoke_structured[S: BaseModel](
 ) -> S:
     """構造化出力を呼ぶ(解釈の失敗・クォータ超過は invoke_with_retry の規則で再試行する)。
     詳細設計モードの段階の下書きと、要件定義書の生成が使う。"""
-    structured_llm = llm.with_structured_output(schema, include_raw=True)
+    parsed, _usage = await invoke_structured_with_usage(llm, schema, messages)
+    return parsed
 
-    async def _call() -> S:
+
+async def invoke_structured_with_usage[S: BaseModel](
+    llm, schema: type[S], messages: list[BaseMessage], *, method: str | None = None
+) -> tuple[S, dict[str, Any]]:
+    """`invoke_structured`に、生の応答のトークン数(`usage_metadata`。無ければ空)を添えて返す。
+    `method`は構造化出力の方式(Claude は "json_schema"。省略時はクライアントの既定)。
+    設計レビューが、回ごとのトークン数を記録するために使う。"""
+    options = {"method": method} if method is not None else {}
+    structured_llm = llm.with_structured_output(schema, include_raw=True, **options)
+
+    async def _call() -> tuple[S, dict[str, Any]]:
         result = await structured_llm.ainvoke(messages)
-        return unwrap_structured_result(result, schema)
+        usage = getattr(result.get("raw"), "usage_metadata", None) or {}
+        return unwrap_structured_result(result, schema), dict(usage)
 
     return await invoke_with_retry(_call, messages=messages)

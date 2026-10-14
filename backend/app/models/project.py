@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from app.models.generated_document import GeneratedDocument
     from app.models.hearing_point import HearingPoint
     from app.models.intake_file import IntakeFile
+    from app.models.review import ReviewRun
     from app.models.uml_diagram import UmlDiagram
     from app.models.uml_generation_run import UmlGenerationRun
     from app.models.user import User
@@ -84,5 +85,8 @@ class Project(Base):
         back_populates="project", cascade="all, delete-orphan"
     )
     design_stages: Mapped[list["DesignStage"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    review_runs: Mapped[list["ReviewRun"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
