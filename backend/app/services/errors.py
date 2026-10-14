@@ -346,7 +346,28 @@ class ReviewInProgressError(ConflictError):
     code: ClassVar[str | None] = "REVIEW_IN_PROGRESS"
 
 
+class ReviewFindingNotFoundError(NotFoundError):
+    """プロジェクトに無い(別のプロジェクトの・存在しない)設計レビューの指摘の採否を変えようとした
+    場合に送出する。"""
+
+    code: ClassVar[str | None] = "REVIEW_FINDING_NOT_FOUND"
+
+
 class ReviewDocumentsNotReadyError(ConflictError):
-    """レビューする文書がまだ無い(生成していない)プロジェクトで、レビューを要求した場合に送出する。"""
+    """レビューの区切りがそろっていない(文書を生成していない・段階が承認されていない・モードに無い
+    区切り)プロジェクトで、レビューを要求した場合に送出する。"""
 
     code: ClassVar[str | None] = "REVIEW_DOCUMENTS_NOT_READY"
+
+
+class GenerationStartInvalidError(BadRequestError):
+    """設計書の再生成の起点が、プロジェクトのモードに無い文書のときに送出する(詳細設計モードの
+    内部設計書など)。"""
+
+    code: ClassVar[str | None] = "GENERATION_START_INVALID"
+
+
+class GenerationUpstreamMissingError(ConflictError):
+    """設計書の再生成の起点より上流の文書がまだ無いときに送出する(上流を入力にして作るため)。"""
+
+    code: ClassVar[str | None] = "GENERATION_UPSTREAM_MISSING"

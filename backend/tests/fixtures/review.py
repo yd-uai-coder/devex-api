@@ -9,12 +9,14 @@ def review_finding(
     cause: str = "design",
     point_key: str | None = None,
     problem: str = "API に認可が無い",
+    documents: tuple[str, ...] = ("external_design",),
 ) -> ReviewFindingOut:
-    """指摘1件(重要度・原因・観点のキー・問題を変えられる)。"""
+    """指摘1件(重要度・原因・観点のキー・問題・関連する文書を変えられる)。"""
     return ReviewFindingOut(
         level=level,  # type: ignore[arg-type]
         cause=cause,  # type: ignore[arg-type]
         targets=["POST /api/v1/projects"],
+        documents=list(documents),
         point_key=point_key,
         problem=problem,
         evidence="POST /api/v1/projects … 200 OK",
@@ -34,6 +36,7 @@ def review_output() -> ReviewOutput:
                 cause="hearing",
                 point_key="security",
                 problem="誰が誰のデータを見られるかが決まっていない",
+                documents=("requirements", "external_design"),
             ),
         ]
     )

@@ -22,6 +22,10 @@ def get_gemini_llm(*, temperature: float = 0.7) -> Any:
     実クライアントには`timeout`(settings.LLM_TIMEOUT_SECONDS)を明示する。指定しないと
     Gemini側の応答がハングしたときに無制限に待ち続ける(invoke_with_retryのリトライは
     例外発生時のみ働くため、ハングには効かない)。
+
+    SDK(google-genai)の中の再試行は`max_retries=1`で止める。既定(6)のままだと、障害(503・504)の
+    ときに SDK が中で再試行を重ね、その外側で invoke_with_retry も試すので、1回の呼び出しが
+    タイムアウトを大きく超えて数分かかる。`0`は「Google の既定(5回)」の意味になるので使わない。
     """
 
     if settings.E2E_FAKE_LLM:
@@ -31,6 +35,7 @@ def get_gemini_llm(*, temperature: float = 0.7) -> Any:
         api_key=settings.GOOGLE_API_KEY,
         temperature=temperature,
         timeout=settings.LLM_TIMEOUT_SECONDS,
+        max_retries=1,
     )
 
 

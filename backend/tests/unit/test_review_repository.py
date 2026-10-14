@@ -60,6 +60,7 @@ async def test_finish_saves_findings_in_level_order_with_tokens(db_session: Asyn
     assert [f.level for f in loaded.findings] == ["critical", "major", "minor"]
     assert [f.position for f in loaded.findings] == [0, 1, 2]
     assert loaded.findings[1].point_key == "security"
+    assert loaded.findings[1].documents == ["requirements", "external_design"]
     assert all(f.decision == "pending" for f in loaded.findings)
 
 

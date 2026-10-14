@@ -10,18 +10,27 @@ from typing import cast
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
 from app.detailed_design.procedure_doc import DESIGN_DOCUMENT_LABELS
+from app.detailed_design.stages import STAGES, stage_key
 from app.documents.issues import DocumentIssue
 from app.hearing import POINT_DEFS, SCALE_LABEL, STATUS_LABEL, PointState, Scale, is_required
+from app.review.gates import DETAILED_DESIGN_DOC, DETAILED_PLAN_DOC
 from app.review.schemas import LEVEL_LABEL
 
-# 文書の種類は文字列で受ける(知らない種類はそのまま出す)
-_DOC_LABELS = cast(Mapping[str, str], DESIGN_DOCUMENT_LABELS)
+# 文書の種類は文字列で受ける(知らない種類はそのまま出す)。段階の区切りでは詳細設計書・実装計画書と、
+# 段階の検証の指摘("stage:N")も並ぶ
+_DOC_LABELS: Mapping[str, str] = {
+    **cast(Mapping[str, str], DESIGN_DOCUMENT_LABELS),
+    DETAILED_DESIGN_DOC: "詳細設計書",
+    DETAILED_PLAN_DOC: "実装計画書(詳細設計)",
+    **{stage_key(stage): f"段階{stage}" for stage in STAGES},
+}
 
 REVIEW_SYSTEM_PROMPT = """あなたは、AI が生成したシステムの設計書のレビュアーです。
 設計書は書き換えず、問題の指摘だけを返します。
 
 ## 入力
-- 設計書(要件定義書・外部設計書、簡易モードでは内部設計書・実装計画書も)
+- 設計書(要件定義書・外部設計書、簡易モードでは内部設計書・実装計画書も。詳細設計モードの
+  段階の承認の後は、詳細設計書(機能一覧〜処理ロジック、段階7の後は横断事項も)と実装計画書も)
 - ヒアリングの観点の表(観点ごとのキー・状態: ユーザーが決定 / AI の提案を採用 / 未決 /
   対象外 と、その内容)
 - 決定的な検証の指摘(システムが ID の結び付きなどを機械的に調べた結果)。
@@ -50,6 +59,9 @@ REVIEW_SYSTEM_PROMPT = """あなたは、AI が生成したシステムの設計
 
 ## 書き方
 - 指摘ごとに、対象を文書の中の ID や名前で書く
+- documents には、その指摘を直すときに書き換える文書を入れる(人が再生成する文書を選ぶ手がかり)。
+  対象がモジュール・API パス・テーブルなど設計の中の名前で、要件を変えずに直せるなら要件定義書を
+  入れない。要件が抜けているなら要件定義書と、それを受ける下流の文書を入れる
 - evidence には、根拠になる文書の箇所をそのまま抜き書きする
 - 一般論(「〜を強化すべき」「〜を検討するとよい」)や、MVP の対象外と決めたことへの指摘は書かない
 - 同じ問題は1件にまとめる

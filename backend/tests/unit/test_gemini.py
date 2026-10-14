@@ -51,3 +51,15 @@ class TestGetGeminiLlmE2eFakeBranch:
         # timeoutはChatGoogleGenerativeAI(pydantic BaseModel)のフィールドとして保持される。
         assert llm.timeout == 12.5
         get_gemini_llm.cache_clear()
+
+    def test_real_client_disables_sdk_retries(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.ai.llm import gemini as gemini_module
+
+        monkeypatch.setattr(gemini_module.settings, "E2E_FAKE_LLM", False)
+        get_gemini_llm.cache_clear()
+
+        llm = get_gemini_llm()
+
+        # 再試行は invoke_with_retry だけにする(SDK の中の再試行は 1 = 止める。0 は Google の既定)
+        assert llm.max_retries == 1
+        get_gemini_llm.cache_clear()

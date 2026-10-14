@@ -62,3 +62,18 @@ class GeneratedDocumentRead(BaseModel):
     # 内部設計書・実装計画書で model を持つ版だけ(ほかは None)。ルートが document_read で入れる
     internal_design: DocumentSummaryRead | None = None
     implementation_plan: DocumentSummaryRead | None = None
+
+
+class GenerationRequest(BaseModel):
+    """設計書の(再)生成の要求。`start_from`は起点(その文書から下流を作り直す)。省略で全部。"""
+
+    start_from: DocType | None = None
+
+
+class GenerationProgressRead(BaseModel):
+    """生成の進み具合。`targets`は作り直す文書(上流から)、`done`はできた文書、`current`は今
+    作っている文書(無ければ null)。"""
+
+    targets: list[DocType]
+    done: list[DocType]
+    current: DocType | None

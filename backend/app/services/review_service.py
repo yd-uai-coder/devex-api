@@ -1,13 +1,18 @@
 """設計レビュー(生成とは別のモデルが、文書の指摘だけを返す)のユースケース。
 
-docs/internal_design.md 3.3節「8. AI 設計レビュー + テスト設計」。受け付け(`start_documents_review`:
-使えるか・実行中でないか・上限)と実行(`execute`: LLM を呼んで指摘を保存)を分ける。受け付けは
-リクエストの中で、実行はバックグラウンドで行うため(生成と同じ形)。レビューの失敗は回に記録し、
-例外にしない(生成やチャットを止めない)。
+docs/internal_design.md 3.3節「8. AI 設計レビュー + テスト設計」。受け付け(`start_review`:
+使えるか・実行中でないか・区切りがそろっているか・上限)と実行(`execute`: LLM を呼んで指摘を保存)を
+分ける。受け付けはリクエストの中で、実行はバックグラウンドで行うため(生成と同じ形)。レビューの
+失敗は回に記録し、例外にしない(生成やチャットを止めない)。
+
+区切り(app/review/gates.py)は、文書の生成の後と、詳細設計モードの段階6・7の承認の後。段階の区切りは
+上流の要件・外部と、詳細設計書(・実装計画書)の md を渡し、段階の検証の指摘も既知として渡す。
 """
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import cast
 
 import structlog
 from redis.asyncio import Redis
@@ -17,25 +22,45 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai.llm.claude import get_review_llm
 from app.core.config import settings
 from app.core.errors import AppError
+from app.detailed_design.document import CHAPTERS, to_markdown, to_plan_markdown
+from app.detailed_design.plan import PLAN_STAGE
+from app.detailed_design.validation import validate_stage
+from app.documents.issues import DocumentIssue
 from app.hearing import as_scale
 from app.models.project import Project
-from app.models.review import ReviewRun
+from app.models.review import ReviewFinding, ReviewRun
 from app.models.user import User
 from app.repositories.chat_history import ChatHistoryRepository
+from app.repositories.design_stage import DesignStageRepository
 from app.repositories.generated_document import DOC_TYPES_BY_MODE, GeneratedDocumentRepository
 from app.repositories.hearing_point import HearingPointRepository
 from app.repositories.review import ReviewRunRepository
 from app.review import (
+    DETAILED_DESIGN_DOC,
+    DETAILED_PLAN_DOC,
+    DOCUMENTS_GATE,
+    GATE_LABEL,
+    GATE_STAGES,
+    GateStatus,
+    ReviewGate,
     ReviewOutput,
     build_review_messages,
+    gate_status,
+    gates_for_mode,
     known_issues,
-    render_findings,
+    only_reviewed_documents,
+    render_notice,
     review_effective,
+    stage_known_issues,
+    stage_targets,
 )
+from app.services.design_stage_service import DesignStageService
+from app.services.detailed_design_export_service import DetailedDesignExportService
 from app.services.errors import (
     DocGenerationInProgressError,
     RateLimitExceededError,
     ReviewDocumentsNotReadyError,
+    ReviewFindingNotFoundError,
     ReviewInProgressError,
     ReviewNotAllowedError,
     ReviewRateLimitExceededError,
@@ -47,8 +72,6 @@ from app.services.rate_limit import RateLimit, RateLimiter
 
 logger = structlog.get_logger(__name__)
 
-# 文書の生成の後の区切り(簡易は4文書、詳細は要件・外部)
-DOCUMENTS_GATE = "documents"
 # Claude の構造化出力は JSON Schema で受ける(ツール呼び出しを強制する方式は推奨されない)
 _STRUCTURED_METHOD = "json_schema"
 # 例外に code の無い失敗(想定外の例外)の理由
@@ -56,6 +79,13 @@ _FAILED_CODE = "REVIEW_FAILED"
 _STALE_CODE = "STALE_REVIEW"
 
 _FAILED_MESSAGE = "設計レビューに失敗しました。時間をおいて「もう一度レビュー」を押してください。"
+_NOT_READY_MESSAGE: dict[str, str] = {
+    "documents": "レビューする設計書がまだありません。",
+    "stage6": "段階1〜6が承認されていないため、詳細設計をレビューできません。",
+    "stage7": "段階1〜7が承認されていないため、全文書をレビューできません。",
+}
+# 回の版のうち、生成した文書の種類(それ以外は段階の承認した版 "stage:N")
+_DOCUMENT_TYPES = frozenset(DOC_TYPES_BY_MODE["simple"]) | frozenset(DOC_TYPES_BY_MODE["detailed"])
 
 
 def failure_code(exc: BaseException) -> str:
@@ -63,6 +93,18 @@ def failure_code(exc: BaseException) -> str:
     if isinstance(exc, AppError) and exc.code:
         return exc.code
     return _FAILED_CODE
+
+
+@dataclass(frozen=True)
+class GateSummary:
+    """区切り1つ分の、画面に出す状態。`run`は最新の回(無ければ None)、`is_current`はその回が
+    今の版をレビューしたものか。"""
+
+    gate: ReviewGate
+    ready: bool
+    status: GateStatus
+    run: ReviewRun | None
+    is_current: bool
 
 
 class ReviewService:
@@ -76,18 +118,20 @@ class ReviewService:
         self._runs = ReviewRunRepository(session)
         self._documents = GeneratedDocumentRepository(session)
         self._hearing_points = HearingPointRepository(session)
+        self._stages = DesignStageRepository(session)
         self._chat_histories = ChatHistoryRepository(session)
         self._redis = redis
         self._llm = llm
 
-    async def start_documents_review(
-        self, project: Project, user: User, *, trigger: str
+    async def start_review(
+        self, project: Project, user: User, *, gate: ReviewGate, trigger: str
     ) -> ReviewRun:
-        """文書の区切りのレビューを受け付け、実行中の回を作って commit する。
+        """区切りのレビューを受け付け、実行中の回を作って commit する。
 
-        使えない(superuser でない・設定がオフ)は403、文書の生成中・レビューの実行中・文書が
-        そろっていないは409、API キーが無いは502、1日の上限は429。上限は、レビューのモデルを
-        実際に呼ぶ回だけを数える(使えない・キーが無いときは数えない)。"""
+        使えない(superuser でない・設定がオフ)は403、文書の生成中・レビューの実行中・区切りが
+        そろっていない(文書が無い・段階が承認されていない・モードに無い区切り)は409、API キーが
+        無いは502、1日の上限は429。上限は、レビューのモデルを実際に呼ぶ回だけを数える(使えない・
+        キーが無いときは数えない)。"""
         if not review_effective(
             is_superuser=user.is_superuser, review_enabled=user.review_enabled
         ):
@@ -99,15 +143,15 @@ class ReviewService:
         await self.recover_stale(project.id)
         if await self._runs.list_running(project.id):
             raise ReviewInProgressError("設計レビューを実行しています。")
-        targets = await self.document_targets(project)
+        targets = await self.targets_for(project, gate)
         if targets is None:
-            raise ReviewDocumentsNotReadyError("レビューする設計書がまだありません。")
+            raise ReviewDocumentsNotReadyError(_NOT_READY_MESSAGE[gate])
         if not settings.E2E_FAKE_LLM and not settings.ANTHROPIC_API_KEY and self._llm is None:
             raise ReviewUnavailableError("設計レビューのAPIキーが設定されていません。")
         await self._enforce_limit(user)
         run = await self._runs.create_run(
             project_id=project.id,
-            gate=DOCUMENTS_GATE,
+            gate=gate,
             targets=targets,
             trigger=trigger,
             model=settings.REVIEW_MODEL,
@@ -137,7 +181,7 @@ class ReviewService:
 
     async def execute(self, run_id: uuid.UUID) -> ReviewRun | None:
         """実行中の回のレビューを流し、指摘を保存して commit する。失敗は回に記録して返す
-        (例外にしない)。結果はチャットにも出す(成功は指摘の md、失敗は「失敗しました」)。
+        (例外にしない)。結果はチャットにも出す(成功は件数の一行、失敗は「失敗しました」)。
         回が無い・実行中でないときは None。"""
         run = await self._runs.find_one(id=run_id)
         if run is None or run.status != "running":
@@ -149,6 +193,8 @@ class ReviewService:
             documents: dict[str, str] = {}
             models: dict[str, dict | None] = {}
             for doc_type, version in run.targets.items():
+                if doc_type not in _DOCUMENT_TYPES:
+                    continue  # 段階の承認した版(段階の内容は下で詳細設計書として渡す)
                 document = await self._documents.get_version(
                     project_id=project.id, doc_type=doc_type, version=version
                 )
@@ -156,9 +202,12 @@ class ReviewService:
                     raise ReviewDocumentsNotReadyError(f"{doc_type} v{version} not found")
                 documents[doc_type] = document.content
                 models[doc_type] = document.model
+            issues = known_issues(models)
+            if run.gate != DOCUMENTS_GATE:
+                issues += await self._add_stage_documents(project, run.gate, documents)
             states = await self._hearing_points.load_states(project.id)
             messages = build_review_messages(
-                documents, states, as_scale(project.hearing_scale), known_issues(models)
+                documents, states, as_scale(project.hearing_scale), issues
             )
             llm = self._llm or get_review_llm()
             output, usage = await invoke_structured_with_usage(
@@ -184,25 +233,106 @@ class ReviewService:
                 error_code=run.error_code,
             )
             return run
-        await self._runs.finish(run, status="succeeded", usage=usage, findings=output.findings)
-        await self._chat_histories.add(
-            project_id=project.id, sender="others", message=render_findings(output.findings)
-        )
+        findings = only_reviewed_documents(output.findings, documents.keys())
+        await self._runs.finish(run, status="succeeded", usage=usage, findings=findings)
+        notice = render_notice(output.findings, GATE_LABEL[cast(ReviewGate, run.gate)])
+        await self._chat_histories.add(project_id=project.id, sender="others", message=notice)
         await self._session.commit()
         logger.info(
             "design_review_succeeded",
             project_id=str(project.id),
+            gate=run.gate,
             findings=len(output.findings),
             input_tokens=run.input_tokens,
             output_tokens=run.output_tokens,
         )
         return run
 
-    async def latest_documents_review(self, project: Project) -> ReviewRun | None:
-        """文書の区切りの最新の回(指摘付き)。止まった実行中の回は先に失敗に戻す。"""
+    async def latest(self, project: Project, gate: ReviewGate) -> ReviewRun | None:
+        """区切りの最新の回(指摘付き)。止まった実行中の回は先に失敗に戻す。"""
         if await self.recover_stale(project.id):
             await self._session.commit()
-        return await self._runs.get_latest(project_id=project.id, gate=DOCUMENTS_GATE)
+        return await self._runs.get_latest(project_id=project.id, gate=gate)
+
+    async def gate_summaries(self, project: Project) -> list[GateSummary]:
+        """モードの区切りごとの状態(区切りの順)。段階の承認した版は1回だけ読む。"""
+        if await self.recover_stale(project.id):
+            await self._session.commit()
+        gates = gates_for_mode(project.mode)
+        all_targets = await self._all_targets(project, gates)
+        summaries: list[GateSummary] = []
+        for gate in gates:
+            targets = all_targets[gate]
+            run = await self._runs.get_latest(project_id=project.id, gate=gate)
+            is_current = run is not None and targets is not None and run.targets == targets
+            status = gate_status(
+                ready=targets is not None,
+                run_status=run.status if run else None,
+                is_current=is_current,
+            )
+            summaries.append(GateSummary(gate, targets is not None, status, run, is_current))
+        return summaries
+
+    async def decide(
+        self, project: Project, finding_id: uuid.UUID, decision: str
+    ) -> ReviewFinding:
+        """指摘の採否(pending / adopted / rejected / held)を記録して commit する。プロジェクトに
+        無い指摘は404。採否は回の版によらず付けられる(古い回の指摘を見て決めてもよい)。"""
+        finding = await self._runs.get_finding(project_id=project.id, finding_id=finding_id)
+        if finding is None:
+            raise ReviewFindingNotFoundError("指摘が見つかりません。")
+        finding.decision = decision
+        await self._session.commit()
+        return finding
+
+    async def targets_for(self, project: Project, gate: ReviewGate) -> dict[str, int] | None:
+        """区切りでレビューする今の版。そろっていない・モードに無い区切りは None。"""
+        return (await self._all_targets(project, (gate,)))[gate]
+
+    async def _all_targets(
+        self, project: Project, gates: tuple[ReviewGate, ...]
+    ) -> dict[ReviewGate, dict[str, int] | None]:
+        documents = await self.document_targets(project)
+        allowed = gates_for_mode(project.mode)
+        result: dict[ReviewGate, dict[str, int] | None] = {}
+        approved: dict[int, int | None] | None = None
+        for gate in gates:
+            if gate not in allowed or documents is None:
+                result[gate] = None
+            elif gate == DOCUMENTS_GATE:
+                result[gate] = documents
+            else:
+                if approved is None:
+                    approved = await self._approved_versions(project)
+                result[gate] = stage_targets(documents, approved, GATE_STAGES[gate])
+        return result
+
+    async def _approved_versions(self, project: Project) -> dict[int, int | None]:
+        """承認済み(古くない)段階の承認した版(段階の画面の状態と同じ規則)。"""
+        views, _ = await DesignStageService(self._session).overview(project)
+        return {
+            row.stage: row.approved_version
+            for row in await self._stages.list_for_project(project.id)
+            if row.stage in views and views[row.stage].state == "approved"
+        }
+
+    async def _add_stage_documents(
+        self, project: Project, gate: str, documents: dict[str, str]
+    ) -> list[tuple[str, DocumentIssue]]:
+        """段階の区切りの入力: 詳細設計書(区切りの段階の章)と、段階7の後は実装計画書の md を
+        `documents`に足し、段階の検証の指摘(既知)を返す。"""
+        stages = GATE_STAGES[cast(ReviewGate, gate)]
+        _, sources = await DesignStageService(self._session).overview(project)
+        collected = await DetailedDesignExportService(self._session).collect(
+            project, render=False
+        )
+        chapters = [chapter for chapter in CHAPTERS if chapter.stage in stages]
+        documents[DETAILED_DESIGN_DOC] = to_markdown(collected.source, chapters)
+        if PLAN_STAGE in stages:
+            documents[DETAILED_PLAN_DOC] = to_plan_markdown(collected.source)
+        return stage_known_issues(
+            {stage: validate_stage(stage, sources.stages.get(stage), sources) for stage in stages}
+        )
 
     async def document_targets(self, project: Project) -> dict[str, int] | None:
         """モードの文書の、表示中の版 {doc_type: version}。1つでも無ければ None。"""

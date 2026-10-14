@@ -35,7 +35,8 @@ class _FakePipeline:
 
 
 class FakeRedis:
-    """redis.asyncio.Redis の incr / expire / pipeline / get / set だけを模したインメモリ実装。"""
+    """redis.asyncio.Redis の incr / expire / pipeline / get / set / delete だけを模した
+    インメモリ実装。"""
 
     def __init__(self) -> None:
         self._counts: dict[str, int] = {}
@@ -67,3 +68,7 @@ class FakeRedis:
         """key に値を設定する。`ex`(TTL秒)はテストでは失効させないので記録しない。"""
         self._values[key] = value
         return True
+
+    async def delete(self, key: str) -> int:
+        """key を消す。消した数を返す。"""
+        return 1 if self._values.pop(key, None) is not None else 0

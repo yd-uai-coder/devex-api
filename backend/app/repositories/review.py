@@ -57,6 +57,18 @@ class ReviewRunRepository(CRUDRepository[ReviewRun]):
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_finding(
+        self, *, project_id: uuid.UUID, finding_id: uuid.UUID
+    ) -> ReviewFinding | None:
+        """プロジェクトの回の指摘1件。別のプロジェクトの指摘は None。"""
+        stmt = (
+            select(ReviewFinding)
+            .join(ReviewRun, ReviewFinding.run_id == ReviewRun.id)
+            .where(ReviewFinding.id == finding_id, ReviewRun.project_id == project_id)
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def list_running(self, project_id: uuid.UUID) -> list[ReviewRun]:
         """プロジェクトの実行中の回。"""
         return await self.list_all(project_id=project_id, status="running")
@@ -87,6 +99,7 @@ class ReviewRunRepository(CRUDRepository[ReviewRun]):
                 level=f.level,
                 cause=f.cause,
                 targets=list(f.targets),
+                documents=list(f.documents),
                 point_key=f.point_key,
                 problem=f.problem,
                 evidence=f.evidence,

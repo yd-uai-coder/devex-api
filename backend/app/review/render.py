@@ -1,4 +1,7 @@
-"""設計レビューの指摘をチャットに出す md にする(純粋関数)。"""
+"""設計レビューの指摘をチャットに出す文にする(純粋関数)。
+
+チャットには件数の一行の知らせ(`render_notice`)を出し、指摘はレビューのパネルで見る。
+`render_findings`(指摘の一覧の md)は、パネルの無い所(ログ・測定)で読むために残す。"""
 
 from collections.abc import Sequence
 
@@ -10,13 +13,27 @@ def sort_findings(findings: Sequence[ReviewFindingOut]) -> list[ReviewFindingOut
     return sorted(findings, key=lambda f: REVIEW_LEVELS.index(f.level))
 
 
-def render_findings(findings: Sequence[ReviewFindingOut]) -> str:
-    """見出し・件数と、指摘ごとの重要度・原因・対象・問題・引用・改善案の md。"""
-    counts = "・".join(
+def _level_counts(findings: Sequence[ReviewFindingOut]) -> str:
+    return "・".join(
         f"{LEVEL_LABEL[level]} {n}"
         for level in REVIEW_LEVELS
         if (n := sum(1 for f in findings if f.level == level))
     )
+
+
+def render_notice(findings: Sequence[ReviewFindingOut], gate_label: str) -> str:
+    """チャットに出す一行の知らせ(区切り・件数・重要度ごとの件数)。"""
+    if not findings:
+        return f"設計レビュー({gate_label})をしました。指摘はありません。"
+    return (
+        f"設計レビュー({gate_label})をしました。指摘 {len(findings)}件"
+        f"({_level_counts(findings)})。レビューのパネルで確かめてください。"
+    )
+
+
+def render_findings(findings: Sequence[ReviewFindingOut]) -> str:
+    """見出し・件数と、指摘ごとの重要度・原因・対象・問題・引用・改善案の md。"""
+    counts = _level_counts(findings)
     if not findings:
         return "## 設計レビュー\n指摘はありません。"
     lines = [f"## 設計レビュー\n指摘 {len(findings)}件({counts})", ""]

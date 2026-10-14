@@ -4,10 +4,19 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from app.review import ReviewCause, ReviewLevel
+from app.review import GateStatus, ReviewCause, ReviewGate, ReviewLevel
 
-# レビューの区切り(今は文書の生成の後だけ。段階6・7の承認の後は後で足す)
-ReviewGate = Literal["documents"]
+# 指摘の採否(人が決める)。pending = 未判断
+FindingDecision = Literal["pending", "adopted", "rejected", "held"]
+
+__all__ = [
+    "FindingDecision",
+    "FindingDecisionUpdate",
+    "ReviewFindingRead",
+    "ReviewGate",
+    "ReviewGateSummaryRead",
+    "ReviewRunRead",
+]
 
 
 class ReviewFindingRead(BaseModel):
@@ -20,12 +29,14 @@ class ReviewFindingRead(BaseModel):
     level: ReviewLevel
     cause: ReviewCause
     targets: list[str]
+    # 直すときに書き換える文書の種類(上流から)。列を足す前の指摘は null
+    documents: list[str] | None
     point_key: str | None
     problem: str
     evidence: str
     reason: str
     suggestion: str
-    decision: str
+    decision: FindingDecision
 
 
 class ReviewRunRead(BaseModel):
@@ -47,3 +58,20 @@ class ReviewRunRead(BaseModel):
     finished_at: datetime | None
     findings: list[ReviewFindingRead]
     is_current: bool = False
+
+
+class ReviewGateSummaryRead(BaseModel):
+    """区切り1つ分の状態(レビューのパネルの区切りの表)。`ready`は区切りの文書がそろっているか、
+    `status`は not_ready / unreviewed / running / reviewed / failed、`run`は最新の回
+    (無ければ null)。"""
+
+    gate: ReviewGate
+    ready: bool
+    status: GateStatus
+    run: ReviewRunRead | None
+
+
+class FindingDecisionUpdate(BaseModel):
+    """指摘の採否の変更。"""
+
+    decision: FindingDecision

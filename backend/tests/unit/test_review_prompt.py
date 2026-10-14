@@ -124,3 +124,16 @@ def test_point_key_is_required_in_output_schema() -> None:
     # 省略できる項目にすると、モデルが書かないことがある(null は書ける)
     schema = ReviewFindingOut.model_json_schema()
     assert "point_key" in schema["required"]
+    assert "documents" in schema["required"]
+
+
+def test_documents_drop_unknown_and_follow_upstream_order() -> None:
+    finding = review_finding(
+        documents=("implementation_plan", "設計書", "requirements", "requirements")
+    )
+    assert finding.documents == ["requirements", "implementation_plan"]
+
+
+def test_review_prompt_asks_for_documents_to_rewrite() -> None:
+    assert "documents には" in REVIEW_SYSTEM_PROMPT
+    assert "要件定義書を\n  入れない" in REVIEW_SYSTEM_PROMPT

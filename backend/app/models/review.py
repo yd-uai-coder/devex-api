@@ -73,6 +73,8 @@ class ReviewFinding(Base):
     level: Mapped[str] = mapped_column(String(20), nullable=False)
     cause: Mapped[str] = mapped_column(String(20), nullable=False)
     targets: Mapped[list[str]] = mapped_column(PortableJSON, nullable=False, default=list)
+    # 直すときに書き換える文書の種類(上流から)。この列を足す前の指摘は null
+    documents: Mapped[list[str] | None] = mapped_column(PortableJSON, nullable=True)
     point_key: Mapped[str | None] = mapped_column(String(40), nullable=True)
     problem: Mapped[str] = mapped_column(Text, nullable=False)
     evidence: Mapped[str] = mapped_column(Text, nullable=False)
