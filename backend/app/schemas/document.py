@@ -65,9 +65,11 @@ class GeneratedDocumentRead(BaseModel):
 
 
 class GenerationRequest(BaseModel):
-    """設計書の(再)生成の要求。`start_from`は起点(その文書から下流を作り直す)。省略で全部。"""
+    """設計書の(再)生成の要求。`start_from`は起点(その文書から下流を作り直す)。省略で全部。
+    `finding_ids`は再生成の指示に入れる、設計レビューの採用した指摘(設計・不整合)。"""
 
     start_from: DocType | None = None
+    finding_ids: list[uuid.UUID] = []
 
 
 class GenerationProgressRead(BaseModel):

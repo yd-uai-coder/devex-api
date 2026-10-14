@@ -401,3 +401,59 @@ async def test_decide_records_decision_of_own_project(db_session: AsyncSession) 
         await service.decide(other, finding.id, "rejected")
     with pytest.raises(ReviewFindingNotFoundError):
         await service.decide(project, uuid.uuid4(), "rejected")
+
+
+# --- 採用した指摘の追跡 ---
+
+
+async def test_followups_of_adopted_findings_follow_document_versions(
+    db_session: AsyncSession,
+) -> None:
+    project, user = await _generated(db_session)
+    service = ReviewService(db_session, llm=_review_llm())
+    run = await service.start_review(project, user, gate=DOCUMENTS_GATE, trigger="manual")
+    finished = await service.execute(run.id)
+    assert finished is not None and finished.snapshots is None
+    adopted, pending = finished.findings[0], finished.findings[1]
+    await service.decide(project, adopted.id, "adopted")
+
+    summary = (await service.gate_summaries(project))[0]
+    # 採用した指摘だけ。関連文書の版が変わっていないので未対応
+    assert summary.followups == {adopted.id: "unaddressed"}
+    assert await service.followup_of(project, adopted) == "unaddressed"
+    assert await service.followup_of(project, pending) is None
+
+    # 外部設計以降を作り直すと、版が変わる(対象の行を比べる段へ進む)
+    await DocGeneratorService(db_session).generate(
+        project.id, user.id, start_from="external_design", llm=_generation_llm()
+    )
+    # 作り直しの後の自動のレビューで最新の回が替わっても、前の回で採用した指摘として残る
+    after = (await service.gate_summaries(project))[0]
+    assert after.run is not None and after.run.id != finished.id
+    assert [f.id for f in after.adopted_before] == [adopted.id]
+    assert after.followups[adopted.id] in ("target_unchanged", "changed")
+    assert (await service.current_versions(project))["external_design"] == 2
+
+
+async def test_stage_gate_keeps_snapshots_for_followups(db_session: AsyncSession) -> None:
+    project = await create_document_project(db_session)
+    user = await _reviewer(db_session, project)
+    output = ReviewOutput(findings=[review_finding(documents=("detailed_design",))])
+    service = ReviewService(db_session, llm=_review_llm(output))
+    run = await service.start_review(project, user, gate="stage6", trigger="manual")
+    finished = await service.execute(run.id)
+    assert finished is not None and finished.snapshots is not None
+    assert sorted(finished.snapshots) == [f"stage:{s}" for s in range(1, 7)]
+    finding = finished.findings[0]
+    await service.decide(project, finding.id, "adopted")
+    assert await service.followup_of(project, finding) == "unaddressed"
+
+    # 段階6を直すと(承認の前でも)段階の版が変わり、写しと今の内容を比べる
+    await DesignStageService(db_session).save(
+        project, stage=6, expected_version=1, model=logic_model()
+    )
+    elements = await DesignStageService(db_session).elements_since(
+        project, {6: finished.snapshots["stage:6"]}
+    )
+    assert set(elements) == {6}
+    assert await service.followup_of(project, finding) in ("target_unchanged", "changed")

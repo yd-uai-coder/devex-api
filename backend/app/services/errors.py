@@ -371,3 +371,17 @@ class GenerationUpstreamMissingError(ConflictError):
     """設計書の再生成の起点より上流の文書がまだ無いときに送出する(上流を入力にして作るため)。"""
 
     code: ClassVar[str | None] = "GENERATION_UPSTREAM_MISSING"
+
+
+class SendbackFindingInvalidError(ConflictError):
+    """再生成の指示に、採用していない指摘・ヒアリングが原因の指摘(聞き直しで直す)を渡した場合に
+    送出する。"""
+
+    code: ClassVar[str | None] = "SENDBACK_FINDING_INVALID"
+
+
+class RehearingFindingInvalidError(ConflictError):
+    """聞き直しに、採用していない指摘・ヒアリングが原因でない指摘・観点のキーの無い指摘を渡した
+    場合に送出する。"""
+
+    code: ClassVar[str | None] = "REHEARING_FINDING_INVALID"

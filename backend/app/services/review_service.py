@@ -10,7 +10,8 @@ docs/internal_design.md 3.3節「8. AI 設計レビュー + テスト設計」�
 """
 
 import uuid
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import cast
 
@@ -24,47 +25,63 @@ from app.core.config import settings
 from app.core.errors import AppError
 from app.detailed_design.document import CHAPTERS, to_markdown, to_plan_markdown
 from app.detailed_design.plan import PLAN_STAGE
+from app.detailed_design.stages import stage_key
 from app.detailed_design.validation import validate_stage
 from app.documents.issues import DocumentIssue
 from app.hearing import as_scale
 from app.models.project import Project
-from app.models.review import ReviewFinding, ReviewRun
+from app.models.review import ReviewFinding, ReviewFixCheck, ReviewRun
 from app.models.user import User
 from app.repositories.chat_history import ChatHistoryRepository
 from app.repositories.design_stage import DesignStageRepository
 from app.repositories.generated_document import DOC_TYPES_BY_MODE, GeneratedDocumentRepository
 from app.repositories.hearing_point import HearingPointRepository
-from app.repositories.review import ReviewRunRepository
+from app.repositories.review import ReviewFixCheckRepository, ReviewRunRepository
 from app.review import (
     DETAILED_DESIGN_DOC,
     DETAILED_PLAN_DOC,
     DOCUMENTS_GATE,
     GATE_LABEL,
     GATE_STAGES,
+    FollowupState,
     GateStatus,
     ReviewGate,
     ReviewOutput,
+    RowDiff,
+    SendbackFinding,
     build_review_messages,
+    can_regenerate,
+    can_rehear,
+    document_model_rows,
+    element_rows,
+    followup_state,
     gate_status,
     gates_for_mode,
     known_issues,
     only_reviewed_documents,
+    rehearing_message,
+    rehearing_points,
     render_notice,
     review_effective,
     stage_known_issues,
     stage_targets,
+    version_keys,
 )
+from app.schemas.hearing import HearingPointsRead
+from app.services.chat_service import ChatService
 from app.services.design_stage_service import DesignStageService
 from app.services.detailed_design_export_service import DetailedDesignExportService
 from app.services.errors import (
     DocGenerationInProgressError,
     RateLimitExceededError,
+    RehearingFindingInvalidError,
     ReviewDocumentsNotReadyError,
     ReviewFindingNotFoundError,
     ReviewInProgressError,
     ReviewNotAllowedError,
     ReviewRateLimitExceededError,
     ReviewUnavailableError,
+    SendbackFindingInvalidError,
 )
 from app.services.generation_staleness import is_stale
 from app.services.llm_retry import invoke_structured_with_usage
@@ -105,6 +122,13 @@ class GateSummary:
     status: GateStatus
     run: ReviewRun | None
     is_current: bool
+    # 前の回で採用した指摘(新しい回から。再生成の後の自動のレビューで最新の回が替わっても、
+    # 採用した指摘を見失わないように)
+    adopted_before: Sequence[ReviewFinding] = ()
+    # 採用した指摘の追跡の状態 {指摘の id: 状態}(最新の回・前の回の採用した指摘)
+    followups: Mapping[uuid.UUID, FollowupState] = field(default_factory=dict)
+    # 採用した指摘の、今の版についての「直ったか」の判定(シャドーモード。無ければ入らない)
+    fix_checks: Mapping[uuid.UUID, ReviewFixCheck] = field(default_factory=dict)
 
 
 class ReviewService:
@@ -116,6 +140,7 @@ class ReviewService:
         # redis: 1日の回数の上限を数える(受け付けで使う)。llm: テストで差し替える
         self._session = session
         self._runs = ReviewRunRepository(session)
+        self._fix_checks = ReviewFixCheckRepository(session)
         self._documents = GeneratedDocumentRepository(session)
         self._hearing_points = HearingPointRepository(session)
         self._stages = DesignStageRepository(session)
@@ -155,6 +180,7 @@ class ReviewService:
             targets=targets,
             trigger=trigger,
             model=settings.REVIEW_MODEL,
+            snapshots=await self._stage_snapshots(project, gate),
         )
         await self._session.commit()
         return run
@@ -270,7 +296,27 @@ class ReviewService:
                 run_status=run.status if run else None,
                 is_current=is_current,
             )
-            summaries.append(GateSummary(gate, targets is not None, status, run, is_current))
+            before = [
+                r
+                for r in await self._runs.list_with_adopted(project_id=project.id, gate=gate)
+                if run is None or r.id != run.id
+            ]
+            adopted_before = [f for r in before for f in r.findings if f.decision == "adopted"]
+            runs = [*([run] if run else []), *before]
+            followups = await self.followups(project, runs)
+            fix_checks = await self.current_fix_checks(project, runs)
+            summaries.append(
+                GateSummary(
+                    gate,
+                    targets is not None,
+                    status,
+                    run,
+                    is_current,
+                    adopted_before,
+                    followups,
+                    fix_checks,
+                )
+            )
         return summaries
 
     async def decide(
@@ -284,6 +330,163 @@ class ReviewService:
         finding.decision = decision
         await self._session.commit()
         return finding
+
+    async def followups(
+        self, project: Project, runs: Iterable[ReviewRun]
+    ) -> dict[uuid.UUID, FollowupState]:
+        """回の採用した指摘ごとの追跡の状態(app/review/followup.py)。版の変わった文書・段階の
+        行は、回ごとに1回だけ読む。"""
+        current = await self.current_versions(project)
+        result: dict[uuid.UUID, FollowupState] = {}
+        for run in runs:
+            adopted = [f for f in run.findings if f.decision == "adopted"]
+            if not adopted:
+                continue
+            diffs = await self.row_diffs(project, run, current)
+            for finding in adopted:
+                result[finding.id] = followup_state(
+                    documents=finding.documents,
+                    targets=finding.targets,
+                    reviewed=run.targets,
+                    current=current,
+                    diffs=diffs,
+                )
+        return result
+
+    async def sendback_findings(
+        self, project_id: uuid.UUID, finding_ids: Sequence[uuid.UUID], *, strict: bool = False
+    ) -> list[SendbackFinding]:
+        """再生成の指示に入れる指摘(渡した順、重ねない)。`strict`(受け付け)では、プロジェクトに
+        無い指摘を404、採用していない・ヒアリングが原因の指摘を409にする。生成の中では、受け付けの
+        後に採否が変わった指摘を黙って外す。"""
+        findings: list[SendbackFinding] = []
+        for finding_id in dict.fromkeys(finding_ids):
+            finding = await self._runs.get_finding(project_id=project_id, finding_id=finding_id)
+            if finding is None:
+                if strict:
+                    raise ReviewFindingNotFoundError("指摘が見つかりません。")
+                continue
+            item = SendbackFinding.of(finding)
+            if not can_regenerate(item):
+                if strict:
+                    raise SendbackFindingInvalidError(
+                        "再生成に渡せるのは、採用した設計・不整合の指摘だけです。"
+                    )
+                continue
+            findings.append(item)
+        return findings
+
+    async def rehearing(
+        self, project: Project, finding_ids: Sequence[uuid.UUID]
+    ) -> HearingPointsRead:
+        """採用したヒアリングの指摘の観点を未決に戻し、指摘をまとめた問いかけをチャットに出す
+        (app/review/rehearing.py)。プロジェクトに無い指摘は404、聞き直しに使えない指摘(採用して
+        いない・ヒアリングが原因でない・観点のキーが無い)・指摘が無いは409、生成中は409。"""
+        findings: list[SendbackFinding] = []
+        for finding_id in dict.fromkeys(finding_ids):
+            finding = await self._runs.get_finding(project_id=project.id, finding_id=finding_id)
+            if finding is None:
+                raise ReviewFindingNotFoundError("指摘が見つかりません。")
+            item = SendbackFinding.of(finding)
+            if not can_rehear(item):
+                raise RehearingFindingInvalidError(
+                    "聞き直せるのは、採用したヒアリングの指摘(観点のあるもの)だけです。"
+                )
+            findings.append(item)
+        points = rehearing_points(findings)
+        if not points:
+            raise RehearingFindingInvalidError("聞き直す指摘を選んでください。")
+        return await ChatService(self._session).reopen_points(
+            project, list(points), rehearing_message(points)
+        )
+
+    async def followup_of(
+        self, project: Project, finding: ReviewFinding
+    ) -> FollowupState | None:
+        """指摘1件の追跡の状態(採用していなければ None)。"""
+        if finding.decision != "adopted":
+            return None
+        run = await self._runs.find_one(id=finding.run_id)
+        if run is None:
+            return None
+        return (await self.followups(project, [run])).get(finding.id)
+
+    async def current_fix_checks(
+        self, project: Project, runs: Iterable[ReviewRun]
+    ) -> dict[uuid.UUID, ReviewFixCheck]:
+        """採用した指摘の最新の「直ったか」の判定のうち、今の版について判定したもの(版が変わった
+        後の古い判定は出さない)。"""
+        adopted = [
+            (run, f) for run in runs for f in run.findings if f.decision == "adopted"
+        ]
+        latest = await self._fix_checks.latest_for([f.id for _, f in adopted])
+        if not latest:
+            return {}
+        current = await self.current_versions(project)
+        result: dict[uuid.UUID, ReviewFixCheck] = {}
+        for run, f in adopted:
+            check = latest.get(f.id)
+            keys = version_keys(f.documents, run.targets)
+            if check is not None and check.targets == {k: current.get(k) for k in keys}:
+                result[f.id] = check
+        return result
+
+    async def current_versions(self, project: Project) -> dict[str, int | None]:
+        """今の版 {doc_type: 表示中の版, "stage:N": 段階の内容の版}(段階は承認していない作り直しも
+        変わったものに数える)。"""
+        versions: dict[str, int | None] = {}
+        for doc_type in DOC_TYPES_BY_MODE[project.mode]:
+            current = await self._documents.get_current(project_id=project.id, doc_type=doc_type)
+            versions[doc_type] = current.version if current is not None else None
+        if project.mode == "detailed":
+            for row in await self._stages.list_for_project(project.id):
+                versions[stage_key(row.stage)] = row.version
+        return versions
+
+    async def row_diffs(
+        self, project: Project, run: ReviewRun, current: Mapping[str, int | None]
+    ) -> dict[str, RowDiff | None]:
+        """版の変わったキーの、レビューしたときと今の行。比べられないものは None。"""
+        changed = [k for k, v in run.targets.items() if current.get(k) != v]
+        diffs: dict[str, RowDiff | None] = {}
+        stored = run.snapshots or {}
+        snapshots: dict[int, dict] = {}
+        for key in changed:
+            if key in _DOCUMENT_TYPES:
+                diffs[key] = await self._document_diff(project, key, run.targets[key])
+            elif stored.get(key) is not None:
+                snapshots[int(key.split(":", 1)[1])] = stored[key]
+        if snapshots:
+            elements = await DesignStageService(self._session).elements_since(project, snapshots)
+            for stage, (before, after) in elements.items():
+                diffs[stage_key(stage)] = RowDiff(
+                    element_rows(before, stage), element_rows(after, stage)
+                )
+        return diffs
+
+    async def _document_diff(self, project: Project, doc_type: str, version: int) -> RowDiff | None:
+        reviewed = await self._documents.get_version(
+            project_id=project.id, doc_type=doc_type, version=version
+        )
+        current = await self._documents.get_current(project_id=project.id, doc_type=doc_type)
+        if reviewed is None or current is None:
+            return None  # レビューした版が直近の版の外に消えた
+        before = document_model_rows(doc_type, reviewed.model)
+        after = document_model_rows(doc_type, current.model)
+        if before is None or after is None:
+            return None
+        return RowDiff(before, after)
+
+    async def _stage_snapshots(self, project: Project, gate: ReviewGate) -> dict[str, dict] | None:
+        """段階の区切りでレビューする段階の内容の写し(承認した写し)。文書の区切りは None。"""
+        stages = GATE_STAGES[gate]
+        if not stages:
+            return None
+        snapshots: dict[str, dict] = {}
+        for row in await self._stages.list_for_project(project.id):
+            if row.stage in stages and row.approved_model is not None:
+                snapshots[stage_key(row.stage)] = row.approved_model
+        return snapshots
 
     async def targets_for(self, project: Project, gate: ReviewGate) -> dict[str, int] | None:
         """区切りでレビューする今の版。そろっていない・モードに無い区切りは None。"""

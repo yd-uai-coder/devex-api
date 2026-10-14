@@ -24,6 +24,7 @@ from app.documents.revision import (
     REVISION_RULE,
     UNCHANGED_DESCRIPTION,
     changed_rows_text,
+    instruction_text,
     rows_text,
 )
 
@@ -132,11 +133,13 @@ def build_external_design_messages(
     requirements_md: str,
     previous: ExternalDesignModel | None,
     changed_requirements: Sequence[str] = (),
+    instruction: str = "",
 ) -> list[BaseMessage]:
     human = (
         f"## 前の版の画面\n{previous_screens_text(previous)}\n\n"
         f"## 前の版の API\n{rows_text(previous.apis if previous else [])}\n\n"
         f"## 上流の変わった行\n{changed_rows_text(changed_requirements)}\n\n"
+        f"## 修正指示\n{instruction_text(instruction)}\n\n"
         f"## 要件定義書\n{requirements_md}"
     )
     return [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=human)]

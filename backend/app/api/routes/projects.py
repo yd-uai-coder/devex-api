@@ -200,11 +200,13 @@ async def trigger_generation(
     状態(失敗時に戻す先)をbackground taskへ渡す。
 
     本文の`start_from`は再生成の起点(その文書から下流を作り直す。省略で全部)。モードに無い起点は
-    400、起点より上流の文書が無ければ409。
+    400、起点より上流の文書が無ければ409。`finding_ids`は再生成の指示に入れる採用した指摘
+    (プロジェクトに無い指摘は404、採用していない・ヒアリングが原因の指摘は409)。
     """
     start_from = payload.start_from if payload else None
+    finding_ids = payload.finding_ids if payload else []
     status_before_generation = await DocGeneratorService(session).request_generation(
-        current_project, start_from=start_from
+        current_project, start_from=start_from, finding_ids=finding_ids
     )
     background_tasks.add_task(
         generate_documents,
@@ -212,6 +214,7 @@ async def trigger_generation(
         current_user.id,
         status_before_generation,
         start_from=start_from,
+        finding_ids=finding_ids,
     )
 
 

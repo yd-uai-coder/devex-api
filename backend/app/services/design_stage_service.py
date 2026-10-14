@@ -335,6 +335,30 @@ class DesignStageService:
         row.impact = impact.to_dict()
         await self._session.commit()
 
+    async def elements_since(
+        self, project: Project, snapshots: Mapping[int, dict]
+    ) -> dict[int, tuple[list[Element], list[Element]]]:
+        """段階ごとに、写し(`snapshots`。レビューしたときの段階の内容)の要素と、今の内容の要素
+        (その段階の置き場の要素だけ)。写しの側は、ほかの段階・文書を今のものとして組み立てる
+        (承認の変更の影響と同じ求め方)。"""
+        rows, _, documents = await self._load(project)
+        stages = {s: row.model for s, row in rows.items()}
+        docs = _document_models(documents)
+        er = await self._er_tables(project.id) if project.mode == "detailed" else {}
+        after = build_elements(DesignModels.from_dicts(stages, docs, er))
+        result: dict[int, tuple[list[Element], list[Element]]] = {}
+        for stage, snapshot in snapshots.items():
+            before = build_elements(
+                DesignModels.from_dicts(
+                    {**stages, stage: snapshot}, docs, _snapshot_er(stage, snapshot, er)
+                )
+            )
+            result[stage] = (
+                [e for e in before if e.stage == stage],
+                [e for e in after if e.stage == stage],
+            )
+        return result
+
     async def _er_tables(self, project_id: uuid.UUID) -> dict[str, dict]:
         """段階3の ER のテーブル名 → 定義(列と説明)。ER がまだ無ければ空。"""
         er = await self._diagrams.get_by_subject(

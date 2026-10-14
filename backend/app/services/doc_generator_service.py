@@ -1,5 +1,5 @@
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 
 import structlog
@@ -82,7 +82,12 @@ from app.repositories.generated_document import (
 )
 from app.repositories.hearing_point import HearingPointRepository
 from app.repositories.project import ProjectRepository
-from app.review import DOCUMENTS_GATE, review_effective
+from app.review import (
+    DOCUMENTS_GATE,
+    build_instruction,
+    findings_for,
+    review_effective,
+)
 from app.schemas.document import (
     AssumedRequirementRead,
     DocumentIssueRead,
@@ -101,6 +106,7 @@ from app.services.errors import (
     RequirementNotAssumedError,
     RequirementNotFoundError,
 )
+from app.services.fix_check_service import FixCheckService
 from app.services.generation_progress import GenerationProgress, GenerationProgressStore
 from app.services.generation_staleness import is_stale
 from app.services.llm_retry import invoke_structured, invoke_with_retry
@@ -149,9 +155,11 @@ async def generate_documents(
     status_before_generation: str | None = None,
     *,
     start_from: str | None = None,
+    finding_ids: Sequence[uuid.UUID] = (),
     llm=None,
 ) -> None:
-    """`BackgroundTasks`から呼び出すエントリポイント。`start_from`は再生成の起点(省略で全部)。
+    """`BackgroundTasks`から呼び出すエントリポイント。`start_from`は再生成の起点(省略で全部)、
+    `finding_ids`は再生成の指示に入れる採用した指摘。
 
     FastAPI 0.106以降、`yield`を使うDIのセッション(SessionDep)はbackground task実行"前"に
     クローズされるため、background task内でリクエストのセッションをそのまま使うことはできない。
@@ -171,6 +179,7 @@ async def generate_documents(
                 user_id,
                 status_before_generation=status_before_generation,
                 start_from=start_from,
+                finding_ids=finding_ids,
                 llm=llm,
             )
     finally:
@@ -192,13 +201,21 @@ class DocGeneratorService:
         self._stages = DesignStageService(session)
         self._progress = GenerationProgressStore(redis)
 
-    async def request_generation(self, project: Project, *, start_from: str | None = None) -> str:
+    async def request_generation(
+        self,
+        project: Project,
+        *,
+        start_from: str | None = None,
+        finding_ids: Sequence[uuid.UUID] = (),
+    ) -> str:
         """生成の要求を受け付け、`status`を`generating`にしてcommitする。戻り値は受け付ける前の状態
         (失敗したときに戻す先。バックグラウンドの`generate`へ渡す)。
 
         `start_from`は再生成の起点(その文書から下流を作り直す。省略で全部)。モードに無い起点は
         `GenerationStartInvalidError`(400)、起点より上流の文書がまだ無ければ
-        `GenerationUpstreamMissingError`(409)。
+        `GenerationUpstreamMissingError`(409)。`finding_ids`(再生成の指示に入れる指摘)に
+        プロジェクトに無い指摘があれば`ReviewFindingNotFoundError`(404)、採用していない・ヒアリングが
+        原因の指摘があれば`SendbackFindingInvalidError`(409)。
 
         生成中なら`DocGenerationInProgressError`(409)にする。受け付けと同じリクエストの中で
         `generating`にするのは、バックグラウンドで切り替えると、切り替わる前の二度押しを
@@ -211,6 +228,9 @@ class DocGeneratorService:
                 raise GenerationUpstreamMissingError(
                     "上流の設計書がまだ無いため、ここから再生成できません。"
                 )
+        await ReviewService(self._session).sendback_findings(
+            project.id, finding_ids, strict=True
+        )
         await self.recover_if_stale(project)
         if project.status == "generating":
             raise DocGenerationInProgressError(
@@ -252,8 +272,10 @@ class DocGeneratorService:
         *,
         status_before_generation: str | None = None,
         start_from: str | None = None,
+        finding_ids: Sequence[uuid.UUID] = (),
         llm=None,
         review_llm=None,
+        judge_llm=None,
     ) -> None:
         """チャット全履歴をコンテキストに、モードごとの設計書(simpleは4種、detailedは要件定義・
         外部設計の2種。DOC_TYPES_BY_MODE)を生成し、続けて自己診断を行う。
@@ -279,6 +301,9 @@ class DocGeneratorService:
         `start_from`(再生成の起点)より上流の文書は作り直さず、表示中の版を下流の入力に使う。
         生成の間は、作り直す文書・できた文書・今作っている文書を Redis に置く
         (app/services/generation_progress.py。終わったら消す)。
+
+        `finding_ids`(設計レビューの採用した指摘)は、作り直す文書ごとに、関連する指摘だけを
+        修正指示にして生成のプロンプトに入れる(app/review/sendback.py)。
         """
         project = await self._projects.get_by_id(project_id, user_id=user_id)
         if project is None:
@@ -295,6 +320,9 @@ class DocGeneratorService:
 
         try:
             llm = llm or get_gemini_llm()
+            sendback = await ReviewService(self._session).sendback_findings(
+                project_id, finding_ids
+            )
             history = await self._chat_histories.list_for_project(project_id)
             transcript = _render_transcript(history)
 
@@ -337,24 +365,30 @@ class DocGeneratorService:
                 changed = upstream_changes(
                     doc_type, previous_models, requirements, external, internal
                 )
+                instruction = build_instruction(findings_for([doc_type], sendback))
                 if doc_type == "requirements":
                     content, requirements = await self._generate_requirements(
-                        project, transcript, llm=llm
+                        project, transcript, instruction, llm=llm
                     )
                     model = requirements.model_dump(mode="json")
                 elif doc_type == "external_design":
                     content, external = await self._generate_external_design(
-                        project, generated["requirements"], requirements, changed, llm=llm
+                        project,
+                        generated["requirements"],
+                        requirements,
+                        changed,
+                        instruction,
+                        llm=llm,
                     )
                     model = external.model_dump(mode="json")
                 elif doc_type == "internal_design":
                     content, internal = await self._generate_internal_design(
-                        project, generated, external, changed, llm=llm
+                        project, generated, external, changed, instruction, llm=llm
                     )
                     model = internal.model_dump(mode="json")
                 else:
                     content, plan = await self._generate_implementation_plan(
-                        project, generated, requirements, internal, changed, llm=llm
+                        project, generated, requirements, internal, changed, instruction, llm=llm
                     )
                     model = plan.model_dump(mode="json")
                 await self._documents.create_version(
@@ -413,6 +447,24 @@ class DocGeneratorService:
         )
         if reviewing and user is not None:
             await self._review_after_generation(project, user, generated, llm, review_llm)
+            await self._check_fixes(project_id, user, judge_llm)
+
+    async def _check_fixes(self, project_id: uuid.UUID, user: User, judge_llm) -> None:
+        """生成の後に、採用した指摘が直ったかを判定する(シャドーモード。失敗は生成を失敗に
+        しない)。レビューで commit した後なので、プロジェクトは読み直す。"""
+        try:
+            project = await self._session.get(Project, project_id)
+            if project is not None:
+                await FixCheckService(self._session, redis=self._redis, llm=judge_llm).run_for(
+                    project, user
+                )
+        except Exception as exc:  # noqa: BLE001 -- 判定の失敗は生成を失敗にしない
+            await self._session.rollback()
+            logger.warning(
+                "fix_checks_after_generation_failed",
+                project_id=str(project_id),
+                error_type=type(exc).__name__,
+            )
 
     async def _review_after_generation(
         self, project: Project, user: User, generated: dict[str, str], llm, review_llm
@@ -520,7 +572,7 @@ class DocGeneratorService:
         return document
 
     async def _generate_requirements(
-        self, project: Project, transcript: str, *, llm
+        self, project: Project, transcript: str, instruction: str = "", *, llm
     ) -> tuple[str, RequirementsModel]:
         """要件定義書を構造化出力で下書きし、model と md を作る。入力は会話・観点の表・前の版の
         要件(ID を引き継ぐため)。出どころは観点の状態を上限に直す(app/documents/requirements)。"""
@@ -530,7 +582,7 @@ class DocGeneratorService:
             project_id=project.id, doc_type="requirements"
         )
         previous = parse_requirements_model(current.model if current else None)
-        messages = build_requirements_messages(transcript, states, scale, previous)
+        messages = build_requirements_messages(transcript, states, scale, previous, instruction)
         output = await invoke_structured(llm, RequirementsGenerationOutput, messages)
         model = build_model(to_draft(output), previous, states, scale)
         return render_requirements(model), model
@@ -541,6 +593,7 @@ class DocGeneratorService:
         requirements_md: str,
         requirements: RequirementsModel | None,
         changed_upstream: list[str],
+        instruction: str = "",
         *,
         llm,
     ) -> tuple[str, ExternalDesignModel]:
@@ -551,7 +604,9 @@ class DocGeneratorService:
             project_id=project.id, doc_type="external_design"
         )
         previous = parse_external_design_model(current.model if current else None)
-        messages = build_external_design_messages(requirements_md, previous, changed_upstream)
+        messages = build_external_design_messages(
+            requirements_md, previous, changed_upstream, instruction
+        )
         output = await invoke_structured(llm, ExternalDesignGenerationOutput, messages)
         model = build_external_design_model(
             to_external_design_draft(output), previous, requirements
@@ -564,6 +619,7 @@ class DocGeneratorService:
         generated: dict[str, str],
         external: ExternalDesignModel | None,
         changed_upstream: list[str],
+        instruction: str = "",
         *,
         llm,
     ) -> tuple[str, InternalDesignModel]:
@@ -576,7 +632,11 @@ class DocGeneratorService:
         )
         previous = parse_internal_design_model(current.model if current else None)
         messages = build_internal_design_messages(
-            generated["requirements"], generated["external_design"], previous, changed_upstream
+            generated["requirements"],
+            generated["external_design"],
+            previous,
+            changed_upstream,
+            instruction,
         )
         output = await invoke_structured(llm, InternalDesignGenerationOutput, messages)
         apis = [a.label for a in external.apis] if external else []
@@ -590,6 +650,7 @@ class DocGeneratorService:
         requirements: RequirementsModel | None,
         internal: InternalDesignModel | None,
         changed_upstream: list[str],
+        instruction: str = "",
         *,
         llm,
     ) -> tuple[str, ImplementationPlanModel]:
@@ -602,7 +663,11 @@ class DocGeneratorService:
         )
         previous = parse_implementation_plan_model(current.model if current else None)
         messages = build_implementation_plan_messages(
-            generated["requirements"], generated["internal_design"], previous, changed_upstream
+            generated["requirements"],
+            generated["internal_design"],
+            previous,
+            changed_upstream,
+            instruction,
         )
         output = await invoke_structured(llm, ImplementationPlanGenerationOutput, messages)
         model = build_implementation_plan_model(

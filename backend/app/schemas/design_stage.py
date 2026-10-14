@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 from typing import Any, Literal
 
@@ -95,11 +96,13 @@ class DesignStageGenerate(BaseModel):
     """段階の下書きの生成リクエスト(本文は省略できる)。`function_ids`は段階5だけが使う、下書きを
     作る処理の処理ID(省略すると、選んだ処理のうちまだ手順の無いもの)。`logics`は段階6
     だけが使う、下書きを作る関数(省略すると、選んだ関数のうちまだ詳細の無いもの)。`unit_ids`は
-    段階8だけが使う、手順書を作る作業単位の ID(省略すると、作業単位のうち手順書の無いもの)。"""
+    段階8だけが使う、手順書を作る作業単位の ID(省略すると、作業単位のうち手順書の無いもの)。
+    `finding_ids`は修正指示に入れる、設計レビューの採用した指摘(設計・不整合)。"""
 
     function_ids: list[str] | None = None
     logics: list[LogicTarget] | None = None
     unit_ids: list[str] | None = None
+    finding_ids: list[uuid.UUID] = []
 
 
 class SequenceIssueRead(BaseModel):

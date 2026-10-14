@@ -69,6 +69,7 @@ from app.documents.requirements.drafting import (
     RequirementsGenerationOutput,
 )
 from app.hearing import POINT_DEFS, is_point_key
+from app.review.fix_check import FixCheckOut
 from app.review.schemas import ReviewFindingOut, ReviewOutput
 from app.schemas.hearing import (
     CardOptionOut,
@@ -585,6 +586,9 @@ _REVIEW_OUTPUT = ReviewOutput(
     ]
 )
 
+# 採用した指摘が直ったかの判定の偽物
+_FIX_CHECK_OUTPUT = FixCheckOut(verdict="fixed", reason="[E2E Fake] 指摘の対象が直っている")
+
 _HEARING_REPLY = "[E2E Fake] 承知しました。次に、想定している主なユーザー層を教えてください。"
 _SELF_DIAGNOSIS_REPLY = "[E2E Fake] 自己診断: 特に致命的な不足点はありません。"
 
@@ -729,6 +733,8 @@ class _FakeStructuredE2e:
             return _IMPLEMENTATION_PLAN_OUTPUT
         if self._schema is ReviewOutput:
             return _REVIEW_OUTPUT
+        if self._schema is FixCheckOut:
+            return _FIX_CHECK_OUTPUT
         # ヒアリング・UML生成スキーマ以外のスキーマが追加された場合は
         # 「対応漏れ」に気づけるよう黙って汎用値を返さず例外にする。
         raise NotImplementedError(f"E2eFakeLLMが未対応のスキーマ: {self._schema}")

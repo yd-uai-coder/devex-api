@@ -178,7 +178,16 @@ async def test_decide_finding_changes_decision(db_session: AsyncSession) -> None
         finding_id, FindingDecisionUpdate(decision="held"), db_session, project
     )
 
-    assert read.id == finding_id and read.decision == "held"
+    assert read.id == finding_id and read.decision == "held" and read.followup is None
+    adopted = await decide_finding(
+        finding_id, FindingDecisionUpdate(decision="adopted"), db_session, project
+    )
+    # 採用すると追跡の状態が付く(関連文書の版が変わっていないので未対応)
+    assert adopted.followup == "unaddressed"
+    gates = await list_review_gates(db_session, project)
+    assert gates[0].run is not None and gates[0].run.findings[0].followup == "unaddressed"
+    assert gates[0].adopted_before == []
+    await decide_finding(finding_id, FindingDecisionUpdate(decision="held"), db_session, project)
     latest = await get_latest_review("documents", db_session, project)
     assert latest is not None and latest.findings[0].decision == "held"
     other = await _generated_project(db_session, user)

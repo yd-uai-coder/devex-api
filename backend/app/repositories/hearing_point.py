@@ -1,5 +1,6 @@
 import uuid
 from collections.abc import Iterable, Sequence
+from dataclasses import replace
 
 from app.hearing import PointState, initial_states, to_state
 from app.models.hearing_point import HearingPoint
@@ -30,6 +31,7 @@ class HearingPointRepository(CRUDRepository[HearingPoint]):
             row.status = state.status
             row.summary = state.summary
             row.evidence = list(state.evidence)
+            row.reopened_after = state.reopened_after
         await self._session.flush()
 
 
@@ -39,5 +41,5 @@ def states_from_rows(rows: Sequence[HearingPoint]) -> dict[str, PointState]:
     for row in rows:
         state = to_state(row.point_key, row.status, row.summary, row.evidence or ())
         if state is not None:
-            states[state.key] = state
+            states[state.key] = replace(state, reopened_after=row.reopened_after)
     return states

@@ -103,6 +103,9 @@ _POINTS_JUDGE_PROMPT = (
     "・ユーザーが自分の言葉で内容を書いたら、AIの例や選択肢と似ていてもdecidedにする。"
     "adoptedは、選択肢を選んだ・AIの提案に「それでよい」などと同意しただけの場合。\n"
     "・今の状態がopen以外の観点は、ユーザーが言い直した場合だけ変える。\n"
+    "・規模がpublic(誰でも登録できるサービス)のとき、securityは、誰がどのデータを見られる・"
+    "変えられるか(アクセス制御)が分かるまでdecided・adoptedにしない"
+    "(ログインの方法だけではopenのままにする)。\n"
     "・summaryは、決めたことを1文で簡潔に書く(openなら空でよい)。ただし技術スタック(tech)は、"
     "ユーザーが挙げた言語・フレームワーク・DB・使うAI(LLM)・置き場所などの名前を1つも落とさずに書く"
     "(設計書の生成はこの要約を読むため)。\n"
@@ -454,6 +457,7 @@ class ChatService:
         result = await invoke_with_retry(_call, messages=messages)
         ids_by_number = {number: message_id for message_id, number in numbers.items()}
         user_messages = {str(entry.id) for entry in history if entry.sender == "user"}
+        after_reopen = _messages_after_reopen(history, previous)
         judged = [
             JudgedPoint(
                 key=point.key,
@@ -465,7 +469,9 @@ class ChatService:
             )
             for point in result.points
         ]
-        states = merge_judgement(previous, judged, user_messages=user_messages)
+        states = merge_judgement(
+            previous, judged, user_messages=user_messages, after_reopen=after_reopen
+        )
         project.hearing_scale = scale_after(
             states, as_scale(project.hearing_scale), result.scale
         )
@@ -528,6 +534,32 @@ class ChatService:
         await self._hearing_points.save_states(project.id, states.values())
         if key == "scale":
             project.hearing_scale = None  # 規模を対象外にしたら、個人・小規模の列で数える
+        if project.status == "completed":
+            project.status = "revising"
+        project.hearing_check = _completion_from(states, project.hearing_scale).model_dump()
+        await self._session.commit()
+        return await self.points_view(project)
+
+    async def reopen_points(
+        self, project: Project, keys: Sequence[str], message: str
+    ) -> HearingPointsRead:
+        """設計レビューの指摘で、観点を未決に戻して聞き直す(LLMは呼ばない)。聞き直しの文を AI の
+        発言としてチャットに残し、戻した観点にその発言を印として付ける(それより後の答えでないと、
+        決まったことに戻さない)。完成したプロジェクトは「修正中」にし、完了判定は表から作り直す
+        (必須の観点が未決になれば、生成のボタンは出ない)。生成中は409。"""
+        if project.status == "generating":
+            raise DocGenerationInProgressError("設計書の生成中は観点を変えられません")
+        states = await self._load_states(project)
+        entry = await self._chat_histories.add(project_id=project.id, sender="ai", message=message)
+        for key in keys:
+            if not is_point_key(key):
+                raise HearingPointNotFoundError("観点が見つかりません")
+            states[key] = PointState(
+                point_def(key).key, "open", "", reopened_after=str(entry.id)
+            )
+        await self._hearing_points.save_states(project.id, states.values())
+        if "scale" in keys:
+            project.hearing_scale = None
         if project.status == "completed":
             project.status = "revising"
         project.hearing_check = _completion_from(states, project.hearing_scale).model_dump()
@@ -712,6 +744,24 @@ def _points_table(states: Mapping[str, PointState]) -> str:
         f"{states[d.key].summary}"
         for d in POINT_DEFS
     )
+
+
+def _messages_after_reopen(
+    history: Sequence[ChatHistory], states: Mapping[str, PointState]
+) -> dict[str, set[str]]:
+    """未決に戻した観点ごとの、聞き直しの発言より後の利用者の発言の id(履歴の順で数える)。"""
+    position = {str(entry.id): i for i, entry in enumerate(history)}
+    result: dict[str, set[str]] = {}
+    for key, state in states.items():
+        if state.reopened_after is None:
+            continue
+        since = position.get(state.reopened_after, -1)
+        result[key] = {
+            str(entry.id)
+            for i, entry in enumerate(history)
+            if i > since and entry.sender == "user"
+        }
+    return result
 
 
 def _completion_from(states: Mapping[str, PointState], scale: str | None) -> HearingCompletionCheck:

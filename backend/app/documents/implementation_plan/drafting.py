@@ -24,6 +24,7 @@ from app.documents.revision import (
     REVISION_RULE,
     UNCHANGED_DESCRIPTION,
     changed_rows_text,
+    instruction_text,
     rows_text,
 )
 
@@ -119,11 +120,13 @@ def build_implementation_plan_messages(
     internal_design_md: str,
     previous: ImplementationPlanModel | None = None,
     changed_upstream: Sequence[str] = (),
+    instruction: str = "",
 ) -> list[BaseMessage]:
     tasks = [t for m in previous.milestones for t in m.tasks] if previous else []
     human = (
         f"## 前の版のタスク\n{rows_text(tasks)}\n\n"
         f"## 上流の変わった行\n{changed_rows_text(changed_upstream)}\n\n"
+        f"## 修正指示\n{instruction_text(instruction)}\n\n"
         f"## 要件定義書\n{requirements_md}\n\n## 内部設計書\n{internal_design_md}"
     )
     return [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=human)]

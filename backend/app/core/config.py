@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     REVIEW_MAX_TOKENS: int = 16000
     # superuser ごとの1日のレビューの回数の上限(費用を抑えるため)
     REVIEW_RATE_LIMIT_PER_DAY: int = 20
+    # 狭い判定(採用した指摘は直ったか)のモデル(Claude Haiku)。入力は指摘と対象の行だけで小さい
+    JUDGE_MODEL: str = "claude-haiku-5-5"
+    JUDGE_TIMEOUT_SECONDS: float = 60.0
+    JUDGE_MAX_TOKENS: int = 1000
+    # 1回の生成・承認の後に判定する指摘の数と、superuser ごとの1日の判定の回数の上限
+    JUDGE_MAX_PER_RUN: int = 10
+    JUDGE_RATE_LIMIT_PER_DAY: int = 200
 
     # trueの場合、get_gemini_llm()は実際のGemini APIを呼ばず、
     # app/ai/llm/fake.pyの決定論的なE2eFakeLLMを返す

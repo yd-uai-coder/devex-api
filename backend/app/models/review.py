@@ -34,6 +34,10 @@ class ReviewRun(Base):
     )
     gate: Mapped[str] = mapped_column(String(20), nullable=False)
     targets: Mapped[dict] = mapped_column(PortableJSON, nullable=False, default=dict)
+    # 段階の区切りでレビューした段階の内容の写し {"stage:N": 承認した model}。段階は承認した写しを
+    # 1つしか残さないため、採用した指摘の対象が変わったかを、ここと今の内容を比べて決める。
+    # 文書の区切り・この列を足す前の回は null
+    snapshots: Mapped[dict | None] = mapped_column(PortableJSON, nullable=True)
     # trigger: 'auto'(生成の後に自動)/ 'manual'(利用者が「もう一度レビュー」を押した)
     trigger: Mapped[str] = mapped_column(String(20), nullable=False)
     model: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -85,3 +89,31 @@ class ReviewFinding(Base):
     )
 
     run: Mapped[ReviewRun] = relationship(back_populates="findings")
+
+
+class ReviewFixCheck(Base):
+    """採用した指摘が直ったかの判定1回(狭い判定のモデル Claude Haiku。シャドーモード ── 記録して
+    画面に小さく出すだけで、採否や状態は変えない)。
+
+    targets: 判定したときの指摘の関連文書・段階の版 {doc_type: 版, "stage:N": 版}。今の版と同じ
+    なら、その判定は今の内容のもの(違えば、もう一度判定する)。
+    verdict: 'fixed' / 'partial' / 'not_fixed' / 'unsure'。失敗した判定は null(error_code に理由)。
+    """
+
+    __tablename__ = "review_fix_checks"
+    __table_args__ = (Index("ix_review_fix_checks_finding_id", "finding_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    finding_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("review_findings.id", ondelete="CASCADE"), nullable=False
+    )
+    targets: Mapped[dict] = mapped_column(PortableJSON, nullable=False, default=dict)
+    verdict: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    model: Mapped[str] = mapped_column(String(100), nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

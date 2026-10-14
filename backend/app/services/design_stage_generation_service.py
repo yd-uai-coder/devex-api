@@ -33,12 +33,13 @@
 """
 
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 import structlog
+from langchain_core.messages import BaseMessage
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -149,6 +150,7 @@ from app.models.project import Project
 from app.repositories.design_stage import DesignStageRepository
 from app.repositories.project import ProjectRepository
 from app.repositories.uml_diagram import UmlDiagramRepository
+from app.review import build_instruction
 from app.schemas.design_stage import DesignStageRead
 from app.services.data_item_service import DataItemService
 from app.services.design_stage_service import DesignStageService
@@ -161,6 +163,7 @@ from app.services.errors import (
 )
 from app.services.generation_staleness import is_stale
 from app.services.llm_retry import invoke_structured
+from app.services.review_service import ReviewService
 from app.uml.domain import NOTATION_TO_VIEW, NotationType
 from app.uml.generation.failures import ReasonCode, classify_failure
 from app.uml.generation.mapper import required_data_items, to_component, to_dfd
@@ -197,6 +200,7 @@ class StageGenerationContext:
       commitは呼び出し元(execute)が段階の保存と一緒に1回だけ行う。
     - `targets`: 段階5で下書きを作る処理の処理ID、段階6で下書きを作る関数の鍵(`logic_key`)、
       段階8で手順書を作る単位の ID。受け付けで決めた順。他の段階は空。
+    - `instruction`: 設計レビューの採用した指摘から組み立てた修正指示(無ければ空)。
     """
 
     llm: Any
@@ -206,6 +210,19 @@ class StageGenerationContext:
     session: AsyncSession
     project_id: uuid.UUID
     targets: tuple[str, ...] = ()
+    instruction: str = ""
+
+
+async def _invoke[M: BaseModel](
+    context: StageGenerationContext, schema: type[M], messages: list[BaseMessage]
+) -> M:
+    """段階の下書きの LLM 呼び出し。設計レビューの採用した指摘から組み立てた修正指示があれば、
+    最後の人のメッセージの末尾に【修正指示】の節として足す(app/review/sendback.py)。"""
+    if context.instruction:
+        *head, last = messages
+        content = f"{last.content}\n\n## 修正指示\n{context.instruction}"
+        messages = [*head, last.model_copy(update={"content": content})]
+    return await invoke_structured(context.llm, schema, messages)
 
 
 StageGenerator = Callable[[StageGenerationContext], Awaitable[dict]]
@@ -215,7 +232,7 @@ async def generate_function_list(context: StageGenerationContext) -> dict:
     """段階1: 外部設計書から処理を下書きし、前の版と突き合わせて処理IDと機能グループを決める。
     API の処理の要件ID は、外部設計書の model の 2.6 の行から写す。"""
     messages = build_function_list_messages(context.sources.documents.get("external_design", ""))
-    output = await invoke_structured(context.llm, FunctionListGenerationOutput, messages)
+    output = await _invoke(context, FunctionListGenerationOutput, messages)
     previous = context.previous
     previous_model = FunctionListModel.model_validate(previous) if previous else None
     requirements = api_req_ids(context.sources.document_models.get("external_design"))
@@ -231,8 +248,8 @@ async def generate_data_flow(context: StageGenerationContext) -> dict:
     previous = DataFlowModel.model_validate(context.previous) if context.previous else None
     requirements = context.sources.documents.get("requirements", "")
 
-    summary = await invoke_structured(
-        context.llm,
+    summary = await _invoke(
+        context,
         ProcessSummaryGenerationOutput,
         build_summary_messages(function_list.functions, requirements),
     )
@@ -245,8 +262,8 @@ async def generate_data_flow(context: StageGenerationContext) -> dict:
             ExistingDataItem(name=item.name, field_names=[f["name"] for f in item.fields])
             for item in await data_items.list_for_project(context.project_id)
         ]
-        output = await invoke_structured(
-            context.llm,
+        output = await _invoke(
+            context,
             GroupDfdGenerationOutput,
             build_group_dfd_messages(group, functions, model.summaries, requirements, existing),
         )
@@ -272,8 +289,8 @@ async def generate_data_model(context: StageGenerationContext) -> dict:
         for item in await DataItemService(context.session).list_for_project(context.project_id)
     ]
 
-    er_output = await invoke_structured(
-        context.llm,
+    er_output = await _invoke(
+        context,
         DataModelErOutput,
         build_er_messages(data_store_names(accesses), existing, data_flow.summaries),
     )
@@ -281,8 +298,8 @@ async def generate_data_model(context: StageGenerationContext) -> dict:
     await _save_diagram(context, "er", ER_SUBJECT, er)
 
     tables = [element.name for element in er.elements]
-    crud_output = await invoke_structured(
-        context.llm,
+    crud_output = await _invoke(
+        context,
         CrudGenerationOutput,
         build_crud_messages(function_list.functions, data_flow.summaries, tables, accesses),
     )
@@ -303,8 +320,8 @@ async def generate_structure(context: StageGenerationContext) -> dict:
     er = context.sources.er_diagram
     tables = list(er.tables) if er is not None else []
 
-    component_output = await invoke_structured(
-        context.llm,
+    component_output = await _invoke(
+        context,
         ComponentGenerationOutput,
         build_component_messages(
             requirements, function_list.functions, data_flow.summaries, tables
@@ -313,8 +330,8 @@ async def generate_structure(context: StageGenerationContext) -> dict:
     component = to_component(component_output)
     await _save_diagram(context, "component", STRUCTURE_SUBJECT, component)
 
-    module_output = await invoke_structured(
-        context.llm,
+    module_output = await _invoke(
+        context,
         ModuleListGenerationOutput,
         build_module_messages(
             component,
@@ -351,8 +368,8 @@ async def generate_procedures(context: StageGenerationContext) -> dict:
         if function is None:
             # 受け付けの後に段階1が変わった処理(検証の UNKNOWN_FUNCTION で人に知らせる)
             continue
-        output = await invoke_structured(
-            context.llm,
+        output = await _invoke(
+            context,
             ProcedureGenerationOutput,
             build_procedure_messages(
                 function, summaries.get(function_id), accesses, crud.cells, tables, modules
@@ -381,8 +398,8 @@ async def generate_logics(context: StageGenerationContext) -> dict:
         row = rows.get(key)
         if row is None:
             continue
-        output = await invoke_structured(
-            context.llm,
+        output = await _invoke(
+            context,
             LogicGenerationOutput,
             build_logic_messages(
                 row.module,
@@ -415,14 +432,14 @@ async def generate_plan(context: StageGenerationContext) -> dict:
     modules = ModuleListModel.model_validate(context.sources.stages.get(4) or {}).modules
     paths = [row.path for row in modules]
 
-    crosscutting_output = await invoke_structured(
-        context.llm,
+    crosscutting_output = await _invoke(
+        context,
         CrossCuttingGenerationOutput,
         build_crosscutting_messages(requirements, external_design, design),
     )
     crosscutting = to_crosscutting(crosscutting_output)
-    plan_output = await invoke_structured(
-        context.llm,
+    plan_output = await _invoke(
+        context,
         PlanGenerationOutput,
         build_plan_messages(requirements, design, crosscutting, function_list.functions, paths),
     )
@@ -450,14 +467,14 @@ async def generate_procedure_docs(context: StageGenerationContext) -> dict:
         unit_context = basis.context(unit)
         output: ProcedureDocGenerationOutput | SimpleProcedureDocGenerationOutput
         if basis.mode == "simple":
-            output = await invoke_structured(
-                context.llm,
+            output = await _invoke(
+                context,
                 SimpleProcedureDocGenerationOutput,
                 build_simple_procedure_doc_messages(unit_context),
             )
         else:
-            output = await invoke_structured(
-                context.llm,
+            output = await _invoke(
+                context,
                 ProcedureDocGenerationOutput,
                 build_procedure_doc_messages(unit_context),
             )
@@ -648,6 +665,7 @@ async def run_design_stage_generation(
     function_ids: list[str] | None = None,
     logics: LogicTargets | None = None,
     unit_ids: list[str] | None = None,
+    finding_ids: Sequence[uuid.UUID] = (),
     *,
     llm=None,
 ) -> None:
@@ -661,6 +679,7 @@ async def run_design_stage_generation(
             function_ids=function_ids,
             logics=logics,
             unit_ids=unit_ids,
+            finding_ids=finding_ids,
             llm=llm,
         )
 
@@ -682,6 +701,7 @@ class DesignStageGenerationService:
         function_ids: list[str] | None = None,
         logics: LogicTargets | None = None,
         unit_ids: list[str] | None = None,
+        finding_ids: Sequence[uuid.UUID] = (),
     ) -> DesignStageRead:
         """生成を受け付け、段階を「生成中」にする。生成自体は呼び出し元がバックグラウンドで
         `execute`する。未着手の段階は、ここで行を作る(内容は空、`draft`)。
@@ -689,7 +709,8 @@ class DesignStageGenerationService:
         断る条件(この順): モードに無い段階(簡易モードは段階8だけ) / 生成に対応していない段階 /
         段階が開いていない /
         その段階を生成中 / 段階ごとの確認(段階2の DFD を描くグループの数、段階5の対象の処理、
-        段階6の対象の関数、段階8の対象の単位)。"""
+        段階6の対象の関数、段階8の対象の単位)/ 修正指示に入れる指摘(プロジェクトに無い指摘は404、
+        採用していない・ヒアリングが原因の指摘は409)。"""
         await self.recover_stale(project.id)
         row, view, sources = await self._stages.stage_view(project, stage)
         if stage not in STAGE_GENERATORS:
@@ -706,6 +727,9 @@ class DesignStageGenerationService:
             )
         _check_request(
             stage, row.model if row is not None else None, function_ids, logics, unit_ids, sources
+        )
+        await ReviewService(self._session).sendback_findings(
+            project.id, finding_ids, strict=True
         )
         if row is None:
             row = await self._rows.create(project_id=project.id, stage=stage, model=None)
@@ -725,9 +749,11 @@ class DesignStageGenerationService:
         function_ids: list[str] | None = None,
         logics: LogicTargets | None = None,
         unit_ids: list[str] | None = None,
+        finding_ids: Sequence[uuid.UUID] = (),
         llm=None,
     ) -> None:
-        """下書きを生成して段階に保存する。失敗したら理由を残して`failed`にする。
+        """下書きを生成して段階に保存する。失敗したら理由を残して`failed`にする。`finding_ids`
+        (設計レビューの採用した指摘)は修正指示にして、段階の生成のプロンプトに足す。
         プロジェクトや「生成中」の段階が見つからなければ何もしない(回収された後など)。"""
         project = await self._projects.get_by_id(project_id, user_id=user_id)
         if project is None:
@@ -740,6 +766,7 @@ class DesignStageGenerationService:
         targets = _targets(stage, row.model, function_ids, logics, unit_ids, sources)
         regenerating = _has_draft(stage, row.model, targets, sources)
         fingerprint = await self._stages.current_fingerprint(project, stage)
+        sendback = await ReviewService(self._session).sendback_findings(project_id, finding_ids)
         context = StageGenerationContext(
             llm=llm or get_gemini_llm(),
             sources=sources,
@@ -748,6 +775,7 @@ class DesignStageGenerationService:
             session=self._session,
             project_id=project_id,
             targets=targets,
+            instruction=build_instruction(sendback),
         )
         try:
             model = await generator(context)

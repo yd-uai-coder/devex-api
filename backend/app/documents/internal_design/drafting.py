@@ -27,6 +27,7 @@ from app.documents.revision import (
     REVISION_RULE,
     UNCHANGED_DESCRIPTION,
     changed_rows_text,
+    instruction_text,
     rows_text,
 )
 
@@ -150,6 +151,7 @@ def build_internal_design_messages(
     external_design_md: str,
     previous: InternalDesignModel | None = None,
     changed_upstream: Sequence[str] = (),
+    instruction: str = "",
 ) -> list[BaseMessage]:
     prev = previous or InternalDesignModel()
     human = (
@@ -158,6 +160,7 @@ def build_internal_design_messages(
         f"## 前の版のモジュール\n{rows_text(prev.modules)}\n\n"
         f"## 前の版の処理別データフロー\n{rows_text(prev.dataflows)}\n\n"
         f"## 上流の変わった行\n{changed_rows_text(changed_upstream)}\n\n"
+        f"## 修正指示\n{instruction_text(instruction)}\n\n"
         f"## 要件定義書\n{requirements_md}\n\n## 外部設計書\n{external_design_md}"
     )
     return [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=human)]

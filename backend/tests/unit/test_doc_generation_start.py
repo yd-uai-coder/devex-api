@@ -182,7 +182,7 @@ async def test_routes_pass_start_and_read_progress(db_session: AsyncSession) -> 
 
     [task] = tasks.tasks
     assert task.func is generate_documents
-    assert task.kwargs == {"start_from": "implementation_plan"}
+    assert task.kwargs == {"start_from": "implementation_plan", "finding_ids": []}
 
     redis = FakeRedis()
     assert await get_generation_progress(redis, project) is None  # type: ignore[arg-type]

@@ -18,7 +18,12 @@ from app.documents.requirements.assemble import (
     UserSceneDraft,
 )
 from app.documents.requirements.model import RequirementsModel
-from app.documents.revision import NONE_TEXT, REVISION_RULE, UNCHANGED_DESCRIPTION
+from app.documents.revision import (
+    NONE_TEXT,
+    REVISION_RULE,
+    UNCHANGED_DESCRIPTION,
+    instruction_text,
+)
 from app.hearing import POINT_DEFS, SCALE_LABEL, STATUS_LABEL, PointState, Scale
 
 _SOURCE_DESCRIPTION = (
@@ -120,10 +125,12 @@ def build_requirements_messages(
     states: Mapping[str, PointState],
     scale: Scale | None,
     previous: RequirementsModel | None,
+    instruction: str = "",
 ) -> list[BaseMessage]:
     human = (
         f"## 観点の表\nkey|名前|状態|決めたこと\n{points_table(states, scale)}\n\n"
         f"## 前の版の要件\n{previous_rows_text(previous)}\n\n"
+        f"## 修正指示\n{instruction_text(instruction)}\n\n"
         f"## 会話\n{transcript}"
     )
     return [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=human)]
