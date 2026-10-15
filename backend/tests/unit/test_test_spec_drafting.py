@@ -46,3 +46,8 @@ def test_to_draft_keeps_policy_and_cases():
         ("integration", CREATE_API, "異常"),
     ]
     assert draft.cases[0].req_ids == ("FR-001",)
+
+
+def test_prompt_puts_japanese_rule_before_the_rules():
+    # 必要なテストの行が多いと英語に流れたので、言語の規則は規則の一覧より前に置く
+    assert SYSTEM_PROMPT.index("すべて日本語で書く") < SYSTEM_PROMPT.index("規則:")
