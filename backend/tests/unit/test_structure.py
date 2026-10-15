@@ -26,6 +26,7 @@ from app.detailed_design import (
     ModuleListModel,
     ModuleRow,
     StageSources,
+    component_element_layers,
     component_layers,
     has_errors,
     merge_modules,
@@ -230,3 +231,54 @@ def test_all_functions_rows_do_not_count_as_coverage():
     issues = validate_structure(model, _sources())
     assert [(i.code, i.target) for i in issues] == [("UNCOVERED_FUNCTION", "F-01")]
     assert not has_errors(issues)
+
+
+# --- 層の欄に構成図の箱の名前が書かれたとき ---
+
+_BOXES = {"ルーター(api/routes)": "入口", "サービス(services)": "ユースケース"}
+
+
+def test_component_element_layers_maps_box_names_to_layers():
+    model = {
+        "notation": "component",
+        "elements": [
+            {"id": "a", "name": " ルーター(api/routes) ", "kind": "module", "layer": "入口"},
+            {"id": "b", "name": "サービス(services)", "kind": "module", "layer": "ユースケース"},
+            {"id": "c", "name": "未設定", "kind": "module"},
+        ],
+    }
+    assert component_element_layers(model) == _BOXES
+    assert component_element_layers(None) == {}
+
+
+def test_merge_modules_replaces_box_names_with_their_layers():
+    """下書きが層の欄に箱の名前を書いたら、その箱の層に置き換える。層の名前・知らない値はそのまま。"""
+    drafts = [
+        ModuleDraft(path="app/routes/auth.py", layer="ルーター(api/routes)", responsibility="A"),
+        ModuleDraft(path="app/services/auth.py", layer=" ユースケース ", responsibility="B"),
+        ModuleDraft(path="app/other.py", layer="その他", responsibility="C"),
+    ]
+    model = merge_modules(drafts, _function_list(), _BOXES)
+    assert [row.layer for row in model.modules] == ["入口", "ユースケース", "その他"]
+    # 渡さなければ今までどおり
+    assert merge_modules(drafts, _function_list()).modules[0].layer == "ルーター(api/routes)"
+
+
+def test_box_name_in_layer_column_is_not_warned():
+    """層の欄が構成図の箱の名前なら、その箱の層で照合する。本当に無い層は層の一覧つきで警告する。"""
+    model = module_list_model(layer="ルーター(api/routes)")
+    sources = StageSources(
+        stages={1: function_list_model()},
+        component_diagram=ComponentDiagramSummary(
+            status="approved",
+            generation_status="completed",
+            layers=("入口", "ユースケース"),
+            element_layers=_BOXES,
+        ),
+    )
+    assert "UNKNOWN_LAYER" not in _codes(validate_structure(model, sources))
+
+    issues = validate_structure(module_list_model(layer="ドメイン"), sources)
+    [issue] = [i for i in issues if i.code == "UNKNOWN_LAYER"]
+    expected = f"{PATH} の層「ドメイン」が、構成図の層(入口、ユースケース)にありません。"
+    assert issue.message == expected

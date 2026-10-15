@@ -123,3 +123,56 @@ def test_requirements_without_ids_ask_to_regenerate() -> None:
     issues = _check(simple_procedure_doc_model(), requirements={})
 
     assert [(i.code, i.level) for i in issues] == [("REQUIREMENT_IDS_MISSING", "minor")]
+
+
+def test_dependency_built_by_a_later_unit_points_to_the_plan() -> None:
+    """ルート(M-01-T02)の依存先のサービスを、後ろの M-02-T01 が作り、ルートをつなぎ直さない。"""
+    plan = PLAN_MD.replace(
+        "  - モジュール: `app/api/reservations.py`, app/services/reservation.py\n",
+        "  - モジュール: `app/api/reservations.py`\n",
+    ).replace(
+        "  - モジュール: app/api/reservations.py\n",
+        "  - モジュール: app/services/reservation.py\n",
+    )
+
+    issues = _check(simple_procedure_doc_model(), implementation_plan=plan)
+
+    assert [(i.code, i.level, i.fix_document, i.target, i.unit) for i in issues] == [
+        (
+            "DEPENDENCY_BUILT_LATER",
+            "major",
+            "implementation_plan",
+            "app/services/reservation.py",
+            "M-01-T02",
+        )
+    ]
+
+
+def test_procedure_without_test_file_points_to_the_procedure() -> None:
+    model = simple_procedure_doc_model()
+    model["units"][0]["files"] = model["units"][0]["files"][:1]
+
+    issues = _check(model)
+
+    assert [(i.code, i.level, i.fix_stage, i.fix_document) for i in issues] == [
+        ("NO_TEST_FILE", "minor", 8, None)
+    ]
+
+
+def test_no_schema_unit_points_to_the_design_or_the_plan() -> None:
+    """モジュール一覧にスキーマの行が無ければ内部設計書、あれば実装計画書を直す。"""
+    plan = PLAN_MD.replace(", alembic/versions/0001_reservations.py", "")
+
+    flat = _check(simple_procedure_doc_model(), implementation_plan=plan)
+    layered = _check(
+        simple_procedure_doc_model(),
+        implementation_plan=plan,
+        internal_design=LAYERED_INTERNAL_DESIGN_MD,
+    )
+
+    assert [(i.code, i.level, i.fix_document) for i in flat] == [
+        ("NO_SCHEMA_UNIT", "critical", "internal_design")
+    ]
+    assert [(i.code, i.fix_document) for i in layered] == [
+        ("NO_SCHEMA_UNIT", "implementation_plan")
+    ]

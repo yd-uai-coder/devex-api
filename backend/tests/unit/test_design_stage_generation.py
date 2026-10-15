@@ -729,7 +729,7 @@ async def test_stage4_generation_writes_component_and_modules_and_can_be_approve
     assert STAGE_GENERATORS[4] is generate_structure
     assert llm.structured_output_calls == [ComponentGenerationOutput, ModuleListGenerationOutput]
     [module_prompt] = prompts
-    assert "- api/routes(層: api)" in module_prompt
+    assert "- 箱「api/routes」 / 層: api" in module_prompt
     assert "- F-01 × reservations: C" in module_prompt
     assert "## テーブル\n- reservations" in module_prompt
     assert stage4.state == "draft"

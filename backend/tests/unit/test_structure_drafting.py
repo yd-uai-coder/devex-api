@@ -103,7 +103,7 @@ def test_module_messages_describe_component_and_crud():
     )
     assert messages[0].content == MODULE_SYSTEM_PROMPT
     human = str(messages[1].content)
-    assert "- api(層: api)" in human
+    assert "- 箱「api」 / 層: api" in human
     assert "- api → service" in human
     assert "- F-01 × reservations: C" in human
     assert "## テーブル\n- reservations" in human

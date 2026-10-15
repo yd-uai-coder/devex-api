@@ -23,6 +23,7 @@ from app.detailed_design import (
     StageView,
     assign_unit_keys,
     can_approve,
+    component_element_layers,
     component_layers,
     confirm_drafts,
     current_inputs,
@@ -754,6 +755,7 @@ def _component_summary(diagram: UmlDiagram) -> ComponentDiagramSummary:
         status=diagram.status,
         generation_status=diagram.generation_status,
         layers=tuple(component_layers(diagram.semantic_model)),
+        element_layers=component_element_layers(diagram.semantic_model),
     )
 
 

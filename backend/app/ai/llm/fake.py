@@ -183,7 +183,7 @@ _IMPLEMENTATION_PLAN_OUTPUT = plan_doc.ImplementationPlanGenerationOutput(
                     req_ids=[],
                     depends_on=[],
                     modules=["app/main.py"],
-                    config_files=["docker-compose.yml"],
+                    config_files=["docker-compose.yml", "alembic/versions/0001_reservations.py"],
                 ),
                 plan_doc.GeneratedTask(
                     id="M-01-T02",
@@ -463,7 +463,11 @@ _UML_OUTPUTS[PlanGenerationOutput] = PlanGenerationOutput(
                     function_ids=[],
                     depends_on=[],
                     modules=[],
-                    config_files=["Dockerfile", "docker-compose.yml"],
+                    config_files=[
+                        "Dockerfile",
+                        "docker-compose.yml",
+                        "alembic/versions/0001_reservations.py",
+                    ],
                 ),
                 GeneratedTask(
                     kind="feature",
@@ -514,6 +518,12 @@ _UML_OUTPUTS[ProcedureDocGenerationOutput] = ProcedureDocGenerationOutput(
             responsibility="[E2E Fake] 予約の API",
             basis="段階4",
         ),
+        GeneratedUnitFile(
+            path="tests/test_reservations.py",
+            kind="test",
+            responsibility="[E2E Fake] 予約の登録と一覧のテスト",
+            basis="テスト観点",
+        ),
     ],
     notes=["[E2E Fake] サービスを先に書き、ルートから呼ぶ"],
     tests=_PROCEDURE_DOC_TESTS,
@@ -542,6 +552,12 @@ _UML_OUTPUTS[SimpleProcedureDocGenerationOutput] = SimpleProcedureDocGenerationO
             kind="module",
             responsibility="[E2E Fake] 予約のルート",
             basis="内部設計書 3.3",
+        ),
+        GeneratedUnitFile(
+            path="tests/test_reservations.py",
+            kind="test",
+            responsibility="[E2E Fake] 予約の登録のテスト",
+            basis="テスト観点",
         ),
     ],
     notes=["[E2E Fake] サービスを先に書き、ルートから呼ぶ"],

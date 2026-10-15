@@ -138,7 +138,12 @@ from app.detailed_design.procedure_drafting import (
 )
 from app.detailed_design.requirement_trace import api_req_ids
 from app.detailed_design.stages import Fingerprint
-from app.detailed_design.structure import STRUCTURE_SUBJECT, ModuleListModel, merge_modules
+from app.detailed_design.structure import (
+    STRUCTURE_SUBJECT,
+    ModuleListModel,
+    component_element_layers,
+    merge_modules,
+)
 from app.detailed_design.structure_drafting import (
     ModuleListGenerationOutput,
     build_component_messages,
@@ -342,7 +347,8 @@ async def generate_structure(context: StageGenerationContext) -> dict:
             tables,
         ),
     )
-    model = merge_modules(to_module_drafts(module_output), function_list)
+    element_layers = component_element_layers(component.model_dump(mode="json"))
+    model = merge_modules(to_module_drafts(module_output), function_list, element_layers)
     return model.model_dump(mode="json")
 
 

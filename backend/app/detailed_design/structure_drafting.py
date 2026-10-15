@@ -82,7 +82,8 @@ MODULE_SYSTEM_PROMPT = (
     "(パス / 層 / 責務 / 主な依存先 / 関わる処理)にします。\n"
     "規則:\n"
     "- path は【構成図】のパッケージの下のファイルのパスにする。同じパスを2回書かない\n"
-    "- layer は、そのファイルが属する【構成図】のパッケージの層の名前をそのまま書く\n"
+    "- layer は、そのファイルが属する【構成図】のパッケージの「層」の値をそのまま書く"
+    "(箱の名前ではない。例: 箱「ルーター」/ 層: 入口 なら 入口)\n"
     "- functions には、そのモジュールが関わる処理の処理IDを書く。テーブルを読み書きするモジュールは"
     "【CRUD図】でそのテーブルを使う処理を手がかりにする\n"
     "- 全処理が通るモジュール(アプリの組み立て・認証の DI・例外の変換)は"
@@ -142,7 +143,8 @@ def build_module_messages(
     """モジュール一覧の下書きの入力。構成図は要素(名前・層・責務)と依存の向きを文で渡す。"""
     names = {element.id: element.name for element in component.elements}
     packages = "\n".join(
-        f"- {e.name}(層: {e.layer or '未設定'}){e.description or ''}" for e in component.elements
+        f"- 箱「{e.name}」 / 層: {e.layer or '未設定'} / 責務: {e.description or '—'}"
+        for e in component.elements
     )
     dependencies = "\n".join(
         f"- {names.get(r.source_id, r.source_id)} → {names.get(r.target_id, r.target_id)}"
