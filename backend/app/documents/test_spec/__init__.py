@@ -18,7 +18,12 @@ from app.documents.test_spec.obligations import (
     obligation_rows,
     required_tests,
 )
-from app.documents.test_spec.validation import is_outdated, row_counts, validate_test_spec
+from app.documents.test_spec.validation import (
+    design_gap_count,
+    is_outdated,
+    row_counts,
+    validate_test_spec,
+)
 
 __all__ = [
     "VIEWPOINTS",
@@ -35,6 +40,7 @@ __all__ = [
     "api_links",
     "build_model",
     "case_id",
+    "design_gap_count",
     "detailed_links",
     "error_statuses",
     "is_outdated",

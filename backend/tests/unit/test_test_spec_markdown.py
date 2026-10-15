@@ -7,7 +7,7 @@ SUT は`app/documents/test_spec/markdown.py`の`render_test_spec`・`trace_rows`
 from tests.fixtures.spec_documents import spec_draft, spec_external, spec_requirements
 
 from app.documents.test_spec import TestSpecModel, build_model, render_test_spec
-from app.documents.test_spec.markdown import expected_cell, trace_rows
+from app.documents.test_spec.markdown import UNIT_TEST_NOTE, expected_cell, trace_rows
 
 
 def _model() -> TestSpecModel:
@@ -24,12 +24,14 @@ def test_sections_in_order():
     md = render_test_spec(_model())
     headings = [line for line in md.splitlines() if line.startswith("#")]
     assert headings == [
-        "# テスト仕様書",
+        "# テスト仕様書(結合・総合)",
         "## 1 テストの方針",
         "## 2 結合テスト(API)",
         "## 3 総合テスト(画面の流れ・非機能)",
         "## 4 要件との対応",
     ]
+    # 見出しのすぐ下に、単体テストは実装手順書で見る旨の注記
+    assert md.splitlines()[:3] == ["# テスト仕様書(結合・総合)", "", UNIT_TEST_NOTE]
 
 
 def test_integration_row_and_design_gap():

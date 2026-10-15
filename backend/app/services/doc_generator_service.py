@@ -13,7 +13,6 @@ from app.core.database import AsyncSessionLocal
 from app.core.errors import AppError
 from app.detailed_design.function_list import FunctionListModel
 from app.detailed_design.plan import PLAN_STAGE, PlanModel
-from app.detailed_design.stages import doc_key, stage_key
 from app.documents.external_design import (
     ExternalDesignModel,
     render_external_design,
@@ -74,8 +73,8 @@ from app.documents.revision import (
 )
 from app.documents.test_spec import (
     TestSpecModel,
+    design_gap_count,
     detailed_links,
-    is_outdated,
     render_test_spec,
     required_tests,
     simple_links,
@@ -130,6 +129,12 @@ from app.services.generation_progress import GenerationProgress, GenerationProgr
 from app.services.generation_staleness import is_stale
 from app.services.llm_retry import invoke_structured, invoke_with_retry
 from app.services.review_service import ReviewService
+from app.services.test_spec_state import (
+    FUNCTION_STAGE,
+    TEST_SPEC_STAGES,
+    current_test_spec,
+    spec_inputs,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -140,10 +145,6 @@ _DOC_TYPE_LABELS: dict[str, str] = {
     "implementation_plan": "実装計画書",
     TEST_SPEC: "テスト仕様書",
 }
-
-# 詳細設計モードのテスト仕様書が読む段階(処理の一覧と実装計画。処理・単位の列を引く)
-FUNCTION_STAGE = 1
-_TEST_SPEC_STAGES = (FUNCTION_STAGE, PLAN_STAGE)
 
 # 各doc_typeの入力として使う、前段で確定済みの文書(doc_type名のタプル)。
 # ここに無いdoc_type(requirements)は、代わりにチャット全履歴(transcript)と観点の表を読む。
@@ -254,8 +255,8 @@ class DocGeneratorService:
                     "上流の設計書がまだ無いため、ここから再生成できません。"
                 )
         if TEST_SPEC in targets and project.mode == "detailed":
-            approved = await self._stages.approved_stages(project, _TEST_SPEC_STAGES)
-            if len(approved) < len(_TEST_SPEC_STAGES):
+            approved = await self._stages.approved_stages(project, TEST_SPEC_STAGES)
+            if len(approved) < len(TEST_SPEC_STAGES):
                 raise TestSpecUpstreamNotReadyError(
                     "テスト仕様書は、段階1(処理)と段階7(実装計画)を承認してから作れます。"
                 )
@@ -747,7 +748,7 @@ class DocGeneratorService:
         処理・単位は、簡易は内部設計書・実装計画書、詳細は段階1・段階7 から引く。生成した時点の
         入力の版を model に写す(「古い」の判定)。"""
         if project.mode == "detailed":
-            approved = await self._stages.approved_stages(project, _TEST_SPEC_STAGES)
+            approved = await self._stages.approved_stages(project, TEST_SPEC_STAGES)
             links = detailed_links(
                 _parse(FunctionListModel, approved.get(FUNCTION_STAGE)),
                 _parse(PlanModel, approved.get(PLAN_STAGE)),
@@ -762,35 +763,22 @@ class DocGeneratorService:
             requirements=requirements,
             external=external,
             links=links,
-            inputs=await self._test_spec_inputs(project),
+            inputs=await spec_inputs(self._session, project),
         )
         return render_test_spec(model), model
-
-    async def _test_spec_inputs(self, project: Project) -> dict[str, int | None]:
-        """テスト仕様書の入力の今の版(簡易は4文書、詳細は要件・外部と段階1・段階7 の承認した版。
-        承認されていない・古い段階は None)。"""
-        inputs: dict[str, int | None] = {}
-        for doc_type in DOC_TYPES_BY_MODE[project.mode]:
-            current = await self._documents.get_current(project_id=project.id, doc_type=doc_type)
-            inputs[doc_key(doc_type)] = current.version if current is not None else None
-        if project.mode == "detailed":
-            approved = await self._stages.approved_stages(project, _TEST_SPEC_STAGES)
-            for stage in _TEST_SPEC_STAGES:
-                inputs[stage_key(stage)] = approved[stage][0] if stage in approved else None
-        return inputs
 
     async def get_test_spec(self, project: Project) -> TestSpecRead:
         """テスト仕様書の今の版と、件数・検証の指摘・古いか。まだ無ければ`DocumentNotFoundError`。
         model の無い・壊れた版は件数0・指摘なし・古くない、とする。"""
-        document = await self._documents.get_current(project_id=project.id, doc_type=TEST_SPEC)
-        if document is None:
+        current = await current_test_spec(self._session, project)
+        if current is None:
             raise DocumentNotFoundError("test_spec not found")
-        model = _parse(TestSpecModel, document.model) or TestSpecModel()
         return TestSpecRead(
-            document=document_read(document),
-            counts=test_spec_counts(model),
-            issues=_issues_read(validate_test_spec(model)),
-            outdated=is_outdated(model, await self._test_spec_inputs(project)),
+            document=document_read(current.document),
+            counts=test_spec_counts(current.model),
+            issues=_issues_read(validate_test_spec(current.model)),
+            outdated=current.outdated,
+            design_gaps=design_gap_count(current.model),
         )
 
     async def _self_diagnose(self, generated: dict[str, str], *, llm) -> str:

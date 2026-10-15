@@ -18,6 +18,11 @@ def row_counts(model: TestSpecModel) -> dict[str, int]:
     return {"integration": len(model.integration), "system": len(model.system)}
 
 
+def design_gap_count(model: TestSpecModel) -> int:
+    """「設計に無い」と印を付けたテストの件数(テストを書く前に設計を直すもの)。"""
+    return sum(1 for case in model.cases if case.design_gap)
+
+
 def is_outdated(model: TestSpecModel, current_inputs: Mapping[str, int | None]) -> bool:
     """生成した時点の入力の版が今と違うか(入力の版を持たない版は古いとみなさない)。"""
     return bool(model.inputs) and dict(model.inputs) != dict(current_inputs)

@@ -130,6 +130,7 @@ async def test_get_test_spec_reports_counts_issues_and_outdated(db_session: Asyn
     assert read.document.content.startswith("# テスト仕様書")
     assert read.counts == {"integration": 2, "system": 0}
     assert read.outdated is False
+    assert read.design_gaps == 0
     assert [i.code for i in read.issues] == []
 
     # 2回目の生成の後で要件定義書を前の版に戻すと、テスト仕様書の入力が今と違う

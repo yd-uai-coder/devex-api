@@ -4,6 +4,7 @@ SUT: DetailedDesignExportService.bundle・bundle_procedure と missing_approvals
      (app/services/detailed_design_export_service.py)、
      download_detailed_design・download_implementation_procedure(app/api/routes/design_stages.py)、
      DesignStageService.overview(app/services/design_stage_service.py)、
+     current_test_spec・spec_inputs(app/services/test_spec_state.py)、
      render_diagram / unique_base(app/uml/export/files.py)
 ドライバ: 各テスト関数
 スタブ: なし ── DB はテスト用のインメモリ SQLite(`db_session`)を使い、図はレイアウトエンジンで
@@ -29,16 +30,21 @@ from app.api.routes.design_stages import (
     download_detailed_design,
     download_implementation_procedure,
 )
+from app.documents.test_spec import TestSpecModel
+from app.models.project import Project
+from app.repositories.generated_document import TEST_SPEC, GeneratedDocumentRepository
 from app.repositories.uml_diagram import UmlDiagramRepository
 from app.services.design_stage_service import DesignStageService
 from app.services.detailed_design_export_service import (
     DOCUMENT_FILENAME,
     PROCEDURE_FILENAME,
     PROCEDURE_INDEX_NAME,
+    TEST_SPEC_MARKDOWN_NAME,
     DetailedDesignExportService,
     missing_approvals,
 )
 from app.services.errors import DesignDocumentNotReadyError, DesignStagesNotAvailableError
+from app.services.test_spec_state import current_test_spec, spec_inputs
 from app.uml.domain import SemanticModelAdapter
 from app.uml.export import render_diagram, unique_base
 
@@ -154,6 +160,46 @@ async def test_bundle_requires_stages_1_to_7_and_exports_nothing(db_session: Asy
 
     diagrams = await UmlDiagramRepository(db_session).list_for_project(project.id)
     assert "exported" not in {d.status for d in diagrams}
+
+
+async def _save_test_spec(
+    session: AsyncSession, project: Project, inputs: dict[str, int | None]
+) -> None:
+    model = TestSpecModel(inputs=inputs)
+    await GeneratedDocumentRepository(session).create_version(
+        project_id=project.id,
+        doc_type=TEST_SPEC,
+        content="# テスト仕様書\n",
+        model=model.model_dump(mode="json"),
+    )
+    await session.commit()
+
+
+async def test_bundle_includes_fresh_test_spec(db_session: AsyncSession) -> None:
+    """テスト仕様書の今の版が古くなければ、md を zip に入れる。"""
+    project = await create_document_project(db_session)
+    await _save_test_spec(db_session, project, await spec_inputs(db_session, project))
+
+    current = await current_test_spec(db_session, project)
+    assert current is not None and current.outdated is False
+    bundle = await DetailedDesignExportService(db_session).bundle(project)
+
+    assert _open(bundle.content).read(TEST_SPEC_MARKDOWN_NAME).decode() == "# テスト仕様書\n"
+
+
+async def test_bundle_leaves_out_missing_or_outdated_test_spec(db_session: AsyncSession) -> None:
+    """テスト仕様書が無い・古いときは入れない(古い仕様を最終成果物に混ぜない)。"""
+    project = await create_document_project(db_session)
+    service = DetailedDesignExportService(db_session)
+    assert await current_test_spec(db_session, project) is None
+    assert TEST_SPEC_MARKDOWN_NAME not in _open((await service.bundle(project)).content).namelist()
+
+    inputs = await spec_inputs(db_session, project)
+    await _save_test_spec(db_session, project, {**inputs, "stage:7": 999})
+
+    current = await current_test_spec(db_session, project)
+    assert current is not None and current.outdated is True
+    assert TEST_SPEC_MARKDOWN_NAME not in _open((await service.bundle(project)).content).namelist()
 
 
 async def test_bundle_rejects_simple_mode_project(db_session: AsyncSession) -> None:

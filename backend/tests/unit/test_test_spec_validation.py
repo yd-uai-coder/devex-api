@@ -1,6 +1,7 @@
 """テスト仕様書の決定的な検証のテスト。
 
-SUT は`app/documents/test_spec/validation.py`の`validate_test_spec`・`is_outdated`・`row_counts`、
+SUT は`app/documents/test_spec/validation.py`の`validate_test_spec`・`is_outdated`・`row_counts`・
+`design_gap_count`、
 ドライバはこのテスト。スタブ不要 ── 対象が純粋関数で、model だけから決まるため。
 """
 
@@ -16,6 +17,7 @@ from app.documents.test_spec import (
     SpecCase,
     TestSpecModel,
     build_model,
+    design_gap_count,
     is_outdated,
     row_counts,
     validate_test_spec,
@@ -77,3 +79,4 @@ def test_is_outdated_and_counts():
     assert is_outdated(model, {"doc:requirements": 2})
     assert not is_outdated(TestSpecModel(), {"doc:requirements": 2})
     assert row_counts(model) == {"integration": 3, "system": 1}
+    assert design_gap_count(model) == 1
