@@ -430,3 +430,75 @@ GitHubリポジトリの Settings → Secrets and variables → Actions → New 
 - `d4e5f6a7b8c0`の downgrade は、段階7のタスクの単位のキーと、段階8の手順書の`unit_key`を外す(内容の意味は変わらない)。
 - 開発環境の DB の複製(段階 175行・写し 154・印 45)で、2本の downgrade → upgrade → downgrade → upgrade を往復して確かめた。upgrade の後、写しは承認済みで変わっていない行(153)だけに戻り、印は 0 になる。詳細設計モードの手順書のキーはすべて戻るが、簡易モードの手順書に付いていたキー(5行)は戻らない(この移行は簡易モードを変えないため)。
 - 印や確認済みの記録を残す必要があるなら、downgrade ではなく、1 のバックアップから戻すことを考える。
+
+### 10.5 AI 設計レビュー・テスト仕様書(レビューの区切り・差し戻し・「直ったか」・手順書の検証・テスト仕様書)を含む版への更新
+
+本番が 10.4 の版(alembic の head が`e5f6a7b8c9d1`)のときに、AI 設計レビューとテスト設計を含む版(ステージ8)へ更新する手順。10節と同じく、**API を先に、UI を後に出す**(UI を先に出すと、レビューのパネル・テスト仕様書のタブ・再生成の起点の選択が古い API を呼んで失敗する)。
+
+この版で増えるもの:
+
+- **環境変数**: `ANTHROPIC_API_KEY`(設計レビューの Claude Sonnet と、「直ったか」の判定の Claude Haiku が使う)。任意で`REVIEW_MODEL`(既定`claude-sonnet-5-5`)・`JUDGE_MODEL`(既定`claude-haiku-5-5`)・`REVIEW_RATE_LIMIT_PER_DAY`(superuser ごとの1日のレビューの回数。既定20)・`JUDGE_RATE_LIMIT_PER_DAY`(既定200)。キーが無いと、レビューは失敗の回として残り、今までどおりの自己診断に切り替わる(生成は止まらない)。
+- **依存**: `langchain-anthropic`(`pyproject.toml`・`uv.lock`)。これに伴い`langchain-core`が 1.5.4 → 1.6.10 に上がる(生成・ヒアリングの Gemini の呼び出しも同じ`langchain-core`を通る。全体テストと E2E で確かめた)。9節の自動デプロイがイメージを作り直すので、手で入れる作業は無い。
+- **マイグレーション**: 5本で、どれもテーブル・列を足すだけ(既存の行は書き換えない)。9節の自動デプロイが流す。
+
+| リビジョン | 内容 | 利用者への影響 |
+|---|---|---|
+| `f6a7b8c9d0e1` | `review_runs`(レビューの回)・`review_findings`(指摘と採否)を作り、`users.review_enabled`(レビューのオン・オフ。既定オフ)を足す | なし。レビューは superuser がオンにしたときだけ流れる(実効値 = `is_superuser` かつ`review_enabled`) |
+| `a7b8c9d0e1f2` | `review_findings.documents`(指摘に関わる文書)を足す | なし |
+| `5a1c7e93d2b4` | `review_runs.snapshots`(段階の区切りのレビューの、段階の写し)を足す | なし |
+| `6b2d8fa4e3c5` | `hearing_points.reopened_after`(聞き直しで観点を未決に戻した発言)を足す | なし |
+| `7c3e9ab5f4d6` | `review_fix_checks`(採用した指摘が直ったかの判定)を作る | なし |
+
+既存のデータについて:
+
+- **テスト仕様書**: 移行は作らない(`generated_documents`の新しい`doc_type="test_spec"`)。簡易モードの既存のプロジェクトは、4文書を再生成すると一緒に作られる(タブは「まだテスト仕様書がありません」)。詳細設計モードは、段階1・7 を承認していれば詳細設計画面の段階8の下の行から作れる。
+- **実装手順書の検証**: 以前に生成した手順書にも、新しい検証(`DEPENDENCY_BUILT_LATER`・`NO_TEST_FILE`・`NO_SCHEMA_UNIT`・`TABLE_WITHOUT_UNIT`・`NO_ERROR_TEST`)の指摘が出ることがある(表示のときに検証するため)。手順書の中身は変わらない。
+- **レビュー**: 既存のプロジェクトの区切りは「未レビュー」で始まる(自動では流さない)。レビューをオンにした後、パネルの「レビューする」で流せる。
+
+1. **バックアップ**(VPS。5節): `pg_dump`でダンプを取り、VPS の外へコピーする。
+2. **更新前の head の確認**(VPS):
+
+   ```bash
+   docker compose -f docker-compose.prod.yml exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT version_num FROM alembic_version"'
+   # → e5f6a7b8c9d1 であることを確かめる
+   ```
+
+3. **鍵の設定**(VPS): devex-api の`.env`に`ANTHROPIC_API_KEY=<鍵>`を足す(必要なら上の任意の変数も)。4 の自動デプロイの`up -d`がコンテナを作り直すときに読み込まれる。鍵は Anthropic Console で、このサービス専用に作る(使用量の上限を Console 側にも設定しておくと、費用の歯止めが二重になる)。
+4. **devex-api の反映**(手元): ステージ8のコミット(Phase 51〜60)は、手元の`stage7`ブランチの上に積んである。`git fetch`で origin を取り込み、`stage8`ブランチを作って push する(`git switch -c stage8`・`git push -u origin stage8`)。`stage8`と origin/main の差を確かめてから、`stage8`→`main`の PR を作ってマージする。CI の test が通ると、9節の自動デプロイが走る。
+5. **確認**: GitHub Actions のログで、マイグレーション5本が`Running upgrade`と出ていることを確かめる。`curl -s https://<ドメイン>/health`が`{"status":"ok",...}`を返すことを確かめる。2 の SQL が`7c3e9ab5f4d6`を返すことを確かめ、鍵がコンテナに入ったかを値を出さずに確かめる。
+
+   ```bash
+   docker compose -f docker-compose.prod.yml exec -T backend sh -c 'test -n "$ANTHROPIC_API_KEY" && echo set || echo missing'
+   # → set
+   ```
+
+6. **superuser の昇格**(VPS): レビューを使うアカウントを、画面から登録してから手で昇格させる(seed は dev 専用で、本番では流さない)。
+
+   ```bash
+   docker compose -f docker-compose.prod.yml exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
+     UPDATE users SET is_superuser = true WHERE email = '\''<メールアドレス>'\'' RETURNING email, is_superuser, review_enabled;"'
+   # → 1行。review_enabled は false(画面のパネルでオンにする)
+   ```
+
+7. **devex-ui の反映**(手元): 5 が済んでから`main`を push する(Vercel が自動でデプロイする)。開いていた画面は再読み込み(Shift+F5)する。メニューの「開発用」は無くなる(デモのページ`/design-review-demo`は URL を直接開けば見られる)。
+8. **本番での確認**(実際の Gemini・Claude で): 次の表の項目を確かめ、結果と Anthropic の費用(Console の使用量)を記録しておく。Claude を流すのは表の「費用」の欄の分だけにする(見込み 約 $0.6・最大 約 $1.2。単価は Sonnet 5.5 入力 $2・出力 $10 / 100万トークン、Haiku 5.5 入力 $0.10・出力 $0.50)。
+
+   | 対象 | 確かめること | 費用 |
+   |---|---|---|
+   | レビューのオン・オフ | 一般の利用者にはパネルが出ない。superuser はパネルのスイッチでオンにでき、オフのときは生成の後に今の自己診断が出る | なし |
+   | 簡易モード(新しいプロジェクト、オン) | 4文書の生成の後に自動のレビューが流れ、チャットに件数の一行、パネルに指摘(重要度の順・文書の凡例 A〜D・対象へ飛ぶ)。採用・却下・保留、「採用 n(未対応 m)」、各タブの表のバッジ | Sonnet 1回 約 $0.10 |
+   | 〃(聞き直しの通し。Phase 59 の申し送り) | ヒアリングの指摘を採用 →「チャットで聞き直す」→ 観点が未決に戻り、値の選択肢カードで答える →「おすすめでよい」と答えても値が決まる → 要件定義書から再生成 → 自動のレビューが流れ直し、前の回で採用した指摘のチップ(「変更あり」・「AI: 直った」)が出る | Sonnet 1回 約 $0.10 + Haiku 数件 |
+   | 〃(差し戻し) | 設計の指摘を採用 → 再生成のダイアログで、採用した指摘が選ばれた状態・起点の初期値が関連する最も上流の文書になる(「AI 設計レビューの採用した指摘を、再生成の指示に入れる」)→ 作り直した版で指摘の対象が直っている | (上の流れ直しに含む) |
+   | 〃(テスト仕様書) | 5つ目のタブ「テスト仕様書(結合・総合)」・作り直しと進み具合・検証の結果の表と絞り込み・版の履歴の復元・zip の`test_spec.md`と注記 | なし(Gemini) |
+   | 〃(実装手順書) | 手順書の「未定義・要決定の一覧」、参照の 2.6 の行のエラー欄、検証の結果に`NO_ERROR_TEST`などが出たときの読みやすさ | なし |
+   | 詳細設計モード(新しいプロジェクト、オン) | 要件・外部の生成の後の自動のレビュー。段階6・7 の承認のダイアログから「レビューする」、区切りの状態(未レビュー・レビュー中・レビュー済み)、指摘から段階の対象へ飛ぶ(推定の当たり)、「採用した指摘で段階を作り直す」、各段階のバッジの強調、承認の知らせ、手順書の生成のときの未レビューの知らせ | Sonnet 3回 約 $0.38 |
+   | 〃(テスト仕様書) | 段階8の下の行・作るボタンと理由(段階1・7 が未承認のとき)・段階7 のダイアログ | なし(Gemini) |
+   | 〃 | レビューの出力が上限(`REVIEW_MAX_TOKENS`=16000)に当たらないか(当たるとレビューが失敗の回になる)。パネルの長さ | なし |
+   | 費用 | Anthropic Console の使用量が見込み(最大 約 $1.2)に収まったか | ── |
+
+**ロールバック**(6節): コードは`main`を`git revert`して push する。マイグレーションは`alembic downgrade e5f6a7b8c9d1`で戻す。
+
+- downgrade は、レビューの回・指摘・採否・「直ったか」の判定のテーブルと、`users.review_enabled`・`hearing_points.reopened_after`の列を消す。**レビューの記録はすべて消える**。superuser の昇格(`is_superuser`)は残る。
+- テスト仕様書の行(`doc_type="test_spec"`)は残るが、以前の版のコードは4種の文書しか読まないので、画面にも zip にも出ない(もう一度更新すると、また見える)。
+- 開発環境の DB の複製(利用者 70・テスト仕様書の版 34・レビューの回 28・指摘 314・判定 74)で、5本の downgrade → upgrade を2往復して確かめた。どちらの往復でも、upgrade の後はレビューの記録が 0・`review_enabled`はすべてオフ、利用者・観点の表・テスト仕様書の行の数は変わらない。
+- レビューの記録を残す必要があるなら、downgrade ではなく、1 のバックアップから戻すことを考える。
