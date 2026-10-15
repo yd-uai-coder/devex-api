@@ -1,6 +1,6 @@
 """テスト仕様書の必要なテストの一覧のテスト。
 
-SUT は`app/documents/test_spec/obligations.py`の`required_tests`・`error_statuses`・
+SUT は`app/documents/test_spec/obligations.py`の`required_tests`・`error_statuses`・`body_ids`・
 `obligation_rows`、ドライバはこのテスト。スタブ不要 ── 対象が純粋関数で、要件定義書・外部設計書の
 model だけから決まるため。
 """
@@ -14,6 +14,7 @@ from tests.fixtures.spec_documents import (
 )
 
 from app.documents.test_spec import error_statuses, obligation_rows, required_tests
+from app.documents.test_spec.obligations import body_ids
 
 
 def _viewpoints(target: str) -> list[str]:
@@ -39,15 +40,47 @@ def test_path_parameter_needs_security_test_and_no_body_skips_boundary():
     assert "境界" not in _viewpoints(LIST_API)
 
 
-def test_system_tests_cover_must_screens_nfr_and_unlinked_must():
+def test_system_tests_cover_must_screens_nfr_and_every_must_requirement():
+    """Must の画面の流れ・Must の画面ごとの操作・非機能・Must の要件ごとの中身(API に結ばれた
+    FR-001 も)。Should の要件・画面は入れない。"""
     obligations = required_tests(spec_requirements(), spec_external())
     system = [o for o in obligations if o.level == "system"]
     assert [(o.target, o.viewpoint) for o in system] == [
         ("SCR-001", "正常"),
+        ("SCR-001", "異常"),
         ("性能", "非機能"),
+        ("FR-001", "正常"),
         ("FR-002", "正常"),
     ]
-    assert system[1].req_ids == ("NFR-001",)
+    assert system[1].reason == "画面の操作: 入力の検証・空の送信・エラーの表示"
+    assert system[2].req_ids == ("NFR-001",)
+    assert system[3].reason == "要件の中身: 予約できる"
+    assert system[3].screens == ("SCR-001",)
+    assert system[4].reason == "API・画面に無い Must の要件: 予約を通知する"
+
+
+def test_failure_requirement_checks_state_after_failure():
+    """失敗・中断を書く要件は、異常の観点で、失敗の後の状態を確かめる。"""
+    requirements = spec_requirements()
+    requirements.rows[1].text = "通知に失敗したら、もう一度送れる"
+
+    [row] = [o for o in required_tests(requirements, spec_external()) if o.target == "FR-002"]
+
+    assert row.viewpoint == "異常"
+    assert row.reason.endswith("。失敗の後の状態(保存されない・やり直せる)を確かめる")
+
+
+def test_body_ids_need_security_tests():
+    """本文で ID を受ける API(`session_id`)にも、ほかの利用者のリソースのテストを置く。"""
+    names = body_ids("session_id(必須)・message・projectId・session_id")
+    assert names == ["session_id", "projectId"]
+    assert body_ids("メッセージ本文・id_token なし") == []
+    external = spec_external()
+    external.apis[1].body = "session_id・メッセージ"
+
+    reasons = [o.reason for o in required_tests(None, external) if o.target == CREATE_API]
+
+    assert "本文の session_id でほかの利用者のリソースを指す" in reasons
 
 
 def test_without_requirements_only_api_and_screen_tests():

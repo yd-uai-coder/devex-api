@@ -86,6 +86,15 @@ def test_both_prompts_ask_for_test_files_when_tests_are_written() -> None:
     assert rule in SIMPLE_PROCEDURE_DOC_SYSTEM_PROMPT
 
 
+def test_simple_prompt_asks_error_test_per_status() -> None:
+    """簡易モードだけ、API のエラー欄のステータスごとに異常系の観点を書かせる(NO_ERROR_TEST と対)。
+    """
+    rule = "「エラー」にある HTTP ステータスごとに、異常系の観点を1つ"
+    assert "正常系の観点(処理が成功する)に加えて" in SIMPLE_PROCEDURE_DOC_SYSTEM_PROMPT
+    assert rule in SIMPLE_PROCEDURE_DOC_SYSTEM_PROMPT
+    assert rule not in PROCEDURE_DOC_SYSTEM_PROMPT
+
+
 def test_messages_carry_unit_expanded_refs_and_common_sections() -> None:
     text = _human_text(document_stage_models())
 

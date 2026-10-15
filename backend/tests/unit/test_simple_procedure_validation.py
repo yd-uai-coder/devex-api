@@ -5,6 +5,7 @@ SUT は`app/detailed_design/validation.py`の`validate_procedure_doc`(簡易モ�
 """
 
 from tests.fixtures.simple_procedure import (
+    EXTERNAL_DESIGN_MD,
     INTERNAL_DESIGN_MD,
     LAYERED_INTERNAL_DESIGN_MD,
     OLD_PLAN_MD,
@@ -176,3 +177,24 @@ def test_no_schema_unit_points_to_the_design_or_the_plan() -> None:
     assert [(i.code, i.fix_document) for i in layered] == [
         ("NO_SCHEMA_UNIT", "implementation_plan")
     ]
+
+
+def test_feature_without_error_test_points_to_the_procedure() -> None:
+    """API のエラー欄にステータスがあるのに、テスト観点にどれも出なければ軽微(直す先は手順書)。
+    1つでも出れば指摘しない。"""
+    external = EXTERNAL_DESIGN_MD.replace(
+        "| メソッド | パス | 概要 | 関連画面 |\n|---|---|---|---|",
+        "| メソッド | パス | 概要 | 関連画面 | エラー |\n|---|---|---|---|---|",
+    ).replace("| SCR-001 |", "| SCR-001 | 400 入力不正 / 409 期間の重複 |")
+    with_error = simple_procedure_doc_model()
+    with_error["units"][0]["tests"].append(
+        {"viewpoint": "期間が重なると 409", "sut": "POST /api/v1/reservations"}
+    )
+
+    issues = _check(simple_procedure_doc_model(), external_design=external)
+
+    assert [(i.code, i.level, i.fix_stage, i.target) for i in issues] == [
+        ("NO_ERROR_TEST", "minor", 8, "M-01-T02")
+    ]
+    assert "400・409" in issues[0].message
+    assert _check(with_error, external_design=external) == []

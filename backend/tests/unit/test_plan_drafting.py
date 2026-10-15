@@ -118,6 +118,12 @@ def test_system_prompts_name_default_topics_and_end_with_naming_rules():
     assert "req_ids" in CROSSCUTTING_SYSTEM_PROMPT
 
 
+def test_plan_prompt_places_schema_task_in_first_milestone():
+    """テーブルを作るタスク(モデル・マイグレーション)を最初のマイルストーンに置かせる。"""
+    assert "テーブルを作るタスク(モデルとマイグレーション)" in PLAN_SYSTEM_PROMPT
+    assert "マイグレーションのファイル(例: alembic/versions/)は config_files" in PLAN_SYSTEM_PROMPT
+
+
 def test_to_crosscutting_normalizes_requirement_ids():
     """AI が書いた要件ID は形をそろえ、形の違う値は捨てる。"""
     output = CrossCuttingGenerationOutput(

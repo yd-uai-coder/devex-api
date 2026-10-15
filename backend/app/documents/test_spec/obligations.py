@@ -8,10 +8,15 @@
 | 正常 | 同値分割(有効なクラスの代表) | API ごとに1件 |
 | 異常 | エラーの一覧の網羅 | API の「エラー」欄の HTTP ステータスごと(欄に無ければ1件) |
 | 境界 | 境界値分析 | 本文を持つ API(`BODY_METHODS`で、本文が「なし」でない) |
-| セキュリティ | 認可 | パスに`{…}`(ほかの利用者のリソースを指せる)を持つ API |
+| セキュリティ | 認可 | パスに`{…}`か本文に`…_id`の項目(ほかの利用者のリソースを指す)を持つ API |
 | 非機能 | ― | 非機能要件ごとに総合テスト1件 |
 | 正常 | 状態遷移(主な経路) | Must の画面を通す流れの総合テスト1件 |
-| 正常 | ― | API にも画面にも結ばれていない Must の機能要件ごとに総合テスト1件 |
+| 異常 | 画面の操作 | Must の画面ごとに総合テスト1件(入力の検証・空の送信・エラーの表示) |
+| 正常 | 要件ベース | Must の機能要件ごとに総合テスト1件(API に結ばれていても、文の中身を確かめる) |
+| 異常 | 要件ベース | 上のうち、文が失敗・中断を書く要件(失敗の後に保存されない・やり直せるか) |
+
+API の形(パス・エラー欄)だけから決めると、要件の中身(コピー・ダウンロード・版の切り替えなど、
+API に結ばれていても API の応答だけでは確かめられないもの)と、画面の操作のテストが落ちる。
 
 一覧は生成の誘導だけに使う。決定的な検証(`validation.py`)は一覧と照らさない。
 """
@@ -20,12 +25,17 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from app.detailed_design.api_list import error_statuses
 from app.documents.external_design.model import BODY_METHODS, NO_BODY, ExternalDesignModel
 from app.documents.requirements.model import RequirementsModel
 from app.documents.test_spec.model import CaseLevel, Viewpoint
 
-# エラー欄の HTTP ステータス(4xx・5xx)
-_STATUS = re.compile(r"(?<!\d)([45]\d\d)(?!\d)")
+# 本文の項目のうち、ほかのリソースを ID で指すもの(`session_id`・`projectId`)
+_BODY_ID = re.compile(r"(?<![A-Za-z0-9_])([a-z][A-Za-z0-9]*(?:_id|Id))(?![A-Za-z0-9_])")
+# 失敗・中断の振る舞いを書いた要件の文
+_FAILURE = re.compile(r"失敗|エラー|中断|タイムアウト|やり直|再試行|リトライ")
+_FAILURE_NOTE = "失敗の後の状態(保存されない・やり直せる)を確かめる"
+_SCREEN_OPERATION = "画面の操作: 入力の検証・空の送信・エラーの表示"
 
 
 @dataclass(frozen=True)
@@ -38,11 +48,6 @@ class Obligation:
     reason: str
     req_ids: tuple[str, ...] = ()
     screens: tuple[str, ...] = ()
-
-
-def error_statuses(errors: str) -> list[str]:
-    """API の「エラー」欄から HTTP ステータス(4xx・5xx)を、出てきた順・重複なしで取り出す。"""
-    return list(dict.fromkeys(_STATUS.findall(errors)))
 
 
 def _api_obligations(external: ExternalDesignModel) -> list[Obligation]:
@@ -58,12 +63,19 @@ def _api_obligations(external: ExternalDesignModel) -> list[Obligation]:
             checks.append(("境界", "本文の項目の下限・上限・空"))
         if "{" in api.path:
             checks.append(("セキュリティ", "ほかの利用者のリソースを指す"))
+        for name in body_ids(api.body):
+            checks.append(("セキュリティ", f"本文の {name} でほかの利用者のリソースを指す"))
         reqs, screens = tuple(api.req_ids), tuple(api.screens)
         result += [
             Obligation("integration", api.label, viewpoint, reason, reqs, screens)
             for viewpoint, reason in checks
         ]
     return result
+
+
+def body_ids(body: str) -> list[str]:
+    """API の本文から、ほかのリソースを ID で指す項目の名前を、出てきた順・重複なしで取り出す。"""
+    return list(dict.fromkeys(_BODY_ID.findall(body)))
 
 
 def _system_obligations(
@@ -82,6 +94,17 @@ def _system_obligations(
                 tuple(s.id for s in must_screens),
             )
         )
+    for screen in must_screens:
+        result.append(
+            Obligation(
+                "system",
+                screen.id,
+                "異常",
+                _SCREEN_OPERATION,
+                tuple(screen.req_ids),
+                (screen.id,),
+            )
+        )
     if requirements is None:
         return result
     for row in requirements.rows:
@@ -89,14 +112,21 @@ def _system_obligations(
             result.append(
                 Obligation("system", row.category or "非機能", "非機能", row.text, (row.id,))
             )
-    linked = {r for a in external.apis for r in a.req_ids} | {
-        r for s in external.screens for r in s.req_ids
-    }
     for row in requirements.rows:
-        if row.kind == "FR" and row.priority == "Must" and row.id not in linked:
-            reason = f"API・画面に無い Must の要件: {row.text}"
-            result.append(Obligation("system", row.id, "正常", reason, (row.id,)))
+        if row.kind == "FR" and row.priority == "Must":
+            result.append(_requirement_obligation(row.id, row.text, external))
     return result
+
+
+def _requirement_obligation(req_id: str, text: str, external: ExternalDesignModel) -> Obligation:
+    """Must の機能要件1つの中身のテスト。失敗・中断を書く要件は、失敗の後の状態を確かめる。"""
+    screens = tuple(s.id for s in external.screens if req_id in s.req_ids)
+    linked = screens or any(req_id in a.req_ids for a in external.apis)
+    reason = f"要件の中身: {text}" if linked else f"API・画面に無い Must の要件: {text}"
+    if _FAILURE.search(text):
+        reason = f"{reason}。{_FAILURE_NOTE}"
+        return Obligation("system", req_id, "異常", reason, (req_id,), screens)
+    return Obligation("system", req_id, "正常", reason, (req_id,), screens)
 
 
 def required_tests(

@@ -5,8 +5,14 @@ docs/internal_design.md 3.3節「8. AI 設計レビュー + テスト設計」�
 判定は記録して画面に小さく出すだけで、採否や追跡の状態は変えない(精度を測ってから使い方を決める)。
 文書の生成の後・段階の承認の後に、レビューがオンのアカウントだけで流す。失敗は記録して、生成・承認を
 止めない。1回に判定する指摘の数と、1日の回数に上限を置く(費用を抑えるため)。
+
+段階を続けて承認すると、判定がバックグラウンドで並行に走り、どれも「今の版でまだ判定していない」と
+見る。同じ指摘を同じ版で二度判定しないよう、判定の前に (指摘, 版) の予約札を Redis に置き
+(`SET NX EX`)、置けた処理だけが判定する。
 """
 
+import hashlib
+import json
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -46,6 +52,17 @@ from app.services.review_service import ReviewService, failure_code
 logger = structlog.get_logger(__name__)
 
 _STRUCTURED_METHOD = "json_schema"
+
+# 予約札の期限(秒)。判定(Haiku)の時間より十分に長く、版が変わらないまま承認し直す間隔より短く
+_CLAIM_SECONDS = 600
+
+
+def claim_key(finding_id: uuid.UUID, versions: Mapping[str, int | None]) -> str:
+    """(指摘, 判定する版) の予約札の鍵。版が変われば別の鍵になる(直した後の判定を止めない)。"""
+    digest = hashlib.sha1(
+        json.dumps(dict(versions), sort_keys=True).encode(), usedforsecurity=False
+    ).hexdigest()[:16]
+    return f"fix_check:{finding_id}:{digest}"
 
 
 async def run_fix_checks(project_id: uuid.UUID, user_id: uuid.UUID) -> None:
@@ -92,10 +109,16 @@ class FixCheckService:
         candidates = await self._candidates(project)
         checks: list[ReviewFixCheck] = []
         for candidate in candidates[: settings.JUDGE_MAX_PER_RUN]:
+            key = claim_key(candidate.finding.id, candidate.versions)
+            if not await self._claim(key):
+                continue  # ほかの処理が判定中か判定済み
             if not await self._within_limit(user):
+                await self._release(key)
                 break
             check = await self._check(project, candidate)
-            if check is not None:
+            if check is None:
+                await self._release(key)  # 渡す内容が無く判定しなかった
+            else:
                 checks.append(check)
         await self._session.commit()
         return checks
@@ -205,6 +228,16 @@ class FixCheckService:
                 bodies.append(current.content)
         evidence = f"(レビューの引用){finding.evidence}"
         return evidence, "\n\n".join(bodies) if bodies else None
+
+    async def _claim(self, key: str) -> bool:
+        """予約札を置く(置けたら True)。Redis を渡さない呼び出しでは札を使わない。"""
+        if self._redis is None:
+            return True
+        return bool(await self._redis.set(key, "1", nx=True, ex=_CLAIM_SECONDS))
+
+    async def _release(self, key: str) -> None:
+        if self._redis is not None:
+            await self._redis.delete(key)
 
     async def _within_limit(self, user: User) -> bool:
         """superuser ごとの1日の判定の回数(Redis を渡さない呼び出しでは数えない)。"""

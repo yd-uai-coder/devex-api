@@ -92,6 +92,13 @@ def test_rows_text_is_one_json_per_row():
     assert REVISION_RULE in REQUIREMENTS_PROMPT
 
 
+def test_requirements_prompt_rewrites_rows_whose_point_was_decided_again():
+    """聞き直しで観点の決めたことが具体になったら、その観点の要件は unchanged にしない
+    (観点の表の変化も、変更のきっかけに数える)。"""
+    assert "【観点の表】の決めたことが、前の版の要件と食い違う" in REQUIREMENTS_PROMPT
+    assert "その観点を points に持つ要件は unchanged にせず" in REQUIREMENTS_PROMPT
+
+
 # --- 外部設計書 ---
 
 

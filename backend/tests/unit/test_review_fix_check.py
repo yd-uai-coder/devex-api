@@ -1,12 +1,14 @@
 """採用した指摘が直ったかの判定(狭い判定のモデル Claude Haiku。シャドーモード)のテスト。
 
 SUT: app/review/fix_check.py(入力の組み立て。純粋関数)・get_judge_llm・FixCheckService・
+     予約札(claim_key・並行の判定の重複を防ぐ)・
      ReviewFixCheckRepository・ReviewService の今の版の判定(gate_summaries の fix_checks)・
      文書の生成の後の判定(DocGeneratorService.generate)・段階の承認のルートの判定の予約・
      E2E の偽物の判定
 ドライバ: 各テスト関数
 スタブ: 入力の組み立てはスタブ不要 ── 対象が純粋で外部依存を呼ばないため。判定・生成・レビューは
-     FakeLLM(構造化出力を返し、プロンプトを記録する)。DB はインメモリの SQLite。
+     FakeLLM(構造化出力を返し、プロンプトを記録する)。予約札と1日の回数は FakeRedis。
+     DB はインメモリの SQLite。
 """
 
 import uuid
@@ -19,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tests.fixtures.detailed_design import create_detailed_project, function_list_model
 from tests.fixtures.external_design import upstream_outputs
 from tests.fixtures.fake_llm import FakeLLM
+from tests.fixtures.fake_redis import FakeRedis
 from tests.fixtures.review import review_finding, review_output
 
 from app.ai.llm.claude import get_judge_llm
@@ -43,7 +46,7 @@ from app.schemas.design_stage import DesignStageApprove
 from app.services import llm_retry
 from app.services.design_stage_service import DesignStageService
 from app.services.doc_generator_service import DocGeneratorService
-from app.services.fix_check_service import FixCheckService, run_fix_checks
+from app.services.fix_check_service import FixCheckService, claim_key, run_fix_checks
 from app.services.review_service import ReviewService
 
 
@@ -182,6 +185,37 @@ async def test_changed_adopted_finding_is_judged_once_per_version(
 
     [summary] = await ReviewService(db_session).gate_summaries(project)
     assert summary.fix_checks[finding_id].verdict == "partial"
+
+
+def test_claim_key_changes_with_versions() -> None:
+    finding_id = uuid.uuid4()
+    key = claim_key(finding_id, {"external_design": 2, "requirements": 1})
+
+    assert key.startswith(f"fix_check:{finding_id}:")
+    assert key == claim_key(finding_id, {"requirements": 1, "external_design": 2})  # 順は見ない
+    assert key != claim_key(finding_id, {"external_design": 3, "requirements": 1})
+
+
+async def test_claimed_finding_is_skipped_until_released(db_session: AsyncSession) -> None:
+    """ほかの処理が (指摘, 版) の札を置いていれば判定しない(並行に走る承認の後の判定の重複)。"""
+    project, user, finding_id = await _adopted_project(db_session)
+    user.review_enabled = False
+    await DocGeneratorService(db_session).generate(
+        project.id, user.id, start_from="external_design", llm=_generation_llm()
+    )
+    user.review_enabled = True
+    redis = FakeRedis()
+    key = claim_key(finding_id, {"external_design": 2})
+    await redis.set(key, "1", nx=True, ex=600)  # 先に走った判定が置いた札
+    judge = _judge()
+
+    assert await FixCheckService(db_session, redis=redis, llm=judge).run_for(project, user) == []  # type: ignore[arg-type]
+    assert judge.structured_messages == []
+
+    await redis.delete(key)
+    [check] = await FixCheckService(db_session, redis=redis, llm=judge).run_for(project, user)  # type: ignore[arg-type]
+    assert check.finding_id == finding_id
+    assert await redis.get(key) == "1"  # 判定した札は残す(期限まで同じ版を判定させない)
 
 
 async def test_no_judge_when_review_off_or_without_key(db_session: AsyncSession) -> None:

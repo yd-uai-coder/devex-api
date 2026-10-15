@@ -64,8 +64,18 @@ class FakeRedis:
         """key の値を返す(無ければ None)。"""
         return self._values.get(key)
 
-    async def set(self, key: str, value: str, *, ex: int | None = None) -> bool:  # noqa: ARG002
-        """key に値を設定する。`ex`(TTL秒)はテストでは失効させないので記録しない。"""
+    async def set(
+        self,
+        key: str,
+        value: str,
+        *,
+        ex: int | None = None,  # noqa: ARG002
+        nx: bool = False,
+    ) -> bool | None:
+        """key に値を設定する。`ex`(TTL秒)はテストでは失効させないので記録しない。
+        `nx`なら key が無いときだけ設定し、あれば None を返す(redis-py と同じ)。"""
+        if nx and key in self._values:
+            return None
         self._values[key] = value
         return True
 

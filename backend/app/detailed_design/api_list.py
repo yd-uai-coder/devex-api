@@ -24,6 +24,8 @@ _TRIGGER = re.compile(rf"^\s*({'|'.join(HTTP_METHODS)})\s+(/[^\s(（]*)", re.IGN
 _PATH_PARAM = re.compile(r"\{[^}]*\}")
 # 表の区切り行(|---|:---:|)
 _SEPARATOR_CELL = re.compile(r"^:?-{3,}:?$")
+# エラー欄の HTTP ステータス(4xx・5xx)
+_STATUS = re.compile(r"(?<!\d)([45]\d\d)(?!\d)")
 
 
 @dataclass(frozen=True)
@@ -34,10 +36,16 @@ class ApiEndpoint:
     path: str
     summary: str
     screens: tuple[str, ...]
+    errors: str = ""  # 「エラー」の列(内部設計書 3.3節の表のように列が無ければ空)
 
     @property
     def key(self) -> str:
         return endpoint_key(self.method, self.path)
+
+
+def error_statuses(errors: str) -> list[str]:
+    """API の「エラー」欄から HTTP ステータス(4xx・5xx)を、出てきた順・重複なしで取り出す。"""
+    return list(dict.fromkeys(_STATUS.findall(errors)))
 
 
 def normalize_path(path: str) -> str:
@@ -70,7 +78,7 @@ def extract_api_endpoints(
 ) -> list[ApiEndpoint]:
     """外部設計書の2.6節の表から、APIを表の順に取り出す。節や表が無ければ空。
 
-    列は見出しの名前で探す(「メソッド」「パス」は必須、「概要」「関連画面」は任意)。
+    列は見出しの名前で探す(「メソッド」「パス」は必須、「概要」「関連画面」「エラー」は任意)。
     同じキーのAPIが2行あれば、最初の行だけを残す。`section_number`で別の節も読める
     (内部設計書の 3.3節のAPIエンドポイント一覧。メソッドの列が無い表は読み飛ばす)。"""
     section = extract_section(markdown, section_number)
@@ -109,7 +117,13 @@ def is_separator_row(cells: list[str]) -> bool:
 
 def _header_columns(cells: list[str]) -> dict[str, int] | None:
     """見出し行から列の位置を決める。メソッドとパスの列が無い表は対象外(`None`)。"""
-    names = {"method": "メソッド", "path": "パス", "summary": "概要", "screens": "関連画面"}
+    names = {
+        "method": "メソッド",
+        "path": "パス",
+        "summary": "概要",
+        "screens": "関連画面",
+        "errors": "エラー",
+    }
     columns = {
         key: index
         for key, label in names.items()
@@ -135,4 +149,6 @@ def _endpoint_from_row(cells: list[str], columns: dict[str, int]) -> ApiEndpoint
         for screen in re.split(r"[/、,]", cell("screens"))
         if screen.strip() and screen.strip() not in ("—", "-", "なし")
     )
-    return ApiEndpoint(method=method, path=path, summary=cell("summary"), screens=screens)
+    return ApiEndpoint(
+        method=method, path=path, summary=cell("summary"), screens=screens, errors=cell("errors")
+    )

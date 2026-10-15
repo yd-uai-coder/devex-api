@@ -102,11 +102,15 @@ _POINTS_JUDGE_PROMPT = (
     "ほかの観点のことを書いた発言を、この観点の根拠にしない。\n"
     "・ユーザーが自分の言葉で内容を書いたら、AIの例や選択肢と似ていてもdecidedにする。"
     "adoptedは、選択肢を選んだ・AIの提案に「それでよい」などと同意しただけの場合。\n"
+    "・ユーザーが「おすすめでよい」「おまかせ」のように判断を委ねたとき、直前のAIの提案に"
+    "具体的な値・方式(回数・時間・方式の名前など)が無ければopenにする"
+    "(値の無い方針に同意しただけでは決まっていない)。\n"
     "・今の状態がopen以外の観点は、ユーザーが言い直した場合だけ変える。\n"
     "・規模がpublic(誰でも登録できるサービス)のとき、securityは、誰がどのデータを見られる・"
     "変えられるか(アクセス制御)が分かるまでdecided・adoptedにしない"
     "(ログインの方法だけではopenのままにする)。\n"
-    "・summaryは、決めたことを1文で簡潔に書く(openなら空でよい)。ただし技術スタック(tech)は、"
+    "・summaryは、決めたことを1文で簡潔に書く(openなら空でよい)。"
+    "adoptedなら、同意した提案の具体的な値・方式を書く。ただし技術スタック(tech)は、"
     "ユーザーが挙げた言語・フレームワーク・DB・使うAI(LLM)・置き場所などの名前を1つも落とさずに書く"
     "(設計書の生成はこの要約を読むため)。\n"
     "・scaleは、規模の観点が決まったときだけ、personal(自分と数人)/internal(社内)/"
@@ -148,6 +152,10 @@ _CARD_INSTRUCTIONS = (
     "1文で書く。\n"
     "・おすすめ(recommended)は1つだけ選び、その理由(reason)を、これまでの対話の内容に結びつけて"
     "1文で書く。\n"
+    "・ユーザーが前の問いで「おすすめでよい」「おまかせ」のように判断を委ねた観点は、"
+    "自由に答える観点でも必ず選択肢カードにし、選択肢の名前を具体的な値・方式で書き"
+    "(例: 「ログインの失敗は1分あたり5回まで」)、おすすめを付ける。"
+    "本文で「おすすめを適用します」のように決めたことにしない。\n"
     "聞く観点(キー: 観点(問いの例)):\n"
     "{targets}"
 )
@@ -166,6 +174,17 @@ _MISSING_POINTS_NOTE = (
 _COMPLETION_CLAIM = re.compile(
     r"(揃|そろ)(いました|った)|すべて.*(確認|把握)(でき|し)ました|準備が(整|ととの)い"
     r"|設計書を生成(して|でき|する)|生成(の)?ボタン|ボタンを押"
+)
+# 利用者が判断を AI に委ねた発言。委ねられた観点は、値の無い方針のまま決まったことにせず、
+# 具体的な値・方式の選択肢カードで聞き直す(判定は open に残す。_POINTS_JUDGE_PROMPT の規則)
+_DELEGATION = re.compile(r"おすすめ|お勧め|おまかせ|お任せ|任せ|推奨")
+# 委ねられたときに、返信のプロンプトの最後にコードが足す指示(返信の LLM は、カードを出さずに
+# 本文で「おすすめを適用します」と書いてしまうことがあるため、観点を名指しする)
+_DELEGATED_NOTE = (
+    "利用者は直前の問いの判断を AI に委ねました。{label}を、必ず選択肢カード(cards)1枚で"
+    "聞いてください。選択肢の名前は具体的な値・方式(回数・時間・長さ・方式の名前)で書き、"
+    "おすすめを1つ付けます。本文は短い前置きだけにし、おすすめを適用した・決めた、とは書かないで"
+    "ください。"
 )
 # 返信に問いもカードも無いときに、コードが足す次の問い
 _NEXT_QUESTION_TEMPLATE = "次に、{label}について教えてください。(例: {question})"
@@ -233,6 +252,9 @@ class ChatService:
           生成ボタンを同じ判定から同時に出すため)。
         - 足りなければ、未決の必須の観点とカードにしてよい観点を渡し、本文とカードを構造化出力で
           1回で作る(本文はまとめて1回で返す。トークンごとには流さない)。
+        - 利用者が判断を委ねた(「おすすめでよい」)ときは、次に聞く観点を具体的な値の選択肢カードで
+          聞くよう、コードが返信の指示に添える(`_DELEGATED_NOTE`。判定は値の無い同意を open に
+          残す)。
         - 前の発言のカードのうち答えなかったもの(観点がまだ未決)は、次の返信にコードが付け直す。
           カードが1枚も無く、聞くべき観点が残っているときは、次の問いをコードが本文に足す
           (設問の取りこぼしと、問いの無い返信で止まったように見えるのを防ぐ)。
@@ -295,11 +317,18 @@ class ChatService:
         targets = _next_targets(states, as_scale(project.hearing_scale))
         if carried:
             targets = [point_def(carried[0].point_key)]
+        delegated = (
+            not carried
+            and bool(targets)
+            and targets[0].key != "scale"
+            and bool(_DELEGATION.search(user_message))
+        )
         message, cards = await self._compose_reply(
             project,
             questions=describe_points(targets),
             targets=targets,
             code_card=carried[0] if carried else None,
+            extra_prompt=_DELEGATED_NOTE.format(label=targets[0].label) if delegated else None,
             llm=llm,
         )
         if not is_sufficient(states, as_scale(project.hearing_scale)):

@@ -109,6 +109,16 @@ def test_module_messages_describe_component_and_crud():
     assert "## テーブル\n- reservations" in human
 
 
+def test_module_prompt_places_table_models_with_repositories():
+    """テーブルを定義するモデルのファイルを一覧に置かせる(段階7 がスキーマの単位を置けるように)。"""
+    assert "リポジトリとは別に、【テーブル】のテーブルを定義するモデル(ORM)のファイル" in (
+        MODULE_SYSTEM_PROMPT
+    )
+    assert "責務にはテーブルの名前を書く" in MODULE_SYSTEM_PROMPT
+    # モジュールは構成図のパッケージの下に置くので、構成図にもモデルのパッケージを置かせる
+    assert "モデル(ORM)のパッケージ" in COMPONENT_SYSTEM_PROMPT
+
+
 # --- to_module_drafts ---
 
 

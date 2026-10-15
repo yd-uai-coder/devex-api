@@ -73,6 +73,7 @@ from app.detailed_design.procedure import (
 from app.detailed_design.procedure_basis import ProcedureBasis, procedure_basis
 from app.detailed_design.procedure_coverage import (
     RowOf,
+    error_test_gap,
     has_test_file,
     is_schema_path,
     late_dependencies,
@@ -104,7 +105,7 @@ from app.detailed_design.sequence import (
     sut_participant,
     to_sequence,
 )
-from app.detailed_design.simple_procedure import module_layer
+from app.detailed_design.simple_procedure import module_layer, unit_error_statuses
 from app.detailed_design.stages import ProjectMode
 from app.detailed_design.structure import (
     ModuleListModel,
@@ -886,6 +887,8 @@ def validate_procedure_doc(
       挙げている(`STUB_OUTSIDE_SEQUENCE`。手順に無い依存。手順か観点のどちらかが足りない)
     - 単位が作るファイルの網羅と順序(両モード。`_coverage_issues`): 依存先が後の単位で作られる・
       テストのファイルが無い・テーブルを作る単位が無い
+    - 軽微・手順書: 簡易モードの機能の単位で、API のエラー欄のステータスがテスト観点に1つも無い
+      (`NO_ERROR_TEST`。`_error_test_issues`)
     指摘の`target`は、処理ID・手順ID・パス・単位の ID。`unit`は指摘の出た単位の ID。
     """
     try:
@@ -897,7 +900,12 @@ def validate_procedure_doc(
     )
     issues, matched = _matched_procedures(parsed, basis)
     if basis.mode == "simple":
-        return issues + _simple_procedure_issues(basis, sources) + _coverage_issues(basis, matched)
+        return (
+            issues
+            + _simple_procedure_issues(basis, sources)
+            + _error_test_issues(basis, matched)
+            + _coverage_issues(basis, matched)
+        )
     index = basis.index
     function_list = FunctionListModel.model_validate(sources.stages.get(1) or {})
     triggers = {row.id: row.trigger for row in function_list.functions}
@@ -912,6 +920,29 @@ def validate_procedure_doc(
     for unit in basis.units:
         issues += _unit_design_issues(unit, index)
     return issues + _coverage_issues(basis, matched)
+
+
+def _error_test_issues(
+    basis: ProcedureBasis, matched: list[tuple[UnitProcedure, PlanUnit]]
+) -> list[StageIssue]:
+    """簡易モードの、機能の単位の異常系のテスト観点(軽微。直す先は手順書)。
+
+    詳細設計モードは段階5 の手順の分岐を観点に写すので見ない。簡易モードの参照は流れの表だけで、
+    手順書のテスト観点が正常系だけになりやすい(`NO_ERROR_TEST`)。"""
+    issues: list[StageIssue] = []
+    for doc, unit in matched:
+        if unit.task.kind != "feature":
+            continue
+        missing = error_test_gap(unit_error_statuses(unit.task, basis.book), doc)
+        if missing:
+            uid = unit.unit_id
+            message = (
+                f"{uid} のテスト観点に、API のエラー({'・'.join(missing)})を確かめる異常系が"
+                "ありません(手順書を作り直すか、異常系の観点を足します)。"
+            )
+            stage = PROCEDURE_DOC_STAGE
+            issues.append(_finding("NO_ERROR_TEST", message, uid, "minor", stage, uid))
+    return issues
 
 
 def _coverage_issues(
