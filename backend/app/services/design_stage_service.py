@@ -1,5 +1,5 @@
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 
 import structlog
@@ -165,6 +165,19 @@ class DesignStageService:
         rows, views, documents = await self._load(project)
         sources = await self._sources(project, rows, views, documents)
         return views, sources
+
+    async def approved_stages(
+        self, project: Project, stages: Sequence[int]
+    ) -> dict[int, tuple[int, dict]]:
+        """承認済みで古くない段階の、承認した版と内容(テスト仕様書の入力。承認されていない・古い
+        段階は入れない)。"""
+        rows, views, _ = await self._load(project)
+        approved = _approved_versions(rows, views)
+        return {
+            stage: (version, rows[stage].approved_model or {})
+            for stage in stages
+            if (version := approved.get(stage)) is not None
+        }
 
     async def current_fingerprint(self, project: Project, stage: int) -> Fingerprint:
         """段階が今入力にしているものの版(下書きの生成時に記録する。承認時と同じ規則)。"""

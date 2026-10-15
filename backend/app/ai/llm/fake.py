@@ -68,6 +68,7 @@ from app.documents.requirements.drafting import (
     GeneratedUserScene,
     RequirementsGenerationOutput,
 )
+from app.documents.test_spec.drafting import GeneratedCase, TestSpecGenerationOutput
 from app.hearing import POINT_DEFS, is_point_key
 from app.review.fix_check import FixCheckOut
 from app.review.schemas import ReviewFindingOut, ReviewOutput
@@ -239,6 +240,41 @@ _EXTERNAL_DESIGN_OUTPUT = ExternalDesignGenerationOutput(
             req_ids=["FR-002"],
             response="200 予約の配列",
         ),
+    ],
+)
+
+
+def _case(
+    level: str, target: str, viewpoint: str, expected: str, req_ids: list[str]
+) -> GeneratedCase:
+    return GeneratedCase.model_validate(
+        {
+            "level": level,
+            "target": target,
+            "viewpoint": viewpoint,
+            "precondition": "",
+            "steps": "[E2E Fake] 手順",
+            "expected": expected,
+            "design_gap": "",
+            "req_ids": req_ids,
+            "screens": ["SCR-001"],
+        }
+    )
+
+
+# テスト仕様書の下書き。_EXTERNAL_DESIGN_OUTPUT の2つの API に正常・異常を1件ずつと、画面の流れを
+# 1件(決定的な検証の指摘が0件になる形)。要件ID は偽の要件定義書の FR-001・FR-002。
+_TEST_SPEC_OUTPUT = TestSpecGenerationOutput(
+    target="[E2E Fake] API 2本と予約画面",
+    out_of_scope="なし",
+    environment="Docker Compose。LLM は偽 LLM",
+    done_criteria="Must の要件すべてにテストがある",
+    cases=[
+        _case("integration", "POST /api/v1/reservations", "正常", "201", ["FR-001"]),
+        _case("integration", "POST /api/v1/reservations", "異常", "409", ["FR-001"]),
+        _case("integration", "GET /api/v1/reservations", "正常", "200", ["FR-002"]),
+        _case("integration", "GET /api/v1/reservations", "異常", "401", ["FR-002"]),
+        _case("system", "SCR-001", "正常", "予約が一覧に出る", ["FR-001", "FR-002"]),
     ],
 )
 
@@ -747,6 +783,8 @@ class _FakeStructuredE2e:
             return _INTERNAL_DESIGN_OUTPUT
         if self._schema is plan_doc.ImplementationPlanGenerationOutput:
             return _IMPLEMENTATION_PLAN_OUTPUT
+        if self._schema is TestSpecGenerationOutput:
+            return _TEST_SPEC_OUTPUT
         if self._schema is ReviewOutput:
             return _REVIEW_OUTPUT
         if self._schema is FixCheckOut:

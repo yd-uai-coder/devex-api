@@ -16,6 +16,11 @@ DOC_TYPES_BY_MODE: dict[str, tuple[str, ...]] = {
     "detailed": ("requirements", "external_design"),
 }
 
+# テスト仕様書。両モードで、設計書の後に作る(簡易は4文書に続けて、詳細は段階7の承認の後に
+# `start_from="test_spec"`で)。設計レビュー・自己診断・段階の入力には入れないので、
+# DOC_TYPES_BY_MODE とは別に持つ(doc_generator_service.generation_targets が足す)。
+TEST_SPEC = "test_spec"
+
 # 同一project_id+doc_typeにつき保管する最大バージョン数
 # (docs/internal_design.md 3.2節「バージョニング方針」)。
 MAX_VERSIONS_PER_DOC_TYPE = 3

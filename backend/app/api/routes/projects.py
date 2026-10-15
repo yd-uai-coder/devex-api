@@ -15,6 +15,7 @@ from app.schemas.document import (
     GeneratedDocumentRead,
     GenerationProgressRead,
     GenerationRequest,
+    TestSpecRead,
 )
 from app.schemas.generation import HearingCompletionCheck
 from app.schemas.hearing import (
@@ -200,7 +201,8 @@ async def trigger_generation(
     状態(失敗時に戻す先)をbackground taskへ渡す。
 
     本文の`start_from`は再生成の起点(その文書から下流を作り直す。省略で全部)。モードに無い起点は
-    400、起点より上流の文書が無ければ409。`finding_ids`は再生成の指示に入れる採用した指摘
+    400、起点より上流の文書が無ければ409。`test_spec`はテスト仕様書だけを作る(詳細設計モードは
+    段階1・段階7 が承認済みでなければ409)。`finding_ids`は再生成の指示に入れる採用した指摘
     (プロジェクトに無い指摘は404、採用していない・ヒアリングが原因の指摘は409)。
     """
     start_from = payload.start_from if payload else None
@@ -235,6 +237,12 @@ async def list_generated_documents(
     """生成された設計書(各doc_typeの最新バージョンのみ)一覧を取得する。"""
     documents = await DocGeneratorService(session).list_current_documents(current_project.id)
     return [document_read(d) for d in documents]
+
+@router.get("/{project_id}/test-spec", response_model=TestSpecRead)
+async def get_test_spec(session: SessionDep, current_project: CurrentProjectDep) -> TestSpecRead:
+    """テスト仕様書の今の版と、テストの件数・検証の指摘・古いか。まだ無ければ404。"""
+    return await DocGeneratorService(session).get_test_spec(current_project)
+
 
 @router.get("/{project_id}/documents/{doc_id}/download")
 async def download_generated_document(

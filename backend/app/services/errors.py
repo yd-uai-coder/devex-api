@@ -373,6 +373,14 @@ class GenerationUpstreamMissingError(ConflictError):
     code: ClassVar[str | None] = "GENERATION_UPSTREAM_MISSING"
 
 
+class TestSpecUpstreamNotReadyError(ConflictError):
+    """詳細設計モードで、段階1(処理)・段階7(実装計画)が承認されていない(または古い)のに
+    テスト仕様書を作ろうとしたときに送出する(処理・単位の列をその内容から引くため)。"""
+
+    __test__ = False  # pytest に集めさせない(名前が Test で始まるため)
+    code: ClassVar[str | None] = "TEST_SPEC_UPSTREAM_NOT_READY"
+
+
 class SendbackFindingInvalidError(ConflictError):
     """再生成の指示に、採用していない指摘・ヒアリングが原因の指摘(聞き直しで直す)を渡した場合に
     送出する。"""

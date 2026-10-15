@@ -3,6 +3,7 @@
 from pydantic import BaseModel
 from tests.fixtures.requirements import requirements_output
 from tests.fixtures.simple_documents import implementation_plan_output, internal_design_output
+from tests.fixtures.spec_documents import spec_output
 
 from app.ai.llm.fake import E2eFakeLLM
 from app.documents.external_design import build_model, render_external_design
@@ -22,6 +23,7 @@ from app.documents.requirements.drafting import (
     build_requirements_messages,
 )
 from app.documents.requirements.drafting import to_draft as to_requirements_draft
+from app.documents.test_spec.drafting import TestSpecGenerationOutput
 
 
 def external_design_output(
@@ -61,14 +63,16 @@ def upstream_outputs(
     external_design: ExternalDesignGenerationOutput | None = None,
     internal_design: InternalDesignGenerationOutput | None = None,
     implementation_plan: ImplementationPlanGenerationOutput | None = None,
+    test_spec: TestSpecGenerationOutput | None = None,
 ) -> dict[type[BaseModel], BaseModel]:
-    """FakeLLM の structured_by_schema に渡す、4文書の構造化出力(詳細設計モードは前の2つだけを
-    使う)。"""
+    """FakeLLM の structured_by_schema に渡す、4文書とテスト仕様書の構造化出力(詳細設計モードは
+    前の2つと、段階7の承認の後のテスト仕様書を使う)。"""
     return {
         RequirementsGenerationOutput: requirements or requirements_output(),
         ExternalDesignGenerationOutput: external_design or external_design_output(),
         InternalDesignGenerationOutput: internal_design or internal_design_output(),
         ImplementationPlanGenerationOutput: implementation_plan or implementation_plan_output(),
+        TestSpecGenerationOutput: test_spec or spec_output(),
     }
 
 

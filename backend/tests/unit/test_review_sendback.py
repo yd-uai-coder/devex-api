@@ -171,9 +171,11 @@ async def test_generate_puts_instruction_into_related_documents(db_session: Asyn
 
     humans = [str(messages[-1].content) for messages in llm.structured_messages]
     # 指摘の関連文書は外部設計書だけ。要件定義書・内部設計書・実装計画書には入れない
+    # (最後のテスト仕様書は修正指示を受け取らない)
     assert "## 修正指示\nなし" in humans[0]
     assert f"問題: {design.problem}" in humans[1] and INSTRUCTION_HEAD in humans[1]
-    assert all("## 修正指示\nなし" in h for h in humans[2:])
+    assert all("## 修正指示\nなし" in h for h in humans[2:4])
+    assert all("修正指示" not in h for h in humans[4:])
 
 
 # --- 段階の生成へ渡す ---
