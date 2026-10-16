@@ -393,3 +393,10 @@ class RehearingFindingInvalidError(ConflictError):
     場合に送出する。"""
 
     code: ClassVar[str | None] = "REHEARING_FINDING_INVALID"
+
+class CurrentPasswordMismatchError(BadRequestError):
+    """メールアドレス・パスワードの変更で、今のパスワードが合わない場合に送出する。ログイン中の
+    操作なので 401 にはしない(画面の apiFetch が 401 をセッション切れとみなしてログアウトする
+    ため)。"""
+
+    code: ClassVar[str | None] = "CURRENT_PASSWORD_MISMATCH"

@@ -1,29 +1,36 @@
 import uuid
 from datetime import datetime
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, EmailStr, computed_field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    StringConstraints,
+    computed_field,
+    field_validator,
+)
 
+from app.core.password_policy import password_violations
 from app.review import review_effective
+
+# ユーザーネームの変更で受ける値(前後の空白を除いて1〜255文字。列の長さと同じ上限)
+type UserNameText = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
+]
 
 
 class UserBase(BaseModel):
     """ユーザー関連スキーマ間で共通するフィールドをまとめた基底クラス。"""
 
     email: EmailStr
-    full_name: str | None = None
+    user_name: str | None = None
 
 
 class UserCreate(UserBase):
     """ユーザー登録APIのリクエストボディ。"""
 
     password: str
-
-
-class UserUpdate(BaseModel):
-    """ユーザー更新APIのリクエストボディ（指定したフィールドのみ更新する想定）。"""
-
-    full_name: str | None = None
-    password: str | None = None
 
 
 class UserRead(UserBase):
@@ -51,3 +58,33 @@ class ReviewSettingsUpdate(BaseModel):
     """設計レビューの設定の変更のリクエストボディ。"""
 
     review_enabled: bool
+
+
+class UserNameUpdate(BaseModel):
+    """ユーザーネームの変更(PATCH /users/me)のリクエストボディ。"""
+
+    user_name: UserNameText
+
+
+class EmailUpdate(BaseModel):
+    """メールアドレスの変更(PUT /users/me/email)のリクエストボディ。今のパスワードで本人を
+    確かめる。"""
+
+    new_email: EmailStr
+    current_password: str
+
+
+class PasswordUpdate(BaseModel):
+    """パスワードの変更(PUT /users/me/password)のリクエストボディ。新しいパスワードには登録の
+    画面と同じ規則を課す(合わなければ 422)。"""
+
+    current_password: str
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def _check_policy(cls, value: str) -> str:
+        violations = password_violations(value)
+        if violations:
+            raise ValueError(" / ".join(violations))
+        return value

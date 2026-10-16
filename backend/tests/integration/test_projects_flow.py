@@ -17,7 +17,7 @@ _PASSWORD = "s3cret-pass"
 async def _register_and_login(client: AsyncClient) -> str:
     await client.post(
         "/api/v1/auth/register",
-        json={"email": _EMAIL, "password": _PASSWORD, "full_name": "Flow Checker"},
+        json={"email": _EMAIL, "password": _PASSWORD, "user_name": "Flow Checker"},
     )
     login_response = await client.post(
         "/api/v1/auth/login", json={"email": _EMAIL, "password": _PASSWORD}

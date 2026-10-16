@@ -1,7 +1,7 @@
 """汎用チャットの再試行の共通化と、refresh の寿命の統一のテスト。
 
 SUT: app.services.chat.ChatService.send_message / llm_retry._is_quota_error /
-     auth._set_refresh_cookie
+     refresh_cookie.set_refresh_cookie
 ドライバ: 各テスト関数
 スタブ: _QuotaWorkflow ── Tavily の利用上限超過を出すワークフロー(LangGraph の代わり)。
         FakeRedis は使わない(bypass_rate_limit=True でレート制限を通さない)。
@@ -15,7 +15,7 @@ from fastapi import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from tavily import UsageLimitExceededError
 
-from app.api.routes import auth
+from app.api import refresh_cookie
 from app.core.config import settings
 from app.models.user import User
 from app.services import chat as generic_chat
@@ -59,7 +59,7 @@ async def test_generic_chat_quota_is_llm_quota_exceeded_without_retry(
 def test_refresh_cookie_lives_as_long_as_the_token() -> None:
     response = Response()
 
-    auth._set_refresh_cookie(response, "token")
+    refresh_cookie.set_refresh_cookie(response, "token")
 
     assert settings.REFRESH_TOKEN_EXPIRE_DAYS == 14
     cookie = response.headers["set-cookie"]

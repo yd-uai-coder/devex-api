@@ -1,13 +1,12 @@
 from fastapi import APIRouter, Response, status
 
 from app.api.deps import (
-    REFRESH_TOKEN_COOKIE_NAME,
     ClientIpDep,
     RedisDep,
     RefreshTokenCookieDep,
     SessionDep,
 )
-from app.core.config import settings
+from app.api.refresh_cookie import delete_refresh_cookie, set_refresh_cookie
 from app.schemas.auth import AccessToken, LoginRequest
 from app.schemas.user import UserCreate, UserRead
 from app.services.auth import AuthService
@@ -16,25 +15,6 @@ from app.services.user import UserService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-# Cookie の寿命は JWT・Redis の TTL と同じ設定から導く(食い違うと、サーバーでは有効なのに
-# Cookie が消えていて使えない期間ができる)
-_REFRESH_TOKEN_MAX_AGE_SECONDS = settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600
-_REFRESH_TOKEN_COOKIE_PATH = "/api/v1/auth"
-
-def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
-    """リフレッシュトークンをhttpOnly Secure Cookieに設定する。pathを/api/v1/authに限定し、
-    認証系以外のAPIへの送信を防ぐ(不要な露出面を減らす)。samesite=laxは同一サイト内の遷移・
-    リロードでは送信されつつ、クロスサイトの単純なPOST等では送信されないバランス。secureは
-    本番(ENVIRONMENT=production)でのみ強制する(開発環境はHTTPのため常時強制すると送信されなくなる)。"""
-    response.set_cookie(
-        key=REFRESH_TOKEN_COOKIE_NAME,
-        value=refresh_token,
-        httponly=True,
-        secure=settings.ENVIRONMENT == "production",
-        samesite="lax",
-        max_age=_REFRESH_TOKEN_MAX_AGE_SECONDS,
-        path=_REFRESH_TOKEN_COOKIE_PATH,
-    )
 
 @router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
 async def register(
@@ -44,7 +24,7 @@ async def register(
     IP 単位でレート制限する(大量登録の対策)。"""
     await AuthRateLimiter(redis).enforce_register(ip=client_ip)
     user = await UserService(session).create_user(
-        email=payload.email, password=payload.password, full_name=payload.full_name
+        email=payload.email, password=payload.password, user_name=payload.user_name
     )
     return UserRead.model_validate(user)
 
@@ -64,7 +44,7 @@ async def login(
     auth_service = AuthService(session, redis)
     user = await auth_service.authenticate(email=payload.email, password=payload.password)
     access_token, refresh_token = await auth_service.issue_tokens(user)
-    _set_refresh_cookie(response, refresh_token)
+    set_refresh_cookie(response, refresh_token)
     return AccessToken(access_token=access_token)
 
 
@@ -87,4 +67,4 @@ async def logout(
 ) -> None:
     """リフレッシュトークンをRedisから削除して以後の再利用を無効化し、Cookieも削除する。"""
     await AuthService(session, redis).revoke_refresh_token(refresh_token)
-    response.delete_cookie(REFRESH_TOKEN_COOKIE_NAME, path=_REFRESH_TOKEN_COOKIE_PATH)
+    delete_refresh_cookie(response)

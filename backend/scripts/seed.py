@@ -20,16 +20,16 @@ from app.repositories.prompt_template import PromptTemplateRepository
 from app.services.errors import UserAlreadyExistsError
 from app.services.user import UserService
 
-# ログインフォームに入れる固定ユーザー(full_name = 表示名。ログインは email + password)
+# ログインフォームに入れる固定ユーザー(user_name = ユーザーネーム。ログインは email + password)
 SEED_USER = {
-    "full_name": "sample-user",
+    "user_name": "sample-user",
     "email": "example-user@example.com",
     "password": "Sample-user-0123",
 }
 
 # superuser(レビュー機能のオン・オフを切り替えられるアカウント)
 SEED_SUPERUSER = {
-    "full_name": "sample-super-user",
+    "user_name": "sample-super-user",
     "email": "example-super-user@example.com",
     "password": "Sample-super-user-0123",
 }
@@ -84,7 +84,7 @@ async def seed_users(session: AsyncSession) -> None:
             user = await service.create_user(
                 email=data["email"],
                 password=data["password"],
-                full_name=data["full_name"],
+                user_name=data["user_name"],
             )
         except UserAlreadyExistsError:
             print(f"user already exists: {data['email']} (skip)")

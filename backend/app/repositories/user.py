@@ -12,10 +12,10 @@ class UserRepository(CRUDRepository[User]):
         return await self.find_one(email=email)
 
     async def create(
-        self, *, email: str, hashed_password: str, full_name: str | None = None
+        self, *, email: str, hashed_password: str, user_name: str | None = None
     ) -> User:
         """新規ユーザーをセッションに追加し、flushしてIDを確定させた状態で返す。"""
-        user = User(email=email, hashed_password=hashed_password, full_name=full_name)
+        user = User(email=email, hashed_password=hashed_password, user_name=user_name)
         self._session.add(user)
         await self._session.flush()
         return user

@@ -74,6 +74,19 @@ class AuthService:
             return
         await self._redis.delete(self._redis_key(claims["sub"], claims["jti"]))
 
+    async def revoke_all_refresh_tokens(self, user_id: uuid.UUID) -> int:
+        """その人のリフレッシュトークンをすべて失効させ、消した数を返す(パスワードの変更で、
+        ほかの端末のログインを切る)。鍵は SCAN で探す(KEYS と違い Redis を止めない)。"""
+        keys = [
+            key
+            async for key in self._redis.scan_iter(
+                match=f"{_REFRESH_TOKEN_KEY_PREFIX}:{user_id}:*"
+            )
+        ]
+        if not keys:
+            return 0
+        return await self._redis.delete(*keys)
+
     async def _store_refresh_token(self, *, user_id: uuid.UUID, jti: str, expires_at: int) -> None:
         """発行したリフレッシュトークンのjtiをTTL付きでRedisに保存する。"""
         ttl_seconds = settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60

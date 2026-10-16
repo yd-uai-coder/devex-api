@@ -1,8 +1,12 @@
 """レート制限テスト用の最小 FakeRedis。RateLimiter が使う incr / expire / pipeline / get / set
-だけを実装する(既存 tests/unit/test_auth_service.py の FakeRedis(set/exists/delete)とは別物)。
+と、リフレッシュトークンの失効(AuthService)が使う exists / scan_iter / delete を実装する
+(既存 tests/unit/test_auth_service.py の FakeRedis(set/exists/delete)とは別物)。
 """
 
 from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from fnmatch import fnmatchcase
 
 
 class _FakePipeline:
@@ -35,8 +39,8 @@ class _FakePipeline:
 
 
 class FakeRedis:
-    """redis.asyncio.Redis の incr / expire / pipeline / get / set / delete だけを模した
-    インメモリ実装。"""
+    """redis.asyncio.Redis の incr / expire / pipeline / get / set / delete / exists / scan_iter
+    だけを模したインメモリ実装。"""
 
     def __init__(self) -> None:
         self._counts: dict[str, int] = {}
@@ -79,6 +83,16 @@ class FakeRedis:
         self._values[key] = value
         return True
 
-    async def delete(self, key: str) -> int:
-        """key を消す。消した数を返す。"""
-        return 1 if self._values.pop(key, None) is not None else 0
+    async def delete(self, *keys: str) -> int:
+        """keys を消す。消した数を返す。"""
+        return sum(1 for key in keys if self._values.pop(key, None) is not None)
+
+    async def exists(self, key: str) -> int:
+        """key があれば 1、無ければ 0。"""
+        return int(key in self._values)
+
+    async def scan_iter(self, match: str = "*") -> AsyncIterator[str]:
+        """glob の match に合う key を順に返す(SCAN の代わり。値を持つ key だけを見る)。"""
+        for key in list(self._values):
+            if fnmatchcase(key, match):
+                yield key
