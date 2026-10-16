@@ -58,6 +58,10 @@ class Project(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+    # deleted_at: 削除の印。付いた行は取得・一覧から外し、ロックが空いたときに子の行ごと物理削除する
+    # (生成中のジョブが持つ外部キーのロックで、削除の要求を待たせないため。
+    # app/services/project_deletion.py)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     user: Mapped["User"] = relationship()
     # back_populates="table_name"：相手モデル側とのrelationship"project"と対応させる

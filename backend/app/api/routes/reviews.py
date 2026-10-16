@@ -14,6 +14,7 @@ from app.schemas.review import (
     ReviewGateSummaryRead,
     ReviewRunRead,
 )
+from app.services.project_deletion import purge_deleted_projects
 from app.services.review_service import GateSummary, ReviewService
 
 # UML・段階と同じく、プロジェクト配下の独立したサブツリーとしてprefixにproject_idを含める
@@ -22,9 +23,13 @@ router = APIRouter(prefix="/projects/{project_id}/reviews", tags=["reviews"])
 
 async def execute_review(run_id: uuid.UUID) -> None:
     """`BackgroundTasks`から呼ぶレビューの実行(セッションは自前で開く ──
-    doc_generator_service.generate_documents と同じ理由)。"""
-    async with AsyncSessionLocal() as session:
-        await ReviewService(session).execute(run_id)
+    doc_generator_service.generate_documents と同じ理由)。終わったら、削除の印が付いたプロジェクトの
+    物理削除を試す(実行中はロックで飛ばされているため)。"""
+    try:
+        async with AsyncSessionLocal() as session:
+            await ReviewService(session).execute(run_id)
+    finally:
+        await purge_deleted_projects()
 
 
 def _annotate(finding: ReviewFindingRead, summary: GateSummary) -> ReviewFindingRead:

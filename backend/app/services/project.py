@@ -2,6 +2,7 @@ import uuid
 from dataclasses import dataclass
 
 import structlog
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.project import Project
@@ -18,6 +19,7 @@ from app.services.errors import (
     TooManyFilesError,
     UnsupportedFileTypeError,
 )
+from app.services.generation_progress import GenerationProgressStore
 from app.services.intake_file_processor import ALLOWED_FILE_TYPES, extract_text
 
 logger = structlog.get_logger(__name__)
@@ -94,6 +96,15 @@ class ProjectService:
     async def list_for_user(self, user_id: uuid.UUID) -> list[Project]:
         """指定ユーザーのプロジェクト一覧を取得する。"""
         return await self._projects.list_for_user(user_id)
+
+    async def delete(self, project: Project, *, redis: Redis | None = None) -> None:
+        """プロジェクトに削除の印を付け、生成の進み具合を消す。生成中でも削除できる。
+        行と子の行の物理削除は、呼び出し元がバックグラウンドで行う
+        (app/services/project_deletion.py の purge_deleted_projects)。"""
+        await self._projects.mark_deleted(project)
+        await self._session.commit()
+        await GenerationProgressStore(redis).clear(project.id)
+        logger.info("project_deleted", project_id=str(project.id))
 
     async def get_detail(self, project: Project) -> ProjectDetail:
         """プロジェクトの詳細(初期ヒアリング入力・添付ファイルサマリを含む)を返す。

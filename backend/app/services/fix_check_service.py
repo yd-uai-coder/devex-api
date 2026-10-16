@@ -46,6 +46,12 @@ from app.review import (
 from app.review.fix_check import NOT_FOUND_TEXT
 from app.services.errors import RateLimitExceededError
 from app.services.llm_retry import invoke_structured_with_usage
+from app.services.project_deletion import (
+    VANISHED_ERRORS,
+    commit_if_live,
+    project_vanished,
+    purge_deleted_projects,
+)
 from app.services.rate_limit import RateLimit, RateLimiter
 from app.services.review_service import ReviewService, failure_code
 
@@ -66,7 +72,8 @@ def claim_key(finding_id: uuid.UUID, versions: Mapping[str, int | None]) -> str:
 
 
 async def run_fix_checks(project_id: uuid.UUID, user_id: uuid.UUID) -> None:
-    """`BackgroundTasks`から呼ぶ判定(セッション・Redis は自前で開く。生成と同じ理由)。"""
+    """`BackgroundTasks`から呼ぶ判定(セッション・Redis は自前で開く。生成と同じ理由)。
+    終わったら、削除の印が付いたプロジェクトの物理削除を試す。"""
     redis = get_redis_client()
     try:
         async with AsyncSessionLocal() as session:
@@ -76,6 +83,7 @@ async def run_fix_checks(project_id: uuid.UUID, user_id: uuid.UUID) -> None:
                 await FixCheckService(session, redis=redis).run_for(project, user)
     finally:
         await redis.aclose()
+        await purge_deleted_projects()
 
 
 @dataclass(frozen=True)
@@ -101,26 +109,36 @@ class FixCheckService:
 
     async def run_for(self, project: Project, user: User) -> list[ReviewFixCheck]:
         """「変更あり」の採用した指摘のうち、今の版でまだ判定していないものを判定して commit する。
-        レビューがオフ・判定のモデルを使えない(キーが無い)ときは何もしない。"""
+        レビューがオフ・判定のモデルを使えない(キーが無い)ときは何もしない。判定の間にプロジェクトが
+        削除されたときは、記録せずに空を返す(app/services/project_deletion.py)。"""
         if not review_effective(is_superuser=user.is_superuser, review_enabled=user.review_enabled):
             return []
         if not settings.E2E_FAKE_LLM and not settings.ANTHROPIC_API_KEY and self._llm is None:
             return []
+        project_id = project.id
         candidates = await self._candidates(project)
         checks: list[ReviewFixCheck] = []
-        for candidate in candidates[: settings.JUDGE_MAX_PER_RUN]:
-            key = claim_key(candidate.finding.id, candidate.versions)
-            if not await self._claim(key):
-                continue  # ほかの処理が判定中か判定済み
-            if not await self._within_limit(user):
-                await self._release(key)
-                break
-            check = await self._check(project, candidate)
-            if check is None:
-                await self._release(key)  # 渡す内容が無く判定しなかった
-            else:
-                checks.append(check)
-        await self._session.commit()
+        try:
+            for candidate in candidates[: settings.JUDGE_MAX_PER_RUN]:
+                key = claim_key(candidate.finding.id, candidate.versions)
+                if not await self._claim(key):
+                    continue  # ほかの処理が判定中か判定済み
+                if not await self._within_limit(user):
+                    await self._release(key)
+                    break
+                check = await self._check(project, candidate)
+                if check is None:
+                    await self._release(key)  # 渡す内容が無く判定しなかった
+                else:
+                    checks.append(check)
+        except VANISHED_ERRORS:
+            # 判定の記録の flush で、消えた指摘への外部キーの違反になった
+            await self._session.rollback()
+            if await project_vanished(self._session, project_id, job="fix_check"):
+                return []
+            raise
+        if not await commit_if_live(self._session, project_id, job="fix_check"):
+            return []
         return checks
 
     async def _candidates(self, project: Project) -> list[_Candidate]:
