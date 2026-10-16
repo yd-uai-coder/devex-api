@@ -9,6 +9,8 @@ IntakeFileStatus = Literal["processed", "failed"]
 # simple: 簡易ドキュメントモード(4文書の一括生成)
 # detailed: 詳細設計モード(docs/external_design.md 2.7節)
 ProjectMode = Literal["simple", "detailed"]
+# 一覧の1ページの件数(docs/external_design.md 2.12節)
+PROJECT_PAGE_SIZE = 10
 
 
 class IntakeFileRead(BaseModel):
@@ -34,6 +36,13 @@ class ProjectRead(BaseModel):
     mode: ProjectMode
     created_at: datetime
     updated_at: datetime
+
+
+class ProjectListPage(BaseModel):
+    """一覧の1ページ分と、条件に合う全件数(画面がページの数を出すため)。"""
+
+    items: list[ProjectRead]
+    total: int
 
 
 class ProjectDetail(ProjectRead):

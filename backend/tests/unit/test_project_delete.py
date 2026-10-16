@@ -56,7 +56,7 @@ async def test_marked_project_is_hidden_from_get_and_list(db_session: AsyncSessi
 
     assert project.deleted_at is not None
     assert await repo.get_by_id(project.id, user_id=project.user_id) is None
-    assert [p.id for p in await repo.list_for_user(project.user_id)] == [kept.id]
+    assert [p.id for p in (await repo.search_for_user(project.user_id))[0]] == [kept.id]
     assert await repo.is_live(project.id) is False
     assert await repo.is_live(kept.id) is True
     assert await repo.is_live(uuid.uuid4()) is False
@@ -88,7 +88,7 @@ async def test_route_returns_after_marking_and_schedules_purge(db_session: Async
     # 削除した後は、取得(すべての /projects/{id}/... が通る依存関数)も一覧も見えない
     with pytest.raises(ProjectNotFoundError):
         await get_current_project(project.id, db_session, user)
-    assert await list_projects(db_session, user) == []
+    assert (await list_projects(db_session, user)).items == []
 
 
 async def test_other_users_project_cannot_be_deleted(db_session: AsyncSession) -> None:

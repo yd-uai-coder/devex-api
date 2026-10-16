@@ -4,7 +4,7 @@ import uuid
 from typing import Annotated
 
 import structlog
-from fastapi import APIRouter, BackgroundTasks, File, Form, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, File, Form, Query, UploadFile, status
 from fastapi.responses import Response, StreamingResponse
 
 from app.api.deps import CurrentProjectDep, CurrentUserDep, RedisDep, SessionDep
@@ -24,7 +24,13 @@ from app.schemas.hearing import (
     HearingPointsRead,
     HearingPointUpdate,
 )
-from app.schemas.project import ProjectDetail, ProjectMode, ProjectRead
+from app.schemas.project import (
+    ProjectDetail,
+    ProjectListPage,
+    ProjectMode,
+    ProjectRead,
+    ProjectStatus,
+)
 from app.services.chat_service import ChatService, ReplyCards
 from app.services.doc_generator_service import (
     DocGeneratorService,
@@ -101,11 +107,20 @@ async def create_project(
     return ProjectRead.model_validate(project)
 
 
-@router.get("", response_model=list[ProjectRead])
-async def list_projects(session: SessionDep, current_user: CurrentUserDep) -> list[ProjectRead]:
-    """認証ユーザーのプロジェクト一覧を取得する。"""
-    projects = await ProjectService(session).list_for_user(current_user.id)
-    return [ProjectRead.model_validate(p) for p in projects]
+@router.get("", response_model=ProjectListPage)
+async def list_projects(
+    session: SessionDep,
+    current_user: CurrentUserDep,
+    q: Annotated[str | None, Query(max_length=100)] = None,
+    mode: ProjectMode | None = None,
+    # クエリの名前は status(複数回で OR)。引数名は fastapi.status とぶつかるため statuses にする
+    statuses: Annotated[list[ProjectStatus] | None, Query(alias="status")] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+) -> ProjectListPage:
+    """認証ユーザーのプロジェクト一覧を、タイトルの部分一致・モード・進行状態で絞り、10件ずつ返す。"""
+    return await ProjectService(session).list_page(
+        current_user.id, q=q, mode=mode, statuses=statuses or (), page=page
+    )
 
 
 @router.get("/{project_id}", response_model=ProjectDetail)

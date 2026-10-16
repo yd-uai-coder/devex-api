@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import structlog
@@ -10,7 +11,15 @@ from app.repositories.chat_history import ChatHistoryRepository
 from app.repositories.intake_file import IntakeFileRepository
 from app.repositories.project import ProjectRepository
 from app.repositories.prompt_template import PromptTemplateRepository
-from app.schemas.project import IntakeFileRead, ProjectDetail, ProjectMode
+from app.schemas.project import (
+    PROJECT_PAGE_SIZE,
+    IntakeFileRead,
+    ProjectDetail,
+    ProjectListPage,
+    ProjectMode,
+    ProjectRead,
+    ProjectStatus,
+)
 from app.services.doc_generator_service import DocGeneratorService
 from app.services.errors import (
     FileTooLargeError,
@@ -93,9 +102,30 @@ class ProjectService:
         logger.info("project_created", project_id=str(project.id))
         return project
 
-    async def list_for_user(self, user_id: uuid.UUID) -> list[Project]:
-        """指定ユーザーのプロジェクト一覧を取得する。"""
-        return await self._projects.list_for_user(user_id)
+    async def list_page(
+        self,
+        user_id: uuid.UUID,
+        *,
+        q: str | None = None,
+        mode: ProjectMode | None = None,
+        statuses: Sequence[ProjectStatus] = (),
+        page: int = 1,
+    ) -> ProjectListPage:
+        """指定ユーザーのプロジェクト一覧の1ページ(10件)と、条件に合う全件数を返す。
+        `q`は前後の空白を落とし、空なら絞らない。
+        最後より後のページは、空の items と全件数を返す。"""
+        keyword = q.strip() if q else ""
+        items, total = await self._projects.search_for_user(
+            user_id,
+            q=keyword or None,
+            mode=mode,
+            statuses=statuses,
+            offset=(page - 1) * PROJECT_PAGE_SIZE,
+            limit=PROJECT_PAGE_SIZE,
+        )
+        return ProjectListPage(
+            items=[ProjectRead.model_validate(p) for p in items], total=total
+        )
 
     async def delete(self, project: Project, *, redis: Redis | None = None) -> None:
         """プロジェクトに削除の印を付け、生成の進み具合を消す。生成中でも削除できる。

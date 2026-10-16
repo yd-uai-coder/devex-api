@@ -1,10 +1,16 @@
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from app.models.project import Project
 from app.repositories.base import CRUDRepository
+
+
+def _escape_like(text: str) -> str:
+    """LIKE のワイルドカード(`%`・`_`)とエスケープの文字(`\\`)を、文字として一致させる形にする。"""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 class ProjectRepository(CRUDRepository[Project]):
@@ -34,11 +40,39 @@ class ProjectRepository(CRUDRepository[Project]):
         削除の印が付いたプロジェクトは取得しない。"""
         return await self.find_one(id=project_id, user_id=user_id, deleted_at=None)
 
-    async def list_for_user(self, user_id: uuid.UUID) -> list[Project]:
-        """指定ユーザーのプロジェクト一覧を更新日時の降順で取得する(削除の印が付いたものは除く)。"""
-        return await self.list_all(
-            order_by=Project.updated_at.desc(), user_id=user_id, deleted_at=None
+    async def search_for_user(
+        self,
+        user_id: uuid.UUID,
+        *,
+        q: str | None = None,
+        mode: str | None = None,
+        statuses: Sequence[str] = (),
+        offset: int = 0,
+        limit: int | None = None,
+    ) -> tuple[list[Project], int]:
+        """指定ユーザーのプロジェクトを条件で絞り、更新日時の降順で1ページ分と、条件に合う全件数を返す
+        (削除の印が付いたものは除く)。`q`はタイトルの部分一致(大文字・小文字を区別しない。
+        `%`・`_`も文字として扱う)、`statuses`はどれかに一致(空なら絞らない)、条件どうしは AND。"""
+        conditions = [Project.user_id == user_id, Project.deleted_at.is_(None)]
+        if q:
+            conditions.append(Project.title.ilike(f"%{_escape_like(q)}%", escape="\\"))
+        if mode is not None:
+            conditions.append(Project.mode == mode)
+        if statuses:
+            conditions.append(Project.status.in_(statuses))
+
+        total_stmt = select(func.count()).select_from(Project).where(*conditions)
+        total = (await self._session.execute(total_stmt)).scalar_one()
+        # 更新日時が同じ行でもページの境目が揺れないよう、id でも並べる
+        stmt = (
+            select(Project)
+            .where(*conditions)
+            .order_by(Project.updated_at.desc(), Project.id.desc())
+            .offset(offset)
+            .limit(limit)
         )
+        items = list((await self._session.execute(stmt)).scalars())
+        return items, total
 
     async def mark_deleted(self, project: Project) -> None:
         """削除の印を付ける。印だけの更新なので、生成中のジョブが持つ外部キーのロックを待たない。"""
