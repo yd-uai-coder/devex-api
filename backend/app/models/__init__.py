@@ -11,6 +11,8 @@ from app.models.review import ReviewFinding, ReviewFixCheck, ReviewRun
 from app.models.uml_diagram import UmlDiagram
 from app.models.uml_generation_run import UmlGenerationRun
 from app.models.user import User
+from app.models.user_api_key import UserApiKey
+from app.models.user_model_setting import UserModelSetting
 
 # alembicにimportさせるモデル
 __all__ = [
@@ -30,4 +32,6 @@ __all__ = [
     "UmlDiagram",
     "UmlGenerationRun",
     "User",
+    "UserApiKey",
+    "UserModelSetting",
 ]

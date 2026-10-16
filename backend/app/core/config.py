@@ -75,6 +75,15 @@ class Settings(BaseSettings):
     JUDGE_MAX_PER_RUN: int = 10
     JUDGE_RATE_LIMIT_PER_DAY: int = 200
 
+    # ユーザーが登録する API キーを暗号化する Fernet の鍵(カンマ区切りで複数。先頭で暗号化し、
+    # すべてで復号する。鍵を回すときは新しい鍵を先頭に足し、古い鍵を後ろに残す)。
+    # 無いときはキーの登録だけが 503 になり、既定(上の環境変数)のキーでの利用は続く。
+    ENCRYPTION_KEY: str | None = None
+    # API キーの登録(保存のときの確かめ)の、ユーザーごとの1時間の上限
+    API_KEY_RATE_LIMIT_PER_HOUR: int = 10
+    # キーの確かめ(モデルの一覧の取得)の最大待機秒数
+    API_KEY_CHECK_TIMEOUT_SECONDS: float = 10.0
+
     # trueの場合、get_gemini_llm()は実際のGemini APIを呼ばず、
     # app/ai/llm/fake.pyの決定論的なE2eFakeLLMを返す
     # 既定はfalseで、次のバリデータによりENVIRONMENT=production下でtrueにすることは

@@ -58,3 +58,15 @@ class BadGatewayError(AppError):
     """外部サービス（LLMや検索APIなど）呼び出しが失敗した場合に送出する例外（HTTP 502に対応）。"""
 
     status_code: ClassVar[int] = 502
+
+
+class UnprocessableEntityError(AppError):
+    """形は正しいが、内容をサーバーの規則で受け付けられない場合に送出する例外（HTTP 422に対応）。"""
+
+    status_code: ClassVar[int] = 422
+
+
+class ServiceUnavailableError(AppError):
+    """サーバーの設定が足りず、その機能を今は使えない場合に送出する例外（HTTP 503に対応）。"""
+
+    status_code: ClassVar[int] = 503

@@ -6,8 +6,10 @@ from app.core.errors import (
     ConflictError,
     ForbiddenError,
     NotFoundError,
+    ServiceUnavailableError,
     TooManyRequestsError,
     UnauthorizedError,
+    UnprocessableEntityError,
 )
 
 
@@ -400,3 +402,35 @@ class CurrentPasswordMismatchError(BadRequestError):
     ため)。"""
 
     code: ClassVar[str | None] = "CURRENT_PASSWORD_MISMATCH"
+
+class EncryptionUnavailableError(ServiceUnavailableError):
+    """API キーを暗号化する鍵(ENCRYPTION_KEY)がサーバーに無い、または鍵の形が正しくない場合に
+    送出する。キーの登録だけを断り、既定(環境変数)のキーでの利用は続く。"""
+
+    code: ClassVar[str | None] = "ENCRYPTION_UNAVAILABLE"
+
+class DecryptionFailedError(Exception):
+    """登録済みの API キーの暗号文を、今の鍵のどれでも復号できない場合に送出する(鍵を替えて古い鍵を
+    残さなかったときなど)。HTTP の応答にはせず、呼び出し側が「登録し直す」状態に読み替える。"""
+
+class ModelNotInCatalogError(UnprocessableEntityError):
+    """用途に選んだモデルが、選べるモデルの表(app/ai/llm/catalog.py)に無い場合に送出する。"""
+
+    code: ClassVar[str | None] = "MODEL_NOT_IN_CATALOG"
+
+class ModelProviderKeyRequiredError(UnprocessableEntityError):
+    """superuser でないユーザーが、自分のキーの無い provider を、既定値と違う provider の用途に
+    選んだ場合に送出する(既定のキーで使えるのは既定値と同じ provider だけ)。"""
+
+    code: ClassVar[str | None] = "MODEL_PROVIDER_KEY_REQUIRED"
+
+class ApiKeyInvalidError(UnprocessableEntityError):
+    """登録しようとした API キーを、provider が無効と答えた(400・401・403)場合に送出する。"""
+
+    code: ClassVar[str | None] = "API_KEY_INVALID"
+
+class ApiKeyCheckFailedError(BadGatewayError):
+    """API キーの確かめ(モデルの一覧の取得)が、タイムアウト・5xx・接続の失敗で結論を出せなかった
+    場合に送出する。キーは保存しない。"""
+
+    code: ClassVar[str | None] = "API_KEY_CHECK_FAILED"
