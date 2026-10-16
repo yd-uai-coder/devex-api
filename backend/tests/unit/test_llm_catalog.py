@@ -39,3 +39,10 @@ def test_purposes_cover_four_roles_and_judge_recommends_low_cost() -> None:
     assert [p.purpose for p in PURPOSES] == list(Purpose)
     low_cost = [p.purpose for p in PURPOSES if p.recommend_low_cost]
     assert low_cost == [Purpose.JUDGE]
+
+
+def test_every_model_has_a_timeout() -> None:
+    assert all(m.timeout_seconds > 0 for m in CATALOG)
+    # 3.8 Flash は1回の呼び出しが最大約176秒かかった(Flash-Lite の30秒では収まらない)
+    flash = find_model(Provider.GEMINI, "gemini-3.8-flash")
+    assert flash is not None and flash.timeout_seconds > 176

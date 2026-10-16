@@ -1,3 +1,4 @@
+import contextlib
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -24,12 +25,14 @@ from app.services.doc_generator_service import DocGeneratorService
 from app.services.errors import (
     FileTooLargeError,
     InvalidProjectNameError,
+    LlmUnavailableError,
     PromptTemplateNotFoundError,
     TooManyFilesError,
     UnsupportedFileTypeError,
 )
 from app.services.generation_progress import GenerationProgressStore
 from app.services.intake_file_processor import ALLOWED_FILE_TYPES, extract_text
+from app.services.llm_resolver import LlmResolver
 
 logger = structlog.get_logger(__name__)
 
@@ -96,7 +99,7 @@ class ProjectService:
         )
 
         for file in files:
-            await self._ingest_file(project.id, file)
+            await self._ingest_file(project.id, user_id, file)
 
         await self._session.commit()
         logger.info("project_created", project_id=str(project.id))
@@ -165,14 +168,22 @@ class ProjectService:
         if len(file.data) > MAX_FILE_SIZE_BYTES:
             raise FileTooLargeError(f"ファイルサイズが上限を超えています: {file.filename}")
 
-    async def _ingest_file(self, project_id: uuid.UUID, file: UploadedFileInput) -> None:
+    async def _ingest_file(
+        self, project_id: uuid.UUID, user_id: uuid.UUID, file: UploadedFileInput
+    ) -> None:
         """1ファイルをテキスト化し、intake_filesへ記録する。成功時はchat_historiesにも追記する
         (sender='attachment' ── チャット画面には表示しないが、ヒアリング対話・ドキュメント生成
         双方のLLMコンテキストとしては引き続き使う。ファイル名自体は_format_intake_summaryが
         intake要約側に表示する)。テキスト化に失敗しても例外は送出しない(ヒアリング自体を
-        ブロックしないため)。"""
+        ブロックしないため)。PDFは持ち主の Gemini(自分のキー、無ければ既定)で読む。"""
         file_type = _resolve_file_type(file.filename)
-        extracted_text, error_message = await extract_text(file_type=file_type, data=file.data)
+        llm = None
+        if file_type == "pdf":
+            with contextlib.suppress(LlmUnavailableError):
+                llm = (await LlmResolver(self._session).resolve_pdf_reader(user_id)).llm
+        extracted_text, error_message = await extract_text(
+            file_type=file_type, data=file.data, llm=llm
+        )
         status = "processed" if extracted_text is not None else "failed"
         await self._intake_files.create(
             project_id=project_id,

@@ -34,7 +34,7 @@ from app.review.gates import (
     stage_targets,
 )
 from app.review.known_issues import known_issues
-from app.review.policy import review_effective
+from app.review.policy import review_allowed, review_effective
 from app.review.prompt import (
     REVIEW_SYSTEM_PROMPT,
     build_points_table,
@@ -113,6 +113,7 @@ __all__ = [
     "rehearing_points",
     "render_findings",
     "render_notice",
+    "review_allowed",
     "review_effective",
     "sort_findings",
     "stage_known_issues",

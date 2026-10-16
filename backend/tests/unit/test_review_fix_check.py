@@ -1,7 +1,7 @@
 """採用した指摘が直ったかの判定(狭い判定のモデル Claude Haiku。シャドーモード)のテスト。
 
-SUT: app/review/fix_check.py(入力の組み立て。純粋関数)・get_judge_llm・FixCheckService・
-     予約札(claim_key・並行の判定の重複を防ぐ)・
+SUT: app/review/fix_check.py(入力の組み立て。純粋関数)・FixCheckService・
+     予約札(claim_key・並行の判定の重複を防ぐ)・自分のキーの判定と1日の上限・
      ReviewFixCheckRepository・ReviewService の今の版の判定(gate_summaries の fix_checks)・
      文書の生成の後の判定(DocGeneratorService.generate)・段階の承認のルートの判定の予約・
      E2E の偽物の判定
@@ -22,9 +22,10 @@ from tests.fixtures.detailed_design import create_detailed_project, function_lis
 from tests.fixtures.external_design import upstream_outputs
 from tests.fixtures.fake_llm import FakeLLM
 from tests.fixtures.fake_redis import FakeRedis
+from tests.fixtures.llm_resolver import stub_llm_resolver
 from tests.fixtures.review import review_finding, review_output
 
-from app.ai.llm.claude import get_judge_llm
+from app.ai.llm.catalog import Provider, Purpose
 from app.ai.llm.fake import E2eFakeLLM
 from app.api.routes.design_stages import approve_design_stage
 from app.core.config import settings
@@ -55,9 +56,6 @@ def _no_key(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(llm_retry, "RETRY_DELAY_SECONDS", 0)
     monkeypatch.setattr(settings, "ANTHROPIC_API_KEY", None)
     monkeypatch.setattr(settings, "E2E_FAKE_LLM", False)
-    get_judge_llm.cache_clear()
-    yield
-    get_judge_llm.cache_clear()
 
 
 # --- 入力の組み立て・判定のモデル ---
@@ -94,16 +92,6 @@ def test_changed_rows_text_adds_new_and_changed_rows() -> None:
     # 対象の行はそのまま、足した行は「新しい」、消えた行は名前だけ
     assert text.splitlines() == ["要件 FR-001: a", "要件 FR-003(新しい): c", "要件 FR-002(消えた)"]
     assert changed_rows_text(RowDiff([], []), ["x"]) == "(対象の行が無い)"
-
-
-def test_judge_llm_uses_configured_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "ANTHROPIC_API_KEY", "test-anthropic-key")
-    monkeypatch.setattr(settings, "JUDGE_MODEL", "claude-judge")
-    llm = get_judge_llm()
-    assert llm.model == "claude-judge" and llm.max_retries == 0
-    get_judge_llm.cache_clear()
-    monkeypatch.setattr(settings, "E2E_FAKE_LLM", True)
-    assert isinstance(get_judge_llm(), E2eFakeLLM)
 
 
 async def test_e2e_fake_returns_fix_check() -> None:
@@ -228,6 +216,30 @@ async def test_no_judge_when_review_off_or_without_key(db_session: AsyncSession)
     user.review_enabled = True
     # キーが無ければ(LLM を差し替えなければ)判定しない
     assert await FixCheckService(db_session).run_for(project, user) == []
+
+
+async def test_judge_with_own_key_skips_daily_limit_and_records_model(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """既定のキーの判定だけを1日の上限で数える。記録には解決したモデルを残す。"""
+    project, user, finding_id = await _adopted_project(db_session)
+    user.review_enabled = False
+    await DocGeneratorService(db_session).generate(
+        project.id, user.id, start_from="external_design", llm=_generation_llm()
+    )
+    user.review_enabled = True
+    monkeypatch.setattr(settings, "JUDGE_RATE_LIMIT_PER_DAY", 0)
+    redis = FakeRedis()
+    gemini = {Purpose.JUDGE: (Provider.GEMINI, "gemini-3.5-flash-lite")}
+
+    stub_llm_resolver(monkeypatch, _judge(), models=gemini, own_key=False)
+    assert await FixCheckService(db_session, redis=redis).run_for(project, user) == []  # type: ignore[arg-type]
+    resolver = stub_llm_resolver(monkeypatch, _judge(), models=gemini, own_key=True)
+    [check] = await FixCheckService(db_session, redis=redis).run_for(project, user)  # type: ignore[arg-type]
+
+    assert check.finding_id == finding_id
+    assert check.model == "gemini-3.5-flash-lite"
+    assert resolver.calls == [(user.id, Purpose.JUDGE)]
 
 
 async def test_failed_judge_is_recorded(db_session: AsyncSession) -> None:

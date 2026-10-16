@@ -10,6 +10,7 @@ from app.services.errors import (
     ReviewNotAllowedError,
     UserAlreadyExistsError,
 )
+from app.services.llm_resolver import LlmResolver
 
 
 class UserService:
@@ -41,10 +42,12 @@ class UserService:
         return user
 
     async def update_review_setting(self, user: User, *, enabled: bool) -> User:
-        """設計レビューの設定を本人が切り替える。superuser 以外は403(保存値を変えさせない。
-        実効値は superuser でなければ常にオフ ── app/review/policy.py)。"""
-        if not user.is_superuser:
-            raise ReviewNotAllowedError("設計レビューの設定は管理者だけが変えられます。")
+        """設計レビューの設定を本人が切り替える。使えないアカウント(superuser でなく、レビューの
+        用途の AI の自分のキーも無い)は403(保存値を変えさせない ── app/review/policy.py)。"""
+        if not await LlmResolver(self._session).review_allowed(user):
+            raise ReviewNotAllowedError(
+                "設計レビューは、マイページでレビューの AI の API キーを登録すると使えます。"
+            )
         user.review_enabled = enabled
         await self._session.commit()
         await self._session.refresh(user)

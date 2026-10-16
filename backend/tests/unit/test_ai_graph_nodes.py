@@ -5,7 +5,7 @@ from app.schemas.generation import FinalAnswer
 
 
 class FakeLLM:
-    """Gemini LLMクライアントの挙動を模したテスト用スタブ。"""
+    """LLMクライアントの挙動を模したテスト用スタブ。"""
 
     def __init__(self, content: str | None = None, structured: FinalAnswer | None = None) -> None:
         # content: invoke()が返すAIMessageの本文
@@ -17,8 +17,9 @@ class FakeLLM:
         """通常のinvoke呼び出しの結果としてAIMessageを返す。"""
         return AIMessage(content=self._content)
 
-    def with_structured_output(self, _schema):
-        """構造化出力用のサブクライアントを返す。"""
+    def with_structured_output(self, _schema, **kwargs):
+        """構造化出力用のサブクライアントを返す(方式は記録する)。"""
+        self.structured_kwargs = kwargs
         return _FakeStructuredLLM(self._structured)
 
 
@@ -60,10 +61,13 @@ def test_finalize_without_search_uses_last_message_content() -> None:
     assert result == {"answer": "direct answer"}
 
 
-def test_draft_response_invokes_llm_and_flags_search(monkeypatch) -> None:
-    monkeypatch.setattr(nodes, "get_gemini_llm", lambda **_: FakeLLM(content="draft"))
+def _config(llm: FakeLLM, evaluator_llm: FakeLLM | None = None) -> dict:
+    """呼び出し側が実行ごとに渡す config(app/services/chat.py と同じ形)。"""
+    return {"configurable": {"llm": llm, "evaluator_llm": evaluator_llm or llm}}
 
-    result = nodes.draft_response({"question": "What is LangGraph?"})
+
+def test_draft_response_invokes_llm_and_flags_search() -> None:
+    result = nodes.draft_response({"question": "What is LangGraph?"}, _config(FakeLLM("draft")))
 
     assert result["needs_search"] is True
     assert result["search_query"] == "What is LangGraph?"
@@ -80,26 +84,30 @@ def test_web_search_extracts_results_from_tool_response(monkeypatch) -> None:
     assert result["search_results"] == [{"url": "https://x"}]
 
 
-def test_evaluate_search_results_returns_llm_content(monkeypatch) -> None:
-    monkeypatch.setattr(nodes, "get_gemini_llm", lambda **_: FakeLLM(content="looks relevant"))
+def test_evaluate_search_results_uses_evaluator_llm() -> None:
+    config = _config(FakeLLM("draft"), evaluator_llm=FakeLLM(content="looks relevant"))
 
     result = nodes.evaluate_search_results(
-        {"question": "q", "search_results": [{"url": "https://x"}]}
+        {"question": "q", "search_results": [{"url": "https://x"}]}, config
     )
 
     assert result == {"evaluation": "looks relevant"}
 
 
-def test_generate_final_answer_returns_structured_content(monkeypatch) -> None:
-    monkeypatch.setattr(
-        nodes,
-        "get_gemini_llm",
-        lambda **_: FakeLLM(structured=FinalAnswer(answer="final answer")),
-    )
+def test_generate_final_answer_returns_structured_content() -> None:
+    llm = FakeLLM(structured=FinalAnswer(answer="final answer"))
 
     result = nodes.generate_final_answer(
-        {"question": "q", "search_results": [], "evaluation": "ok"}
+        {"question": "q", "search_results": [], "evaluation": "ok"}, _config(llm)
     )
 
     assert result["answer"] == "final answer"
+    assert llm.structured_kwargs == {"method": "json_schema"}
     assert result["messages"][0].content == "final answer"
+
+
+def test_finalize_without_search_reads_text_blocks() -> None:
+    # Claude・Gemini は本文をブロックのリストで返すことがある
+    state = {"messages": [AIMessage(content=[{"type": "text", "text": "block answer"}])]}
+
+    assert nodes.finalize_without_search(state) == {"answer": "block answer"}

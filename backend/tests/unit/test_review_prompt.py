@@ -31,11 +31,11 @@ def _states() -> dict[str, PointState]:
     return states
 
 
-def test_review_effective_only_for_superuser_with_setting_on() -> None:
-    assert review_effective(is_superuser=True, review_enabled=True)
-    assert not review_effective(is_superuser=True, review_enabled=False)
-    # superuser でなければ、保存値がオンでもオフ
-    assert not review_effective(is_superuser=False, review_enabled=True)
+def test_review_effective_only_when_allowed_with_setting_on() -> None:
+    assert review_effective(review_allowed=True, review_enabled=True)
+    assert not review_effective(review_allowed=True, review_enabled=False)
+    # 使えないアカウント(superuser でも自分のキーも無い)は、保存値がオンでもオフ
+    assert not review_effective(review_allowed=False, review_enabled=True)
 
 
 def test_points_table_has_key_status_and_required_columns() -> None:

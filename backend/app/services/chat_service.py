@@ -8,7 +8,8 @@ import structlog
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.llm.gemini import get_gemini_llm
+from app.ai.llm.catalog import Purpose
+from app.ai.llm.factory import STRUCTURED_METHOD
 from app.hearing import (
     CARD_LIMIT,
     POINT_DEFS,
@@ -67,6 +68,7 @@ from app.services.errors import (
     InvalidCardAnswerError,
     LLMQuotaExceededError,
 )
+from app.services.llm_resolver import LlmResolver
 from app.services.llm_retry import invoke_with_retry
 
 logger = structlog.get_logger(__name__)
@@ -227,6 +229,12 @@ class ChatService:
         self._hearing_points = HearingPointRepository(session)
 
 
+    async def _chat_llm(self, project: Project, llm):
+        """渡された LLM(テストの差し替え)か、プロジェクトの持ち主のチャットの用途の LLM。"""
+        if llm is not None:
+            return llm
+        return (await LlmResolver(self._session).resolve(project.user_id, Purpose.CHAT)).llm
+
     async def list_history(self, project_id: uuid.UUID) -> list[ChatHistory]:
         """プロジェクトのチャット履歴を送信日時の昇順(発生順)で取得する。"""
         return await self._chat_histories.list_for_project(project_id)
@@ -280,8 +288,8 @@ class ChatService:
             project, user_message, card_answers, continue_optional=continue_optional
         )
 
-        # 「or」の理由：テスト時に本物のGemini APIを叩かせないための差し替え(DI)
-        llm = llm or get_gemini_llm()
+        # 「or」の理由：テスト時に本物のLLMを叩かせないための差し替え(DI)
+        llm = await self._chat_llm(project, llm)
         states: dict[str, PointState] | None
         if needs_judge:
             try:
@@ -415,7 +423,7 @@ class ChatService:
         )
         if extra_prompt is not None:
             messages.append(HumanMessage(content=extra_prompt))
-        structured_llm = llm.with_structured_output(HearingReplyOut)
+        structured_llm = llm.with_structured_output(HearingReplyOut, method=STRUCTURED_METHOD)
 
         async def _call() -> HearingReplyOut:
             result = await structured_llm.ainvoke(messages)
@@ -475,8 +483,10 @@ class ChatService:
             HumanMessage(content=prompt),
         ]
 
-        llm = llm or get_gemini_llm()
-        structured_llm = llm.with_structured_output(HearingPointsJudgement)
+        llm = await self._chat_llm(project, llm)
+        structured_llm = llm.with_structured_output(
+            HearingPointsJudgement, method=STRUCTURED_METHOD
+        )
 
         async def _call() -> HearingPointsJudgement:
             result = await structured_llm.ainvoke(messages)
@@ -616,7 +626,7 @@ class ChatService:
         (書いてあることを聞き直さないため)。判定に失敗しても最初の発話は作る(最初の送信で
         判定し直す)。最初の発話には、判定後の表で次に聞く観点の問いを1つ付ける(規模が未決なら
         規模のカード)。単発呼び出しのため、invoke_with_retryでリトライする。"""
-        llm = llm or get_gemini_llm()
+        llm = await self._chat_llm(project, llm)
         try:
             states = await self.judge_points(project, llm=llm)
             project.hearing_check = _completion_from(states, project.hearing_scale).model_dump()

@@ -21,7 +21,7 @@ import structlog
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.llm.claude import get_judge_llm
+from app.ai.llm.catalog import Purpose
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.infrastructure.redis import get_redis_client
@@ -39,12 +39,12 @@ from app.review import (
     changed_rows_text,
     followup_state,
     gates_for_mode,
-    review_effective,
     target_rows_text,
     version_keys,
 )
 from app.review.fix_check import NOT_FOUND_TEXT
-from app.services.errors import RateLimitExceededError
+from app.services.errors import RateLimitExceededError, ReviewUnavailableError
+from app.services.llm_resolver import LlmResolver, ResolvedLlm, injected_llm
 from app.services.llm_retry import invoke_structured_with_usage
 from app.services.project_deletion import (
     VANISHED_ERRORS,
@@ -56,8 +56,6 @@ from app.services.rate_limit import RateLimit, RateLimiter
 from app.services.review_service import ReviewService, failure_code
 
 logger = structlog.get_logger(__name__)
-
-_STRUCTURED_METHOD = "json_schema"
 
 # 予約札の期限(秒)。判定(Haiku)の時間より十分に長く、版が変わらないまま承認し直す間隔より短く
 _CLAIM_SECONDS = 600
@@ -111,9 +109,10 @@ class FixCheckService:
         """「変更あり」の採用した指摘のうち、今の版でまだ判定していないものを判定して commit する。
         レビューがオフ・判定のモデルを使えない(キーが無い)ときは何もしない。判定の間にプロジェクトが
         削除されたときは、記録せずに空を返す(app/services/project_deletion.py)。"""
-        if not review_effective(is_superuser=user.is_superuser, review_enabled=user.review_enabled):
+        if not await LlmResolver(self._session).review_effective(user):
             return []
-        if not settings.E2E_FAKE_LLM and not settings.ANTHROPIC_API_KEY and self._llm is None:
+        judge = await self._judge_llm(user)
+        if judge is None:
             return []
         project_id = project.id
         candidates = await self._candidates(project)
@@ -123,10 +122,10 @@ class FixCheckService:
                 key = claim_key(candidate.finding.id, candidate.versions)
                 if not await self._claim(key):
                     continue  # ほかの処理が判定中か判定済み
-                if not await self._within_limit(user):
+                if not judge.own_key and not await self._within_limit(user):
                     await self._release(key)
                     break
-                check = await self._check(project, candidate)
+                check = await self._check(project, candidate, judge)
                 if check is None:
                     await self._release(key)  # 渡す内容が無く判定しなかった
                 else:
@@ -184,7 +183,19 @@ class FixCheckService:
             result.append(_Candidate(f, keys, versions, diffs))
         return result
 
-    async def _check(self, project: Project, candidate: _Candidate) -> ReviewFixCheck | None:
+    async def _judge_llm(self, user: User) -> ResolvedLlm | None:
+        """判定の LLM(テストの差し替えか、利用者の判定の用途の解決)。キーが自分にも既定にも
+        無ければ None(判定しない)。"""
+        if self._llm is not None:
+            return injected_llm(self._llm, Purpose.JUDGE)
+        try:
+            return await LlmResolver(self._session).resolve(user.id, Purpose.JUDGE)
+        except ReviewUnavailableError:
+            return None
+
+    async def _check(
+        self, project: Project, candidate: _Candidate, judge: ResolvedLlm
+    ) -> ReviewFixCheck | None:
         """1件を判定して記録する(flushまで)。渡す内容が無い(段階の行を結べない)ときは判定しない。"""
         finding = SendbackFinding.of(candidate.finding)
         before, after = await self._contents(project, finding, candidate.keys, candidate.diffs)
@@ -193,15 +204,11 @@ class FixCheckService:
         values = {
             "finding_id": candidate.finding.id,
             "targets": candidate.versions,
-            "model": settings.JUDGE_MODEL,
+            "model": judge.model,
         }
         try:
-            llm = self._llm or get_judge_llm()
             output, usage = await invoke_structured_with_usage(
-                llm,
-                FixCheckOut,
-                build_fix_check_messages(finding, before, after),
-                method=_STRUCTURED_METHOD,
+                judge.llm, FixCheckOut, build_fix_check_messages(finding, before, after)
             )
         except Exception as exc:  # noqa: BLE001 -- 判定の失敗は記録して、生成・承認を止めない
             logger.warning(
@@ -258,7 +265,8 @@ class FixCheckService:
             await self._redis.delete(key)
 
     async def _within_limit(self, user: User) -> bool:
-        """superuser ごとの1日の判定の回数(Redis を渡さない呼び出しでは数えない)。"""
+        """既定のキーで流す判定の、ユーザーごとの1日の回数(自分のキーの判定は呼び出し側が数えない。
+        Redis を渡さない呼び出しでも数えない)。"""
         if self._redis is None:
             return True
         per_day = RateLimit(window_seconds=86400, max_requests=settings.JUDGE_RATE_LIMIT_PER_DAY)

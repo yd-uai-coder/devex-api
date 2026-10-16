@@ -4,7 +4,9 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 from tests.fixtures.fake_llm import FakeLLM
+from tests.fixtures.llm_resolver import stub_llm_resolver
 
+from app.ai.llm.catalog import Purpose
 from app.api.routes.projects import (
     create_project,
     get_hearing_completion,
@@ -60,6 +62,7 @@ from app.services.errors import (
     HearingPointNotFoundError,
     HearingPointNotOpenError,
     InvalidCardAnswerError,
+    LlmUnavailableError,
 )
 
 # stream_replyは返信の前に観点の判定を呼ぶ。返信の振る舞いを見るテストでは、何も決まらない
@@ -169,7 +172,7 @@ class _RecordingLLM:
         self._judgement = judgement
         self._reply = reply or HearingReplyOut(message="こんにちは")
 
-    def with_structured_output(self, schema):
+    def with_structured_output(self, schema, **_kwargs):
         recorder = self
 
         class _Structured:
@@ -354,7 +357,7 @@ async def test_judge_points_sets_scale_only_when_scale_point_is_settled(
 
 async def test_get_hearing_completion_route_returns_stored_check(db_session: AsyncSession) -> None:
     """GET /projects/{id}/hearing-completion は、チャットの送信時に保存した判定をそのまま返す
-    (LLMを呼ばないので、get_gemini_llmを差し替えなくてよい。観点の表を持たない以前の
+    (LLMを呼ばないので、LLM の解決を差し替えなくてよい。観点の表を持たない以前の
     プロジェクトの5条件の判定も、同じくそのまま返す)。"""
     project = await _create_project(db_session)
     expected = HearingCompletionCheck(
@@ -556,10 +559,7 @@ async def test_create_project_route_generates_opening_ai_reply(
     user = User(email="owner2@example.com", hashed_password="x")
     db_session.add(user)
     await db_session.flush()
-    monkeypatch.setattr(
-        "app.services.chat_service.get_gemini_llm",
-        lambda: _opening_llm("【確認したい事】\n・想定ユーザー"),
-    )
+    resolver = stub_llm_resolver(monkeypatch, _opening_llm("【確認したい事】\n・想定ユーザー"))
 
     project_read = await create_project(
         session=db_session,
@@ -573,6 +573,30 @@ async def test_create_project_route_generates_opening_ai_reply(
     history = await ChatHistoryRepository(db_session).list_for_project(project_read.id)
     assert [h.sender for h in history] == ["intake", "ai"]
     assert "確認したい事" in history[1].message
+    # 最初の発話は、作成した利用者のチャットの用途の LLM で作る
+    assert resolver.calls and all(call == (user.id, Purpose.CHAT) for call in resolver.calls)
+
+
+async def test_create_project_route_succeeds_when_llm_is_unavailable(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """チャットの用途の AI のキーが無く LLM を解決できなくても、プロジェクトは作れる。"""
+    user = User(email="owner-nokey@example.com", hashed_password="x")
+    db_session.add(user)
+    await db_session.flush()
+    stub_llm_resolver(monkeypatch, error=LlmUnavailableError("キーが無い"))
+
+    project_read = await create_project(
+        session=db_session,
+        current_user=user,
+        name="キーなし",
+        system_overview="s",
+        goals_raw="g",
+        files=[],
+    )
+
+    history = await ChatHistoryRepository(db_session).list_for_project(project_read.id)
+    assert [h.sender for h in history] == ["intake"]
 
 
 async def test_create_project_route_succeeds_even_if_opening_reply_fails(
@@ -593,7 +617,7 @@ async def test_create_project_route_succeeds_even_if_opening_reply_fails(
         async def ainvoke(self, messages):  # noqa: ANN001
             raise RuntimeError("quota exceeded")
 
-    monkeypatch.setattr("app.services.chat_service.get_gemini_llm", lambda: _FailingLLM())
+    stub_llm_resolver(monkeypatch, _FailingLLM())
 
     project_read = await create_project(
         session=db_session,

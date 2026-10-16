@@ -329,6 +329,12 @@ class ReviewNotAllowedError(ForbiddenError):
     code: ClassVar[str | None] = "REVIEW_NOT_ALLOWED"
 
 
+class LlmUnavailableError(BadGatewayError):
+    """チャット・生成の LLM を使えない(選んだ AI のキーが自分にも既定にも無い)場合に送出する。"""
+
+    code: ClassVar[str | None] = "LLM_UNAVAILABLE"
+
+
 class ReviewUnavailableError(BadGatewayError):
     """設計レビューの LLM を使えない(API キーが無い)場合に送出する。自動のレビューでは失敗として
     記録し、自己診断に切り替える。"""

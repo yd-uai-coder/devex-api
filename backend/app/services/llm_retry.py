@@ -7,6 +7,7 @@ import structlog
 from langchain_core.messages import BaseMessage
 from pydantic import BaseModel
 
+from app.ai.llm.factory import STRUCTURED_METHOD
 from app.services.errors import GenerationFailedError, LLMQuotaExceededError, LLMTokenLimitError
 from app.uml.generation.failures import unwrap_structured_result
 
@@ -18,6 +19,9 @@ logger = structlog.get_logger(__name__)
 # 汎用チャット(app/services/chat.py)も含め、全てのLLM呼び出しがこの値を使う。
 MAX_GENERATION_ATTEMPTS = 3
 RETRY_DELAY_SECONDS = 1.0
+# 混雑(Gemini の 503・504、Anthropic の 529・503)のときの、試行の間の待ち(1回目の失敗の後、
+# 2回目の失敗の後)。混雑は1秒では引かないことが多いので、待ちを伸ばす
+OVERLOAD_RETRY_DELAYS = (5.0, 15.0)
 
 def prompt_char_count(messages: Sequence[BaseMessage]) -> int:
     """メッセージ列のうち文字列content部分だけの合計文字数を返す(DEBUGログ用)。
@@ -82,7 +86,7 @@ async def invoke_with_retry[T](
                 error_type=type(exc).__name__,
             )
             if attempt < MAX_GENERATION_ATTEMPTS:
-                await asyncio.sleep(RETRY_DELAY_SECONDS)
+                await asyncio.sleep(_retry_delay(exc, attempt))
     logger.error(
         "llm_generation_failed_after_retries",
         max_attempts=MAX_GENERATION_ATTEMPTS,
@@ -92,6 +96,39 @@ async def invoke_with_retry[T](
     raise GenerationFailedError(
         "AIからの応答生成に失敗しました。時間をおいて再度お試しください。"
     ) from last_error
+
+
+def _retry_delay(exc: Exception, attempt: int) -> float:
+    """`attempt` 回目の失敗の後に待つ秒数(混雑は長く、ほかは短く)。"""
+    if _is_overloaded_error(exc):
+        return OVERLOAD_RETRY_DELAYS[min(attempt, len(OVERLOAD_RETRY_DELAYS)) - 1]
+    return RETRY_DELAY_SECONDS
+
+
+def _status_code(exc: Exception) -> int | None:
+    """API の例外の HTTP の状態コード(Gemini は `code`、Anthropic は `status_code`)。"""
+    code = getattr(exc, "code", None)
+    if isinstance(code, int):
+        return code
+    status = getattr(exc, "status_code", None)
+    return status if isinstance(status, int) else None
+
+
+def _is_overloaded_error(exc: Exception) -> bool:
+    """例外が provider の混雑を示すか(Gemini の 503・504、Anthropic の 529(Overloaded)・503)。"""
+    try:
+        from anthropic import APIStatusError as AnthropicStatusError
+    except ImportError:
+        AnthropicStatusError = None
+    try:
+        from google.genai.errors import APIError as GoogleAPIError
+    except ImportError:
+        GoogleAPIError = None
+    if GoogleAPIError is not None and isinstance(exc, GoogleAPIError):
+        return _status_code(exc) in (503, 504)
+    if AnthropicStatusError is not None and isinstance(exc, AnthropicStatusError):
+        return _status_code(exc) in (503, 529)
+    return False
 
 
 def _is_quota_error(exc: Exception) -> bool:
@@ -126,18 +163,25 @@ def _is_quota_error(exc: Exception) -> bool:
 
 
 def _is_input_token_limit_error(exc: Exception) -> bool:
-    """例外がGemini APIの「入力トークン数が上限を超えた」(400相当)を示すものかどうかを判定する。
+    """例外が「入力トークン数が上限を超えた」を示すものかどうかを判定する。
     Gemini APIはこの場合に専用のエラーコードを持たず、400とメッセージで伝えるため、
-    メッセージに"token"を含む400をトークン上限超過とみなす。"""
+    メッセージに"token"を含む400をトークン上限超過とみなす。Anthropic APIは 400 の
+    「prompt is too long」か、要求そのものが大きすぎる 413 で伝える。"""
     try:
         from google.genai.errors import APIError as GoogleAPIError
     except ImportError:
-        return False
-    return (
-        isinstance(exc, GoogleAPIError)
-        and getattr(exc, "code", None) == 400
-        and "token" in str(exc).lower()
-    )
+        GoogleAPIError = None
+    try:
+        from anthropic import APIStatusError as AnthropicStatusError
+    except ImportError:
+        AnthropicStatusError = None
+    message = str(exc).lower()
+    if GoogleAPIError is not None and isinstance(exc, GoogleAPIError):
+        return _status_code(exc) == 400 and "token" in message
+    if AnthropicStatusError is not None and isinstance(exc, AnthropicStatusError):
+        status = _status_code(exc)
+        return status == 413 or (status == 400 and "prompt is too long" in message)
+    return False
 
 
 async def invoke_structured[S: BaseModel](
@@ -150,13 +194,12 @@ async def invoke_structured[S: BaseModel](
 
 
 async def invoke_structured_with_usage[S: BaseModel](
-    llm, schema: type[S], messages: list[BaseMessage], *, method: str | None = None
+    llm, schema: type[S], messages: list[BaseMessage], *, method: str = STRUCTURED_METHOD
 ) -> tuple[S, dict[str, Any]]:
     """`invoke_structured`に、生の応答のトークン数(`usage_metadata`。無ければ空)を添えて返す。
-    `method`は構造化出力の方式(Claude は "json_schema"。省略時はクライアントの既定)。
+    `method`は構造化出力の方式(既定は両 provider で揃えた`STRUCTURED_METHOD`)。
     設計レビューが、回ごとのトークン数を記録するために使う。"""
-    options = {"method": method} if method is not None else {}
-    structured_llm = llm.with_structured_output(schema, include_raw=True, **options)
+    structured_llm = llm.with_structured_output(schema, include_raw=True, method=method)
 
     async def _call() -> tuple[S, dict[str, Any]]:
         result = await structured_llm.ainvoke(messages)

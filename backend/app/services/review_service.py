@@ -20,7 +20,7 @@ from redis.asyncio import Redis
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.llm.claude import get_review_llm
+from app.ai.llm.catalog import Purpose
 from app.core.config import settings
 from app.core.errors import AppError
 from app.detailed_design.document import CHAPTERS, to_markdown, to_plan_markdown
@@ -62,7 +62,6 @@ from app.review import (
     rehearing_message,
     rehearing_points,
     render_notice,
-    review_effective,
     stage_known_issues,
     stage_targets,
     version_keys,
@@ -80,10 +79,10 @@ from app.services.errors import (
     ReviewInProgressError,
     ReviewNotAllowedError,
     ReviewRateLimitExceededError,
-    ReviewUnavailableError,
     SendbackFindingInvalidError,
 )
 from app.services.generation_staleness import is_stale
+from app.services.llm_resolver import LlmResolver, ResolvedLlm, injected_llm
 from app.services.llm_retry import invoke_structured_with_usage
 from app.services.project_deletion import commit_if_live, project_vanished
 from app.services.rate_limit import RateLimit, RateLimiter
@@ -91,7 +90,6 @@ from app.services.rate_limit import RateLimit, RateLimiter
 logger = structlog.get_logger(__name__)
 
 # Claude の構造化出力は JSON Schema で受ける(ツール呼び出しを強制する方式は推奨されない)
-_STRUCTURED_METHOD = "json_schema"
 # 例外に code の無い失敗(想定外の例外)の理由
 _FAILED_CODE = "REVIEW_FAILED"
 _STALE_CODE = "STALE_REVIEW"
@@ -154,13 +152,12 @@ class ReviewService:
     ) -> ReviewRun:
         """区切りのレビューを受け付け、実行中の回を作って commit する。
 
-        使えない(superuser でない・設定がオフ)は403、文書の生成中・レビューの実行中・区切りが
-        そろっていない(文書が無い・段階が承認されていない・モードに無い区切り)は409、API キーが
-        無いは502、1日の上限は429。上限は、レビューのモデルを実際に呼ぶ回だけを数える(使えない・
-        キーが無いときは数えない)。"""
-        if not review_effective(
-            is_superuser=user.is_superuser, review_enabled=user.review_enabled
-        ):
+        使えない(superuser でなく、レビューの用途の AI の自分のキーも無い・設定がオフ)は403、
+        文書の生成中・レビューの実行中・区切りがそろっていない(文書が無い・段階が承認されていない・
+        モードに無い区切り)は409、API キーが自分にも既定にも無いは502、1日の上限は429。上限は、
+        既定のキーでレビューのモデルを実際に呼ぶ回だけを数える(自分のキー・使えない・キーが無い
+        ときは数えない)。"""
+        if not await LlmResolver(self._session).review_effective(user):
             raise ReviewNotAllowedError("設計レビューを使えない設定です。")
         if trigger == "manual" and project.status == "generating":
             raise DocGenerationInProgressError(
@@ -172,15 +169,16 @@ class ReviewService:
         targets = await self.targets_for(project, gate)
         if targets is None:
             raise ReviewDocumentsNotReadyError(_NOT_READY_MESSAGE[gate])
-        if not settings.E2E_FAKE_LLM and not settings.ANTHROPIC_API_KEY and self._llm is None:
-            raise ReviewUnavailableError("設計レビューのAPIキーが設定されていません。")
-        await self._enforce_limit(user)
+        # キーが自分にも既定にも無ければ、ここで ReviewUnavailableError(502)
+        resolved = await self._review_llm(project.user_id)
+        if not resolved.own_key:
+            await self._enforce_limit(user)
         run = await self._runs.create_run(
             project_id=project.id,
             gate=gate,
             targets=targets,
             trigger=trigger,
-            model=settings.REVIEW_MODEL,
+            model=resolved.model,
             snapshots=await self._stage_snapshots(project, gate),
         )
         await self._session.commit()
@@ -196,7 +194,7 @@ class ReviewService:
             gate=DOCUMENTS_GATE,
             targets=await self.document_targets(project) or {},
             trigger=trigger,
-            model=settings.REVIEW_MODEL,
+            model=(await LlmResolver(self._session).model_for(project.user_id, Purpose.REVIEW))[1],
             status="failed",
         )
         await self._runs.finish(run, status="failed", error_code=failure_code(exc))
@@ -240,10 +238,8 @@ class ReviewService:
             messages = build_review_messages(
                 documents, states, as_scale(project.hearing_scale), issues
             )
-            llm = self._llm or get_review_llm()
-            output, usage = await invoke_structured_with_usage(
-                llm, ReviewOutput, messages, method=_STRUCTURED_METHOD
-            )
+            llm = (await self._review_llm(project.user_id)).llm
+            output, usage = await invoke_structured_with_usage(llm, ReviewOutput, messages)
         except Exception as exc:  # noqa: BLE001 -- どの失敗も回に記録し、生成・チャットを止めない
             if isinstance(exc, SQLAlchemyError):
                 # LLM の失敗では書きかけが無いので戻さない(戻すと呼び出し側のオブジェクトまで
@@ -569,8 +565,15 @@ class ReviewService:
                 recovered = True
         return recovered
 
+    async def _review_llm(self, user_id: uuid.UUID) -> ResolvedLlm:
+        """レビューの LLM(テストの差し替えか、持ち主のレビューの用途の解決)。"""
+        if self._llm is not None:
+            return injected_llm(self._llm, Purpose.REVIEW)
+        return await LlmResolver(self._session).resolve(user_id, Purpose.REVIEW)
+
     async def _enforce_limit(self, user: User) -> None:
-        """superuser ごとの1日の回数を数える(Redis を渡さない呼び出しでは数えない)。"""
+        """既定のキーで流す回を、ユーザーごとに1日の回数で数える(自分のキーの回は呼び出し側が
+        数えない。Redis を渡さない呼び出しでも数えない)。"""
         if self._redis is None:
             return
         per_day = RateLimit(window_seconds=86400, max_requests=settings.REVIEW_RATE_LIMIT_PER_DAY)

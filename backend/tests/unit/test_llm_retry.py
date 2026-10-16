@@ -1,7 +1,10 @@
 import asyncio
 
+import anthropic
+import httpx
 import pytest
 import structlog.testing
+from google.genai.errors import APIError as GoogleAPIError
 from langchain_core.messages import HumanMessage
 
 from app.services import llm_retry
@@ -75,7 +78,7 @@ async def test_fails_fast_on_quota_error_without_retrying(monkeypatch: pytest.Mo
     assert "本日の利用上限に達しました" in str(exc_info.value)
 
 async def test_treats_timeout_error_as_transient_retryable_failure() -> None:
-    """`asyncio.TimeoutError`(get_gemini_llm()のtimeout設定超過時にlangchain-google-genaiが
+    """`asyncio.TimeoutError`(LLM のクライアントの timeout 超過時にlangchain-google-genaiが
     送出しうる例外)は、_is_quota_errorに該当しないため他の一時的失敗と同じ扱いになり、
     リトライを経て最終的にGenerationFailedErrorになることを確認する(docs/implementation_plan.md
     4.2節「LLM呼び出しタイムアウト時の挙動確認」に対応するテスト)。"""
@@ -180,3 +183,86 @@ async def test_converts_input_token_limit_api_error_without_retrying() -> None:
         await invoke_with_retry(_call)
 
     assert calls["n"] == 1
+
+
+def _anthropic_error(cls: type, status: int, message: str) -> Exception:
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    return cls(message, response=httpx.Response(status, request=request), body=None)
+
+
+@pytest.mark.parametrize(
+    "make_error",
+    [
+        lambda: GoogleAPIError(503, {"error": {"message": "The model is overloaded"}}),
+        lambda: GoogleAPIError(504, {"error": {"message": "Deadline exceeded"}}),
+        lambda: _anthropic_error(anthropic.OverloadedError, 529, "Overloaded"),
+        lambda: _anthropic_error(anthropic.InternalServerError, 503, "Service unavailable"),
+    ],
+)
+async def test_overloaded_errors_wait_longer_between_attempts(
+    monkeypatch: pytest.MonkeyPatch, make_error
+) -> None:
+    """混雑(Gemini 503・504、Anthropic 529・503)は、試行の間を 5秒 → 15秒 と伸ばす。"""
+    waits: list[float] = []
+
+    async def _record_sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    monkeypatch.setattr(llm_retry.asyncio, "sleep", _record_sleep)
+
+    async def _call() -> str:
+        raise make_error()
+
+    with pytest.raises(GenerationFailedError):
+        await invoke_with_retry(_call)
+
+    assert waits == list(llm_retry.OVERLOAD_RETRY_DELAYS)
+
+
+async def test_other_transient_errors_keep_short_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    waits: list[float] = []
+
+    async def _record_sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    monkeypatch.setattr(llm_retry.asyncio, "sleep", _record_sleep)
+
+    async def _call() -> str:
+        raise GoogleAPIError(500, {"error": {"message": "internal"}})
+
+    with pytest.raises(GenerationFailedError):
+        await invoke_with_retry(_call)
+
+    assert waits == [llm_retry.RETRY_DELAY_SECONDS] * (llm_retry.MAX_GENERATION_ATTEMPTS - 1)
+
+
+@pytest.mark.parametrize(
+    ("cls", "status", "message"),
+    [
+        (anthropic.BadRequestError, 400, "prompt is too long: 250000 tokens > 200000 maximum"),
+        (anthropic.APIStatusError, 413, "Request exceeds the maximum allowed number of bytes"),
+    ],
+)
+async def test_converts_claude_input_too_long_without_retrying(
+    cls: type, status: int, message: str
+) -> None:
+    """Claude の入力の超過(400 の prompt is too long・413)も LLMTokenLimitError にして
+    1回で諦める。"""
+    calls = {"n": 0}
+
+    async def _call() -> str:
+        calls["n"] += 1
+        raise _anthropic_error(cls, status, message)
+
+    with pytest.raises(LLMTokenLimitError):
+        await invoke_with_retry(_call)
+
+    assert calls["n"] == 1
+
+
+async def test_other_claude_bad_request_is_not_token_limit() -> None:
+    async def _call() -> str:
+        raise _anthropic_error(anthropic.BadRequestError, 400, "invalid schema")
+
+    with pytest.raises(GenerationFailedError):
+        await invoke_with_retry(_call)

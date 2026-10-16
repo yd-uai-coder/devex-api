@@ -43,7 +43,7 @@ from langchain_core.messages import BaseMessage
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.llm.gemini import get_gemini_llm
+from app.ai.llm.catalog import Purpose
 from app.core.database import AsyncSessionLocal
 from app.detailed_design.data_flow import (
     MAX_DFD_GROUPS,
@@ -167,6 +167,7 @@ from app.services.errors import (
     DesignStageLockedError,
 )
 from app.services.generation_staleness import is_stale
+from app.services.llm_resolver import LlmResolver
 from app.services.llm_retry import invoke_structured
 from app.services.project_deletion import (
     commit_if_live,
@@ -783,17 +784,19 @@ class DesignStageGenerationService:
         regenerating = _has_draft(stage, row.model, targets, sources)
         fingerprint = await self._stages.current_fingerprint(project, stage)
         sendback = await ReviewService(self._session).sendback_findings(project_id, finding_ids)
-        context = StageGenerationContext(
-            llm=llm or get_gemini_llm(),
-            sources=sources,
-            previous=row.model,
-            fingerprint=fingerprint,
-            session=self._session,
-            project_id=project_id,
-            targets=targets,
-            instruction=build_instruction(sendback),
-        )
         try:
+            if llm is None:
+                llm = (await LlmResolver(self._session).resolve(user_id, Purpose.GENERATION)).llm
+            context = StageGenerationContext(
+                llm=llm,
+                sources=sources,
+                previous=row.model,
+                fingerprint=fingerprint,
+                session=self._session,
+                project_id=project_id,
+                targets=targets,
+                instruction=build_instruction(sendback),
+            )
             model = await generator(context)
         except Exception as exc:
             # 途中の変更(段階2の DFD・データ項目も)を残さず、読み直した行に失敗だけを記録する

@@ -1,6 +1,7 @@
 """汎用チャットの再試行の共通化と、refresh の寿命の統一のテスト。
 
-SUT: app.services.chat.ChatService.send_message / llm_retry._is_quota_error /
+SUT: app.services.chat.ChatService.send_message(LLM の解決と config での受け渡しを含む) /
+     llm_retry._is_quota_error /
      refresh_cookie.set_refresh_cookie
 ドライバ: 各テスト関数
 スタブ: _QuotaWorkflow ── Tavily の利用上限超過を出すワークフロー(LangGraph の代わり)。
@@ -15,6 +16,7 @@ from fastapi import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from tavily import UsageLimitExceededError
 
+from app.ai.llm.factory import DEFAULT_GEMINI_TEMPERATURE
 from app.api import refresh_cookie
 from app.core.config import settings
 from app.models.user import User
@@ -26,9 +28,11 @@ from app.services.errors import LLMQuotaExceededError
 class _QuotaWorkflow:
     def __init__(self) -> None:
         self.calls = 0
+        self.config: dict[str, Any] | None = None
 
-    async def ainvoke(self, _state: dict[str, Any]) -> dict[str, Any]:
+    async def ainvoke(self, _state: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         self.calls += 1
+        self.config = config
         raise UsageLimitExceededError("usage limit exceeded")
 
 
@@ -54,6 +58,11 @@ async def test_generic_chat_quota_is_llm_quota_exceeded_without_retry(
 
     assert raised.value.code == "LLM_QUOTA_EXCEEDED"
     assert workflow.calls == 1
+    # LLM はユーザーのチャットの用途で解決し、実行ごとに渡す(評価は温度0)
+    assert workflow.config is not None
+    configurable = workflow.config["configurable"]
+    assert configurable["llm"].temperature == DEFAULT_GEMINI_TEMPERATURE
+    assert configurable["evaluator_llm"].temperature == 0
 
 
 def test_refresh_cookie_lives_as_long_as_the_token() -> None:

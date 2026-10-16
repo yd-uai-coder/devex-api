@@ -2,11 +2,10 @@ import pytest
 from httpx import AsyncClient
 from tests.fixtures.external_design import upstream_outputs
 from tests.fixtures.fake_llm import FakeLLM
+from tests.fixtures.llm_resolver import stub_llm_resolver
 
 from app.hearing import POINT_DEFS
 from app.schemas.hearing import HearingPointsJudgement, HearingReplyOut, JudgedPointOut
-from app.services import chat_service as chat_service_module
-from app.services import doc_generator_service as doc_generator_service_module
 
 pytestmark = pytest.mark.integration
 
@@ -26,10 +25,8 @@ async def _register_and_login(client: AsyncClient) -> str:
 
 
 def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> FakeLLM:
-    """chat_service.py・doc_generator_service.pyがそれぞれ自前で呼ぶget_gemini_llm()を
-    差し替える。両モジュールともgemini.pyからget_gemini_llmを名前でimportしているため、
-    差し替えは呼び出し元モジュールの名前空間ごとに行う必要がある(モジュールが違えば
-    別の名前束縛になるため、app.ai.llm.gemini側だけを差し替えても効かない)。
+    """チャット・生成のサービスがユーザーと用途から解決する LLM(LlmResolver.resolve)を、
+    すべての用途でこのフェイクに差し替える。
 
     E2eFakeLLM(環境変数E2E_FAKE_LLM経由、ブラウザE2E専用)とは別物 ──
     こちらはpytestプロセス内の関数差し替えであり、実プロセスを外部から叩くPlaywrightからは
@@ -72,8 +69,7 @@ def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> FakeLLM:
             ),
         ],
     )
-    monkeypatch.setattr(chat_service_module, "get_gemini_llm", lambda: fake)
-    monkeypatch.setattr(doc_generator_service_module, "get_gemini_llm", lambda: fake)
+    stub_llm_resolver(monkeypatch, fake)
     return fake
 
 

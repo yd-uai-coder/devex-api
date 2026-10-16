@@ -1,4 +1,4 @@
-"""マイページの用途ごとのモデルと、provider ごとの API キーの登録(Phase 68 の解決が読む)。
+"""マイページの用途ごとのモデルと、provider ごとの API キーの登録(LLM の解決が読む)。
 
 保存の規則:
 - モデルは選べるモデルの表(app/ai/llm/catalog.py)にあるものだけ。
@@ -159,6 +159,17 @@ class LlmSettingsService:
         if row is not None:
             await self._keys.delete(row)
             await self._session.commit()
+
+    async def decrypted_api_key(self, user: User, provider: Provider) -> str | None:
+        """その provider の自分のキー(今の鍵で復号できないとき・登録が無いときは None)。
+        LLM の解決(app/services/llm_resolver.py)が使う。"""
+        row = await self._keys.get_for_user(user.id, provider)
+        if row is None or not encryption_available():
+            return None
+        try:
+            return decrypt_secret(row.encrypted_key)
+        except DecryptionFailedError:
+            return None
 
     async def _defaults(self) -> dict[Purpose, tuple[Provider, str]]:
         """既定値の行(seed が書く)を読み、無い用途は `.env` の値で補う。"""

@@ -5,7 +5,6 @@ from fastapi.responses import Response
 
 from app.api.deps import CurrentProjectDep, CurrentUserDep, SessionDep
 from app.api.responses import content_disposition
-from app.review import review_effective
 from app.schemas.design_stage import (
     DesignImpactRead,
     DesignStageApprove,
@@ -25,6 +24,7 @@ from app.services.design_stage_generation_service import (
 from app.services.design_stage_service import DesignStageService
 from app.services.detailed_design_export_service import BundleFile, DetailedDesignExportService
 from app.services.fix_check_service import run_fix_checks
+from app.services.llm_resolver import LlmResolver
 
 # UMLと同じく、プロジェクト配下の独立したサブツリーとしてprefixにproject_idを含める
 router = APIRouter(prefix="/projects/{project_id}/design-stages", tags=["design-stages"])
@@ -183,9 +183,7 @@ async def approve_design_stage(
     approved = await DesignStageService(session).approve(
         current_project, stage=stage, expected_version=payload.version
     )
-    if review_effective(
-        is_superuser=current_user.is_superuser, review_enabled=current_user.review_enabled
-    ):
+    if await LlmResolver(session).review_effective(current_user):
         background_tasks.add_task(run_fix_checks, current_project.id, current_user.id)
     return approved
 

@@ -7,6 +7,7 @@ from app.api.deps import (
     SessionDep,
 )
 from app.api.refresh_cookie import delete_refresh_cookie, set_refresh_cookie
+from app.api.user_read import user_read
 from app.schemas.auth import AccessToken, LoginRequest
 from app.schemas.user import UserCreate, UserRead
 from app.services.auth import AuthService
@@ -26,7 +27,7 @@ async def register(
     user = await UserService(session).create_user(
         email=payload.email, password=payload.password, user_name=payload.user_name
     )
-    return UserRead.model_validate(user)
+    return await user_read(session, user)
 
 
 @router.post("/login", response_model=AccessToken)

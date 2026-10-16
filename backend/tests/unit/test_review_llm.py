@@ -1,8 +1,8 @@
-"""設計レビューの LLM(取得・構造化出力の呼び出し・失敗の分類・E2E の偽物)のテスト。
+"""設計レビューの LLM(構造化出力の呼び出し・失敗の分類・E2E の偽物)のテスト。
 
-SUT は get_review_llm・invoke_structured_with_usage・_is_quota_error・unwrap_structured_result・
-E2eFakeLLM。ドライバは pytest。スタブは FakeLLM(構造化出力の呼び出しを記録する)だけで、
-get_review_llm の実クライアントはネットワークを呼ばないコンストラクタなので、そのまま確かめる。
+SUT は invoke_structured_with_usage・_is_quota_error・unwrap_structured_result・E2eFakeLLM。
+ドライバは pytest。スタブは FakeLLM(構造化出力の呼び出しを記録する)だけ。クライアントの組み立ては
+tests/unit/test_llm_factory.py、キーが無いときの扱いは tests/unit/test_llm_resolver.py で確かめる。
 """
 
 import anthropic
@@ -12,48 +12,11 @@ from langchain_core.messages import AIMessage, HumanMessage
 from tests.fixtures.fake_llm import FakeLLM
 from tests.fixtures.review import review_output
 
-from app.ai.llm.claude import get_review_llm
 from app.ai.llm.fake import E2eFakeLLM
-from app.core.config import settings
 from app.review import ReviewOutput
-from app.services.errors import LLMTokenLimitError, ReviewUnavailableError
+from app.services.errors import LLMTokenLimitError
 from app.services.llm_retry import _is_quota_error, invoke_structured_with_usage
 from app.uml.generation.failures import unwrap_structured_result
-
-
-@pytest.fixture(autouse=True)
-def _clear_review_llm_cache():
-    get_review_llm.cache_clear()
-    yield
-    get_review_llm.cache_clear()
-
-
-def test_review_llm_is_e2e_fake_when_flag_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "E2E_FAKE_LLM", True)
-
-    assert isinstance(get_review_llm(), E2eFakeLLM)
-
-
-def test_review_llm_without_key_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "E2E_FAKE_LLM", False)
-    monkeypatch.setattr(settings, "ANTHROPIC_API_KEY", None)
-
-    with pytest.raises(ReviewUnavailableError):
-        get_review_llm()
-
-
-def test_review_llm_uses_configured_model_and_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "E2E_FAKE_LLM", False)
-    monkeypatch.setattr(settings, "ANTHROPIC_API_KEY", "test-anthropic-key")
-    monkeypatch.setattr(settings, "REVIEW_MODEL", "claude-test")
-    monkeypatch.setattr(settings, "REVIEW_TIMEOUT_SECONDS", 99.0)
-
-    llm = get_review_llm()
-
-    assert llm.model == "claude-test"
-    assert llm.default_request_timeout == 99.0
-    # 再試行は invoke_with_retry に任せる
-    assert llm.max_retries == 0
 
 
 async def test_structured_with_usage_passes_method_and_returns_tokens() -> None:

@@ -7,6 +7,7 @@ from app.ai.llm.catalog import Provider
 from app.ai.llm.key_check import KeyVerifier, get_key_verifier
 from app.api.deps import ClientIpDep, CurrentUserDep, RedisDep, SessionDep
 from app.api.refresh_cookie import set_refresh_cookie
+from app.api.user_read import user_read
 from app.core.config import settings
 from app.core.crypto import encryption_available
 from app.schemas.auth import AccessToken
@@ -35,9 +36,9 @@ router = APIRouter(prefix="/users", tags=["users"])
 
 
 @router.get("/me", response_model=UserRead)
-async def read_current_user(current_user: CurrentUserDep) -> UserRead:
+async def read_current_user(session: SessionDep, current_user: CurrentUserDep) -> UserRead:
     """アクセストークンから解決した、現在ログイン中のユーザー情報を返す。"""
-    return UserRead.model_validate(current_user)
+    return await user_read(session, current_user)
 
 
 @router.patch("/me", response_model=UserRead)
@@ -46,7 +47,7 @@ async def update_current_user(
 ) -> UserRead:
     """ユーザーネームを変える。"""
     user = await UserService(session).update_user_name(current_user, user_name=body.user_name)
-    return UserRead.model_validate(user)
+    return await user_read(session, user)
 
 
 @router.put("/me/email", response_model=UserRead)
@@ -63,7 +64,7 @@ async def change_email(
     user = await UserService(session).change_email(
         current_user, new_email=body.new_email, current_password=body.current_password
     )
-    return UserRead.model_validate(user)
+    return await user_read(session, user)
 
 
 @router.put("/me/password", response_model=AccessToken)
@@ -93,11 +94,11 @@ async def change_password(
 async def update_review_settings(
     body: ReviewSettingsUpdate, session: SessionDep, current_user: CurrentUserDep
 ) -> UserRead:
-    """設計レビューのオン・オフを本人が切り替える(superuser 以外は403 REVIEW_NOT_ALLOWED)。"""
+    """設計レビューのオン・オフを本人が切り替える(使えないアカウントは403 REVIEW_NOT_ALLOWED)。"""
     user = await UserService(session).update_review_setting(
         current_user, enabled=body.review_enabled
     )
-    return UserRead.model_validate(user)
+    return await user_read(session, user)
 
 
 def _model_settings_read(rows: list[PurposeSetting]) -> ModelSettingsRead:

@@ -24,7 +24,7 @@ class _FakeChunk:
         self.content = content
 
 class FakeLLM:
-    """LLM クライアント(`get_gemini_llm` などの戻り値)の挙動を模したスタブ。"""
+    """LLM クライアント(`build_llm` などの戻り値)の挙動を模したスタブ。"""
 
     def __init__(
         self,

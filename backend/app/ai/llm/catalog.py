@@ -26,12 +26,14 @@ class Purpose(StrEnum):
 
 @dataclass(frozen=True)
 class CatalogModel:
-    """選べるモデル1つ。`note` は画面に出す短い注記(費用・特徴)。"""
+    """選べるモデル1つ。`note` は画面に出す短い注記(費用・特徴)。`timeout_seconds` は1回の呼び出しを
+    待つ上限(応答の速さはモデルで大きく違うので、モデルごとに持つ)。"""
 
     provider: Provider
     model_id: str
     label: str
     note: str
+    timeout_seconds: float
 
 
 @dataclass(frozen=True)
@@ -47,34 +49,44 @@ class PurposeInfo:
 
 PROVIDER_LABELS: dict[Provider, str] = {Provider.GEMINI: "Gemini", Provider.CLAUDE: "Claude"}
 
-# 価格は 100万トークンあたりの入力 / 出力
+# 価格は 100万トークンあたりの入力 / 出力。タイムアウトは実測の最長に余裕を見た値
+# (Flash-Lite は生成の1回が最大約11秒、3.8 Flash は最大約176秒、Sonnet のレビューは 25〜43 秒)
 CATALOG: tuple[CatalogModel, ...] = (
     CatalogModel(
-        Provider.GEMINI, "gemini-3.8-flash", "Gemini 3.8 Flash", "Flash の最新。無料枠は1日20回"
+        Provider.GEMINI,
+        "gemini-3.8-flash",
+        "Gemini 3.8 Flash",
+        "Flash の最新。無料枠は1日20回",
+        240.0,
     ),
     CatalogModel(
-        Provider.GEMINI, "gemini-3.6-flash", "Gemini 3.6 Flash", "Flash"
+        Provider.GEMINI, "gemini-3.6-flash", "Gemini 3.6 Flash", "Flash", 120.0
     ),
     CatalogModel(
-        Provider.GEMINI, "gemini-3.5-flash-lite", "Gemini 3.5 Flash-Lite", "Flash-Lite の最新"
+        Provider.GEMINI, "gemini-3.5-flash-lite", "Gemini 3.5 Flash-Lite", "Flash-Lite の最新", 30.0
     ),
     CatalogModel(
-        Provider.GEMINI, "gemini-3.1-flash-lite", "Gemini 3.1 Flash-Lite", "2027-05-07 以降に終了"
+        Provider.GEMINI,
+        "gemini-3.1-flash-lite",
+        "Gemini 3.1 Flash-Lite",
+        "2027-05-07 以降に終了",
+        30.0,
     ),
     CatalogModel(
-        Provider.CLAUDE, "claude-haiku-5-5", "Claude Haiku 5.5", "低費用($0.10 / $0.50)"
+        Provider.CLAUDE, "claude-haiku-5-5", "Claude Haiku 5.5", "低費用($0.10 / $0.50)", 60.0
     ),
     CatalogModel(
-        Provider.CLAUDE, "claude-sonnet-5-5", "Claude Sonnet 5.5", "標準($2 / $10)"
+        Provider.CLAUDE, "claude-sonnet-5-5", "Claude Sonnet 5.5", "標準($2 / $10)", 180.0
     ),
     CatalogModel(
-        Provider.CLAUDE, "claude-opus-5-5", "Claude Opus 5.5", "高性能($4 / $20)"
+        Provider.CLAUDE, "claude-opus-5-5", "Claude Opus 5.5", "高性能($4 / $20)", 240.0
     ),
     CatalogModel(
         Provider.CLAUDE,
         "claude-fable-5-1",
         "Claude Fable 5.1",
         "最上位($10 / $50)。1回の呼び出しが長い",
+        300.0,
     ),
 )
 

@@ -47,31 +47,21 @@ class Settings(BaseSettings):
     # APIエラーメッセージが後継としてgemini-3.5-flash-liteを案内)。
     GEMINI_MODEL: str = "gemini-3.5-flash-lite"
 
-    # LLM呼び出しの最大待機秒数(langchain-google-genaiのChatGoogleGenerativeAI
-    # が受け取るtimeout秒。
-    # 既定はNone=無制限で、応答がハングした場合クライアントへ何も返せないまま
-    # 無限に待ち続ける恐れがある。
-    # 30.0は暫定値ではなく実測値: 実GOOGLE_API_KEY・実GEMINI_MODELに対して
-    # 800字/3000字/6000字相当の出力を要求する3パターンを実行したところ、
-    # 最大(約4750字出力)でも11.25秒だった(2.96秒/7.28秒/11.25秒)。実測最大値の
-    # 約2.7倍のマージンを見て30秒とする(旧暫定値60秒は実測に基づかない値だった)。
-    LLM_TIMEOUT_SECONDS: float = 30.0
+    # 1回の呼び出しを待つ上限はモデルごとに app/ai/llm/catalog.py に持つ(応答の速さがモデルで
+    # 大きく違うため)
 
     # 設計レビュー(生成とは別のモデルが指摘だけを返す)。キーが無いときはレビューが失敗し、
     # 生成と同じモデルの自己診断に切り替わる(app/services/review_service.py)。
     ANTHROPIC_API_KEY: str | None = None
     REVIEW_MODEL: str = "claude-sonnet-5-5"
-    # レビューは設計書をまとめて読むため生成の1回より長い(実測 25〜43 秒)。生成の
-    # LLM_TIMEOUT_SECONDS とは分け、約4倍のマージンを見る。
-    REVIEW_TIMEOUT_SECONDS: float = 180.0
     REVIEW_MAX_TOKENS: int = 16000
-    # superuser ごとの1日のレビューの回数の上限(費用を抑えるため)
+    # 既定のキーで流すレビューの、ユーザーごとの1日の回数の上限(費用を抑えるため。
+    # 自分のキーなら数えない)
     REVIEW_RATE_LIMIT_PER_DAY: int = 20
     # 狭い判定(採用した指摘は直ったか)のモデル(Claude Haiku)。入力は指摘と対象の行だけで小さい
     JUDGE_MODEL: str = "claude-haiku-5-5"
-    JUDGE_TIMEOUT_SECONDS: float = 60.0
     JUDGE_MAX_TOKENS: int = 1000
-    # 1回の生成・承認の後に判定する指摘の数と、superuser ごとの1日の判定の回数の上限
+    # 1回の生成・承認の後に判定する指摘の数と、既定のキーで流す判定のユーザーごとの1日の回数の上限
     JUDGE_MAX_PER_RUN: int = 10
     JUDGE_RATE_LIMIT_PER_DAY: int = 200
 
@@ -84,7 +74,7 @@ class Settings(BaseSettings):
     # キーの確かめ(モデルの一覧の取得)の最大待機秒数
     API_KEY_CHECK_TIMEOUT_SECONDS: float = 10.0
 
-    # trueの場合、get_gemini_llm()は実際のGemini APIを呼ばず、
+    # trueの場合、LLM の組み立て(app/ai/llm/factory.py)は実際のAPIを呼ばず、
     # app/ai/llm/fake.pyの決定論的なE2eFakeLLMを返す
     # 既定はfalseで、次のバリデータによりENVIRONMENT=production下でtrueにすることは
     # 起動時に拒否される。

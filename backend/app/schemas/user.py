@@ -7,12 +7,10 @@ from pydantic import (
     ConfigDict,
     EmailStr,
     StringConstraints,
-    computed_field,
     field_validator,
 )
 
 from app.core.password_policy import password_violations
-from app.review import review_effective
 
 # ユーザーネームの変更で受ける値(前後の空白を除いて1〜255文字。列の長さと同じ上限)
 type UserNameText = Annotated[
@@ -44,14 +42,10 @@ class UserRead(UserBase):
     created_at: datetime
     # 設計レビューの設定(保存値)。使うかどうかは review_effective で見る
     review_enabled: bool = False
-
-    @computed_field
-    @property
-    def review_effective(self) -> bool:
-        """設計レビューの実効値(superuser かつ設定がオン)。画面はこれで出し分ける。"""
-        return review_effective(
-            is_superuser=self.is_superuser, review_enabled=self.review_enabled
-        )
+    # レビューを使えるアカウントか(superuser、またはレビューの用途の AI の自分のキーがある)と、
+    # 実効値(使えて、設定がオン)。キーの登録を読むので、ルートが app/api/user_read.py で埋める
+    review_allowed: bool = False
+    review_effective: bool = False
 
 
 class ReviewSettingsUpdate(BaseModel):

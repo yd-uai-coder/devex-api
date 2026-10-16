@@ -37,7 +37,11 @@ from app.services.doc_generator_service import (
     document_read,
     generate_documents,
 )
-from app.services.errors import GenerationFailedError, LLMQuotaExceededError
+from app.services.errors import (
+    GenerationFailedError,
+    LLMQuotaExceededError,
+    LlmUnavailableError,
+)
 from app.services.generation_progress import GenerationProgressStore
 from app.services.project import ProjectService, UploadedFileInput
 from app.services.project_deletion import purge_deleted_projects
@@ -100,8 +104,9 @@ async def create_project(
         template_id=template_id,
         mode=mode,
     )
-    with contextlib.suppress(LLMQuotaExceededError, GenerationFailedError):
-        # AIの最初の発話生成に失敗しても、プロジェクト作成自体は成功させる
+    with contextlib.suppress(LLMQuotaExceededError, GenerationFailedError, LlmUnavailableError):
+        # AIの最初の発話生成に失敗しても(キーが無く LLM を使えないときも)、プロジェクト作成
+        # 自体は成功させる
         # (ユーザーは通常通りチャット欄から発話を始められる)
         await ChatService(session).generate_opening_reply(project)
     return ProjectRead.model_validate(project)

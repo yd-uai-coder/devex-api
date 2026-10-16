@@ -8,7 +8,8 @@ from pydantic import BaseModel, ValidationError
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.llm.gemini import extract_text_content, get_gemini_llm
+from app.ai.llm.catalog import Purpose
+from app.ai.llm.content import extract_text_content
 from app.core.database import AsyncSessionLocal
 from app.core.errors import AppError
 from app.detailed_design.function_list import FunctionListModel
@@ -102,7 +103,6 @@ from app.review import (
     DOCUMENTS_GATE,
     build_instruction,
     findings_for,
-    review_effective,
 )
 from app.schemas.document import (
     AssumedRequirementRead,
@@ -127,6 +127,7 @@ from app.services.errors import (
 from app.services.fix_check_service import FixCheckService
 from app.services.generation_progress import GenerationProgress, GenerationProgressStore
 from app.services.generation_staleness import is_stale
+from app.services.llm_resolver import LlmResolver
 from app.services.llm_retry import invoke_structured, invoke_with_retry
 from app.services.project_deletion import (
     commit_if_live,
@@ -360,12 +361,12 @@ class DocGeneratorService:
             project.status = "generating"
             await self._session.commit()
         user = await self._session.get(User, user_id)
-        reviewing = user is not None and review_effective(
-            is_superuser=user.is_superuser, review_enabled=user.review_enabled
-        )
+        reviewing = user is not None and await LlmResolver(self._session).review_effective(user)
 
         try:
-            llm = llm or get_gemini_llm()
+            llm = llm or (
+                await LlmResolver(self._session).resolve(user_id, Purpose.GENERATION)
+            ).llm
             sendback = await ReviewService(self._session).sendback_findings(
                 project_id, finding_ids
             )

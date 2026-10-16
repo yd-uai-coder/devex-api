@@ -2,7 +2,7 @@
 
 `tests/fixtures/fake_llm.py`のFakeLLM(pytestが個々のテストでコンストラクタ引数として
 台本を注入する設計)とは別物。こちらは`docker compose`で起動する実プロセスに対して
-`E2E_FAKE_LLM=true`という環境変数経由でのみ有効化され(app/ai/llm/gemini.py参照)、
+`E2E_FAKE_LLM=true`という環境変数経由でのみ有効化され(app/ai/llm/factory.py参照)、
 Playwrightのブラウザ操作からPythonプロセス内部へ台本を注入する経路が無い。
 そのため、LLMに渡された`messages`自体(システムプロンプトの文言・HumanMessageの件数)を
 手がかりに、外部から一切設定を注入されなくても意味のある応答を返せるよう、ステートレスかつ
@@ -795,7 +795,7 @@ class _FakeStructuredE2e:
 
 
 class E2eFakeLLM:
-    """`E2E_FAKE_LLM=true`のときget_gemini_llm()・get_review_llm()が返すスタブ実装。
+    """`E2E_FAKE_LLM=true`のとき LLM の組み立て(build_llm)がすべての用途に返すスタブ実装。
 
     chat_service.py・doc_generator_service.pyが実際に呼び出すメソッド(astream/ainvoke/
     with_structured_output().ainvoke)のみを実装する(invoke()の同期版は呼ばれないため
@@ -829,5 +829,5 @@ class E2eFakeLLM:
 
 @lru_cache
 def get_e2e_fake_llm() -> E2eFakeLLM:
-    """E2eFakeLLMインスタンスをプロセス内で1つだけ生成する(get_gemini_llmと同じキャッシュ方針)。"""
+    """E2eFakeLLMインスタンスをプロセス内で1つだけ生成する(実クライアントと同じく使い回す)。"""
     return E2eFakeLLM()
