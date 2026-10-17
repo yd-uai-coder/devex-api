@@ -2,16 +2,19 @@ from fastapi import APIRouter, Response, status
 
 from app.api.deps import (
     ClientIpDep,
+    GoogleTokenVerifierDep,
     RedisDep,
     RefreshTokenCookieDep,
     SessionDep,
 )
 from app.api.refresh_cookie import delete_refresh_cookie, set_refresh_cookie
 from app.api.user_read import user_read
-from app.schemas.auth import AccessToken, LoginRequest
+from app.models.user import User
+from app.schemas.auth import AccessToken, GoogleLinkRequest, GoogleLoginRequest, LoginRequest
 from app.schemas.user import UserCreate, UserRead
 from app.services.auth import AuthService
 from app.services.auth_rate_limit import AuthRateLimiter
+from app.services.google_auth import GoogleAuthService
 from app.services.user import UserService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -45,6 +48,51 @@ async def login(
     auth_service = AuthService(session, redis)
     user = await auth_service.authenticate(email=payload.email, password=payload.password)
     access_token, refresh_token = await auth_service.issue_tokens(user)
+    set_refresh_cookie(response, refresh_token)
+    return AccessToken(access_token=access_token)
+
+
+@router.post("/google", response_model=AccessToken)
+async def google_login(
+    payload: GoogleLoginRequest,
+    response: Response,
+    session: SessionDep,
+    redis: RedisDep,
+    client_ip: ClientIpDep,
+    verifier: GoogleTokenVerifierDep,
+) -> AccessToken:
+    """Google の ID トークンでログインする(だれのメールでもなければ新しく登録する)。返し方は
+    /auth/login と同じ。同じメールのアカウントが連携していなければ 409 GOOGLE_LINK_REQUIRED。"""
+    await AuthRateLimiter(redis).enforce_google(ip=client_ip)
+    identity = await verifier.verify(payload.credential)
+    user = await GoogleAuthService(session).login_or_register(identity)
+    return await _issue_login(response, session, redis, user)
+
+
+@router.post("/google/link", response_model=AccessToken)
+async def google_link(
+    payload: GoogleLinkRequest,
+    response: Response,
+    session: SessionDep,
+    redis: RedisDep,
+    client_ip: ClientIpDep,
+    verifier: GoogleTokenVerifierDep,
+) -> AccessToken:
+    """同じメールの既存のアカウントのパスワードで本人を確かめ、Google と連携してログインする。
+    パスワードの試行は、ログインと同じ上限(IP・メール)でも数える。"""
+    limiter = AuthRateLimiter(redis)
+    await limiter.enforce_google(ip=client_ip)
+    identity = await verifier.verify(payload.credential)
+    await limiter.enforce_login(ip=client_ip, email=identity.email)
+    user = await GoogleAuthService(session).link(identity, password=payload.password)
+    return await _issue_login(response, session, redis, user)
+
+
+async def _issue_login(
+    response: Response, session: SessionDep, redis: RedisDep, user: User
+) -> AccessToken:
+    """access を本文で、refresh を Cookie で出す(Google のログインと連携で共有する)。"""
+    access_token, refresh_token = await AuthService(session, redis).issue_tokens(user)
     set_refresh_cookie(response, refresh_token)
     return AccessToken(access_token=access_token)
 

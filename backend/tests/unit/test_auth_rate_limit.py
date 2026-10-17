@@ -1,4 +1,4 @@
-"""`AuthRateLimiter`(login / register のレート制限)。
+"""`AuthRateLimiter`(login / register / Google のレート制限)。
 
 テスト対象 / ドライバ / スタブ:
 - 対象: `app.services.auth_rate_limit.AuthRateLimiter`
@@ -51,3 +51,16 @@ async def test_register_is_limited_per_ip(monkeypatch: pytest.MonkeyPatch) -> No
     await limiter.enforce_register(ip="1.1.1.1")
     with pytest.raises(RateLimitExceededError):
         await limiter.enforce_register(ip="1.1.1.1")
+
+
+async def test_google_is_limited_per_ip_separately_from_login(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "GOOGLE_RATE_LIMIT_PER_IP_PER_HOUR", 1)
+    limiter = AuthRateLimiter(cast(Redis, FakeRedis()))
+
+    await limiter.enforce_google(ip="1.1.1.1")
+    with pytest.raises(RateLimitExceededError):
+        await limiter.enforce_google(ip="1.1.1.1")
+    # パスワードのログインは別のカウンタ
+    await limiter.enforce_login(ip="1.1.1.1", email="a@example.com")

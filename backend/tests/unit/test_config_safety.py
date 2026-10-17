@@ -34,6 +34,11 @@ def test_weak_jwt_secret_in_production_is_rejected() -> None:
         Settings(ENVIRONMENT="production", DEBUG=False, **weak)  # type: ignore[call-arg]
 
 
+def test_fake_google_in_production_is_rejected() -> None:
+    with pytest.raises(ValueError, match="E2E_FAKE_GOOGLE"):
+        Settings(ENVIRONMENT="production", E2E_FAKE_GOOGLE=True, **_BASE)  # type: ignore[call-arg]
+
+
 def test_unsafe_settings_are_allowed_outside_production() -> None:
     weak = {**_BASE, "JWT_SECRET_KEY": "short"}
     Settings(ENVIRONMENT="development", DEBUG=True, **weak)  # type: ignore[call-arg]

@@ -80,6 +80,13 @@ class Settings(BaseSettings):
     # 起動時に拒否される。
     E2E_FAKE_LLM: bool = False
 
+    # Google でのログイン。ID トークンの aud(この OAuth クライアント ID)を確かめる。無いときは
+    # Google のログインだけが 503 になり、メールとパスワードのログインは続く
+    GOOGLE_CLIENT_ID: str | None = None
+    # trueの場合、ID トークンを Google で検証せず、`fake:<sub>:<email>` の形の偽の credential を
+    # 受け付ける(E2E 専用)。E2E_FAKE_LLM と同じく、ENVIRONMENT=production では起動時に拒否される
+    E2E_FAKE_GOOGLE: bool = False
+
     # Rate limit（チャットメッセージ送信のレート制限。単位時間あたりの上限回数）
     CHAT_RATE_LIMIT_PER_HOUR: int = 20
     CHAT_RATE_LIMIT_PER_DAY: int = 100
@@ -89,6 +96,8 @@ class Settings(BaseSettings):
     LOGIN_RATE_LIMIT_PER_IP_PER_HOUR: int = 30
     LOGIN_RATE_LIMIT_PER_EMAIL_PER_HOUR: int = 20
     REGISTER_RATE_LIMIT_PER_IP_PER_HOUR: int = 10
+    # Google でのログインと連携の確かめ(新規の登録も兼ねる)
+    GOOGLE_RATE_LIMIT_PER_IP_PER_HOUR: int = 30
 
     # リクエストボディの上限(バイト)。nginx の client_max_body_size と同じ値に揃える。
     MAX_REQUEST_BODY_BYTES: int = 2_000_000
@@ -119,6 +128,10 @@ class Settings(BaseSettings):
             )
         if self.E2E_FAKE_LLM:
             problems.append("E2E_FAKE_LLM=true(E2Eテスト専用フラグ。本番では常にfalseにすること)")
+        if self.E2E_FAKE_GOOGLE:
+            problems.append(
+                "E2E_FAKE_GOOGLE=true(E2Eテスト専用フラグ。偽の credential でだれにでもなれる)"
+            )
         if problems:
             raise ValueError(
                 "本番(ENVIRONMENT=production)で許されない設定: " + " / ".join(problems)

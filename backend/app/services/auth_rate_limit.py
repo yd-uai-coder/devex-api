@@ -1,8 +1,10 @@
-"""認証エンドポイント(login / register)のレート制限。
+"""認証エンドポイント(login / register / Google)のレート制限。
 
 他の全エンドポイントは利用者 id をキーに制限しているが、認証前は id が無いので
 IP(+ ログインはメール)をキーにする。ログインは「IP 単位」(1 つの IP からの総当たり)と
-「メール単位」(分散した IP からの 1 アカウントへの総当たり)の両方を課す。
+「メール単位」(分散した IP からの 1 アカウントへの総当たり)の両方を課す。Google でのログインと
+連携の確かめは、新規の登録も兼ねるので IP 単位で数える(連携の確かめのパスワードは、さらにログインと
+同じ上限でも数える)。
 """
 
 from __future__ import annotations
@@ -16,7 +18,8 @@ _HOUR = 3600
 
 
 class AuthRateLimiter:
-    """login / register の試行回数を Redis で数え、超過なら RateLimitExceededError を送出する。"""
+    """login / register / Google の試行回数を Redis で数え、超過なら RateLimitExceededError を
+    送出する。"""
 
     def __init__(self, redis: Redis) -> None:
         # redis: カウンタ保存用の非同期 Redis クライアント
@@ -35,6 +38,11 @@ class AuthRateLimiter:
             resource="register_ip",
             limits=[RateLimit(_HOUR, settings.REGISTER_RATE_LIMIT_PER_IP_PER_HOUR)],
         )
+        self._google_ip = RateLimiter(
+            redis,
+            resource="google_ip",
+            limits=[RateLimit(_HOUR, settings.GOOGLE_RATE_LIMIT_PER_IP_PER_HOUR)],
+        )
 
     async def enforce_login(self, *, ip: str, email: str) -> None:
         """ログイン試行 1 回分を数える。成功・失敗を問わず数える(失敗だけ数えると、
@@ -46,3 +54,7 @@ class AuthRateLimiter:
     async def enforce_register(self, *, ip: str) -> None:
         """アカウント登録試行 1 回分を数える。"""
         await self._register_ip.enforce(ip)
+
+    async def enforce_google(self, *, ip: str) -> None:
+        """Google でのログイン・連携の確かめの試行 1 回分を数える。"""
+        await self._google_ip.enforce(ip)

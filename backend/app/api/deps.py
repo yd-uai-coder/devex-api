@@ -14,6 +14,7 @@ from app.models.project import Project
 from app.models.user import User
 from app.repositories.project import ProjectRepository
 from app.services.errors import ProjectNotFoundError
+from app.services.google_identity import GoogleTokenVerifier, get_google_token_verifier
 from app.services.user import UserService
 
 _bearer_scheme = HTTPBearer(auto_error=False)
@@ -29,6 +30,9 @@ def get_client_ip(request: Request) -> str:
 
 
 type ClientIpDep = Annotated[str, Depends(get_client_ip)]
+
+# Google の ID トークンの検証(設定が無ければ 503。テストは dependency_overrides で差し替える)
+type GoogleTokenVerifierDep = Annotated[GoogleTokenVerifier, Depends(get_google_token_verifier)]
 
 REFRESH_TOKEN_COOKIE_NAME = "refresh_token"
 

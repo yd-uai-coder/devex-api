@@ -86,5 +86,8 @@ class UserService:
 
     @staticmethod
     def _verify_current_password(user: User, current_password: str) -> None:
-        if not verify_password(current_password, user.hashed_password):
+        # パスワードを持たない(Google だけの)利用者は、何を入れても合わない
+        if user.hashed_password is None or not verify_password(
+            current_password, user.hashed_password
+        ):
             raise CurrentPasswordMismatchError("今のパスワードが正しくありません。")

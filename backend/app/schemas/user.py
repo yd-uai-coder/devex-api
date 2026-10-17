@@ -46,6 +46,9 @@ class UserRead(UserBase):
     # 実効値(使えて、設定がオン)。キーの登録を読むので、ルートが app/api/user_read.py で埋める
     review_allowed: bool = False
     review_effective: bool = False
+    # パスワードを持つか・Google と連携しているか(マイページの出し分けに使う。値そのものは返さない)
+    has_password: bool = False
+    google_linked: bool = False
 
 
 class ReviewSettingsUpdate(BaseModel):

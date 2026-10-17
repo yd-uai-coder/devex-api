@@ -13,7 +13,8 @@ from app.services.llm_resolver import LlmResolver
 
 
 async def user_read(session: AsyncSession, user: User) -> UserRead:
-    """ユーザーの応答。`review_allowed`・`review_effective` を埋める。"""
+    """ユーザーの応答。`review_allowed`・`review_effective`・`has_password`・`google_linked` を
+    埋める。"""
     allowed = await LlmResolver(session).review_allowed(user)
     return UserRead.model_validate(user).model_copy(
         update={
@@ -21,5 +22,7 @@ async def user_read(session: AsyncSession, user: User) -> UserRead:
             "review_effective": review_effective(
                 review_allowed=allowed, review_enabled=user.review_enabled
             ),
+            "has_password": user.hashed_password is not None,
+            "google_linked": user.google_sub is not None,
         }
     )
