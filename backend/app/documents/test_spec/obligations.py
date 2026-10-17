@@ -7,9 +7,12 @@
 |---|---|---|
 | 正常 | 同値分割(有効なクラスの代表) | API ごとに1件 |
 | 異常 | エラーの一覧の網羅 | API の「エラー」欄の HTTP ステータスごと(欄に無ければ1件) |
+| 異常 | 認証 | パスに`{…}`を持ち、エラー欄に 401 が無い API(設計のどこかの API に 401 があるとき) |
 | 境界 | 境界値分析 | 本文を持つ API(`BODY_METHODS`で、本文が「なし」でない) |
 | セキュリティ | 認可 | パスに`{…}`か本文に`…_id`の項目(ほかの利用者のリソースを指す)を持つ API |
-| 非機能 | ― | 非機能要件ごとに総合テスト1件 |
+| セキュリティ | 認証 | 本文に`token`・`…_token`の項目(本文のトークンで本人を決める)を持つ API |
+| 非機能 | ― | 非機能要件ごとに総合テスト1件(上限・回数を書く要件は、超えたときの表示も) |
+| 異常 | 外部サービス | 外部サービスの上限・無料枠・料金を書く制約(CON)ごとに総合テスト1件 |
 | 正常 | 状態遷移(主な経路) | Must の画面を通す流れの総合テスト1件 |
 | 異常 | 画面の操作 | Must の画面ごとに総合テスト1件(入力の検証・空の送信・エラーの表示) |
 | 正常 | 要件ベース | Must の機能要件ごとに総合テスト1件(API に結ばれていても、文の中身を確かめる) |
@@ -32,6 +35,14 @@ from app.documents.test_spec.model import CaseLevel, Viewpoint
 
 # 本文の項目のうち、ほかのリソースを ID で指すもの(`session_id`・`projectId`)
 _BODY_ID = re.compile(r"(?<![A-Za-z0-9_])([a-z][A-Za-z0-9]*(?:_id|Id))(?![A-Za-z0-9_])")
+# 本文の項目のうち、トークンで本人を決めるもの(`token`・`access_token`)
+_BODY_TOKEN = re.compile(r"(?<![A-Za-z0-9_])((?:[a-z][A-Za-z0-9]*_)?token)(?![A-Za-z0-9_])")
+# 上限・回数を書いた非機能要件の文(超えたときの応答と画面の表示もテストにする)
+_LIMIT = re.compile(r"上限|回数|制限|レート|回/|回まで")
+_LIMIT_NOTE = "上限を超えたときの応答と、画面での伝え方を確かめる"
+# 外部サービスの上限を書いた制約の文
+_EXTERNAL_LIMIT = re.compile(r"無料枠|上限|クォータ|料金|課金|レート|回数")
+_EXTERNAL_LIMIT_NOTE = "外部サービスの上限超過・失敗のときの応答と画面の表示を確かめる"
 # 失敗・中断の振る舞いを書いた要件の文
 _FAILURE = re.compile(r"失敗|エラー|中断|タイムアウト|やり直|再試行|リトライ")
 _FAILURE_NOTE = "失敗の後の状態(保存されない・やり直せる)を確かめる"
@@ -52,6 +63,8 @@ class Obligation:
 
 def _api_obligations(external: ExternalDesignModel) -> list[Obligation]:
     result: list[Obligation] = []
+    # 設計のどこかで 401 を返すなら、ログインの要る API がある(`{…}`の API の未認証を確かめる)
+    uses_auth = any("401" in error_statuses(api.errors) for api in external.apis)
     for api in external.apis:
         checks: list[tuple[Viewpoint, str]] = [("正常", "正しい入力で成功する")]
         statuses = error_statuses(api.errors)
@@ -59,12 +72,16 @@ def _api_obligations(external: ExternalDesignModel) -> list[Obligation]:
             checks.append(("異常", f"エラー欄の {status} を起こす"))
         if not statuses:
             checks.append(("異常", "エラー欄に HTTP ステータスが無い。失敗の扱いを確かめる"))
+        if uses_auth and "{" in api.path and "401" not in statuses:
+            checks.append(("異常", "認証なしで呼ぶ(401)"))
         if api.method.upper() in BODY_METHODS and api.body.strip() != NO_BODY:
             checks.append(("境界", "本文の項目の下限・上限・空"))
         if "{" in api.path:
             checks.append(("セキュリティ", "ほかの利用者のリソースを指す"))
         for name in body_ids(api.body):
             checks.append(("セキュリティ", f"本文の {name} でほかの利用者のリソースを指す"))
+        for name in body_tokens(api.body):
+            checks.append(("セキュリティ", f"本文の {name} をほかの利用者のもの・無効なものにする"))
         reqs, screens = tuple(api.req_ids), tuple(api.screens)
         result += [
             Obligation("integration", api.label, viewpoint, reason, reqs, screens)
@@ -76,6 +93,11 @@ def _api_obligations(external: ExternalDesignModel) -> list[Obligation]:
 def body_ids(body: str) -> list[str]:
     """API の本文から、ほかのリソースを ID で指す項目の名前を、出てきた順・重複なしで取り出す。"""
     return list(dict.fromkeys(_BODY_ID.findall(body)))
+
+
+def body_tokens(body: str) -> list[str]:
+    """API の本文から、トークンで本人を決める項目の名前を、出てきた順・重複なしで取り出す。"""
+    return list(dict.fromkeys(_BODY_TOKEN.findall(body)))
 
 
 def _system_obligations(
@@ -109,9 +131,14 @@ def _system_obligations(
         return result
     for row in requirements.rows:
         if row.kind == "NFR":
+            reason = f"{row.text}。{_LIMIT_NOTE}" if _LIMIT.search(row.text) else row.text
             result.append(
-                Obligation("system", row.category or "非機能", "非機能", row.text, (row.id,))
+                Obligation("system", row.category or "非機能", "非機能", reason, (row.id,))
             )
+    for row in requirements.rows:
+        if row.kind == "CON" and _EXTERNAL_LIMIT.search(row.text):
+            reason = f"{row.text}。{_EXTERNAL_LIMIT_NOTE}"
+            result.append(Obligation("system", row.id, "異常", reason, (row.id,)))
     for row in requirements.rows:
         if row.kind == "FR" and row.priority == "Must":
             result.append(_requirement_obligation(row.id, row.text, external))

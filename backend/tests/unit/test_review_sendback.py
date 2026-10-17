@@ -24,7 +24,7 @@ from app.documents.external_design.drafting import build_external_design_message
 from app.documents.implementation_plan.drafting import build_implementation_plan_messages
 from app.documents.internal_design.drafting import build_internal_design_messages
 from app.documents.requirements.drafting import build_requirements_messages
-from app.documents.revision import NONE_TEXT, REVISION_RULE, instruction_text
+from app.documents.revision import NONE_TEXT, instruction_text
 from app.models.project import Project
 from app.models.user import User
 from app.repositories.chat_history import ChatHistoryRepository
@@ -92,7 +92,7 @@ def test_build_instruction() -> None:
 
 
 def test_builders_put_instruction_section() -> None:
-    assert instruction_text("  ") == NONE_TEXT and "【修正指示】" in REVISION_RULE
+    assert instruction_text("  ") == NONE_TEXT
     messages = [
         build_requirements_messages("会話", {}, None, None, "直す"),
         build_external_design_messages("要件", None, (), "直す"),

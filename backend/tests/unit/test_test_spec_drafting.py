@@ -51,3 +51,11 @@ def test_to_draft_keeps_policy_and_cases():
 def test_prompt_puts_japanese_rule_before_the_rules():
     # 必要なテストの行が多いと英語に流れたので、言語の規則は規則の一覧より前に置く
     assert SYSTEM_PROMPT.index("すべて日本語で書く") < SYSTEM_PROMPT.index("規則:")
+
+
+def test_prompt_asks_requirement_tests_to_split_into_behaviors():
+    # 要件のテストが「要件どおり〜が提供されること」と浅くなったので、振る舞いに分けて書かせる。
+    # ほかの行の書き方は変えない(足した指示がほかを押し出さないように)
+    assert "要件の文を確かめられる振る舞い" in SYSTEM_PROMPT
+    assert "「要件どおり」「提供されること」「正しく動作すること」とだけ書かない" in SYSTEM_PROMPT
+    assert "ほかの行の書き方は上の規則のまま" in SYSTEM_PROMPT

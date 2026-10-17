@@ -21,10 +21,11 @@ from app.documents.implementation_plan.assemble import (
 )
 from app.documents.implementation_plan.model import ImplementationPlanModel
 from app.documents.revision import (
-    REVISION_RULE,
     UNCHANGED_DESCRIPTION,
+    RevisionInputs,
     changed_rows_text,
     instruction_text,
+    revision_rule,
     rows_text,
 )
 
@@ -96,6 +97,16 @@ class ImplementationPlanGenerationOutput(BaseModel):
     risks: list[GeneratedRisk] = Field(description="4.4 想定リスクと対策")
 
 
+# 再生成のプロンプトの節の分け方(前の版・きっかけ・参照)。節を足したら、ここにも分ける
+REVISION = RevisionInputs(
+    previous=("前の版のタスク",),
+    triggers={
+        "上流の変わった行": "要件定義書・内部設計書で変わった行。その行に関係する行を書き直す",
+        "修正指示": "設計レビューの採用した指摘。指示が指す行を書き直す",
+    },
+    context=("要件定義書", "内部設計書"),
+)
+
 SYSTEM_PROMPT = (
     "あなたは経験豊富なプロジェクトマネージャーです。【要件定義書】と【内部設計書】を踏まえ、"
     "開発を安全かつ確実に進めるための実装計画書の中身を、マイルストーンとタスクの行と、説明の節と"
@@ -110,8 +121,7 @@ SYSTEM_PROMPT = (
     "- モジュールは【内部設計書】のモジュール一覧のパスを使う\n"
     "- 要件定義書・内部設計書に無い技術を創作しない\n"
     "- 【前の版のタスク】に同じタスクがあれば、その key を prev_key に書く\n"
-    f"{REVISION_RULE}(【前の版】は【前の版のタスク】。【上流の変わった行】は要件定義書・"
-    "内部設計書の行)"
+    f"{revision_rule(REVISION)}"
 )
 
 

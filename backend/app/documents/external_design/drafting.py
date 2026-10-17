@@ -21,10 +21,11 @@ from app.documents.external_design.assemble import (
 from app.documents.external_design.model import NO_BODY, ExternalDesignModel
 from app.documents.revision import (
     NONE_TEXT,
-    REVISION_RULE,
     UNCHANGED_DESCRIPTION,
+    RevisionInputs,
     changed_rows_text,
     instruction_text,
+    revision_rule,
     rows_text,
 )
 
@@ -103,6 +104,16 @@ class ExternalDesignGenerationOutput(BaseModel):
     apis: list[GeneratedApi] = Field(description="2.6 本システム自身が提供する API をすべて")
 
 
+# 再生成のプロンプトの節の分け方(前の版・きっかけ・参照)。節を足したら、ここにも分ける
+REVISION = RevisionInputs(
+    previous=("前の版の画面", "前の版の API"),
+    triggers={
+        "上流の変わった行": "要件定義書の要件で変わった行。その行に関係する行を書き直す",
+        "修正指示": "設計レビューの採用した指摘。指示が指す行を書き直す",
+    },
+    context=("要件定義書",),
+)
+
 SYSTEM_PROMPT = (
     "あなたは優秀なUI/UXデザイナー・システムアーキテクトです。【要件定義書】に基づき、"
     "ユーザー視点・外部仕様に関する外部設計書の中身を、画面・API・外部連携の行として書きます。\n"
@@ -117,8 +128,7 @@ SYSTEM_PROMPT = (
     "API の関連画面は画面ID で書く\n"
     "- 主要画面には UI 仕様(構成要素)を書く\n"
     "- 要件定義書に無い技術・外部サービスを創作しない\n"
-    f"{REVISION_RULE}(【前の版】は【前の版の画面】【前の版の API】。【上流の変わった行】は"
-    "要件定義書の要件)"
+    f"{revision_rule(REVISION)}"
 )
 
 

@@ -393,7 +393,8 @@ def merge_judgement(
       採用は推測と同じ。規模・技術スタックは、初期入力に一部が書いてあっても利用者に確かめる。
     - 未決は根拠が無くても取り込む(利用者が決めたことを取り消した場合)。
     - 設計レビューの指摘で未決に戻した観点(`reopened_after`)は、聞き直しより後の利用者の発言が
-      根拠にあるときだけ未決以外にする。未決のままなら、戻した印を引き継ぐ。
+      根拠にあるときだけ未決以外にする。未決のままなら、戻した印を引き継ぎ、要約が空で返ったら
+      聞き直しの前の要約を残す。
     """
     after_reopen = after_reopen or {}
     merged: dict[str, PointState] = initial_states()
@@ -412,7 +413,9 @@ def merge_judgement(
         reopened = merged[state.key].reopened_after
         if reopened is not None:
             if state.status == "open":
-                state = replace(state, reopened_after=reopened)
+                # 未決のままなら、聞き直しの前の決めたことを残す(判定が要約を空で返しても消さない)
+                summary = state.summary or merged[state.key].summary
+                state = replace(state, summary=summary, reopened_after=reopened)
             elif not any(e in after_reopen.get(state.key, ()) for e in state.evidence):
                 continue
         merged[state.key] = state

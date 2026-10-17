@@ -44,6 +44,7 @@ from app.review.prompt import (
 from app.review.rehearing import (
     REHEARING_HEAD,
     can_rehear,
+    rehearing_findings_text,
     rehearing_message,
     rehearing_points,
 )
@@ -109,6 +110,7 @@ __all__ = [
     "gates_for_mode",
     "known_issues",
     "only_reviewed_documents",
+    "rehearing_findings_text",
     "rehearing_message",
     "rehearing_points",
     "render_findings",

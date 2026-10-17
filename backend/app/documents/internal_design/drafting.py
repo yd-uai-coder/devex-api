@@ -24,10 +24,11 @@ from app.documents.internal_design.assemble import (
 )
 from app.documents.internal_design.model import InternalDesignModel
 from app.documents.revision import (
-    REVISION_RULE,
     UNCHANGED_DESCRIPTION,
+    RevisionInputs,
     changed_rows_text,
     instruction_text,
+    revision_rule,
     rows_text,
 )
 
@@ -129,6 +130,21 @@ class InternalDesignGenerationOutput(BaseModel):
     )
 
 
+# 再生成のプロンプトの節の分け方(前の版・きっかけ・参照)。節を足したら、ここにも分ける
+REVISION = RevisionInputs(
+    previous=(
+        "前の版のテーブル",
+        "前の版の API",
+        "前の版のモジュール",
+        "前の版の処理別データフロー",
+    ),
+    triggers={
+        "上流の変わった行": "要件定義書・外部設計書で変わった行。その行に関係する行を書き直す",
+        "修正指示": "設計レビューの採用した指摘。指示が指す行を書き直す",
+    },
+    context=("要件定義書", "外部設計書"),
+)
+
 SYSTEM_PROMPT = (
     "あなたは優秀なリードエンジニア・データベース設計者です。【要件定義書】および【外部設計書】に"
     "基づき、システム内部の構造・ロジックに関する内部設計書の中身を、テーブル・API・モジュール・"
@@ -141,8 +157,7 @@ SYSTEM_PROMPT = (
     "- テーブルは全カラムを書く\n"
     "- 要件定義書に無い技術・外部サービスを創作しない\n"
     "- 一覧性の高い情報は行に、説明は本文の節に書く。本文に見出し(#)は書かない\n"
-    f"{REVISION_RULE}(【前の版】は【前の版のテーブル】【前の版の API】【前の版のモジュール】"
-    "【前の版の処理別データフロー】。【上流の変わった行】は要件定義書・外部設計書の行)"
+    f"{revision_rule(REVISION)}"
 )
 
 
