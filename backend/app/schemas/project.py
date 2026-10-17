@@ -25,6 +25,15 @@ class IntakeFileRead(BaseModel):
     error_message: str | None
 
 
+class GenerationFailureRead(BaseModel):
+    """直近の生成の失敗(理由のコード・利用者に見せる文言・作り直そうとした文書・日時)。"""
+
+    reason_code: str
+    message: str
+    targets: list[str]
+    failed_at: datetime
+
+
 class ProjectRead(BaseModel):
     """プロジェクトの概要をAPIレスポンスとして返す際のスキーマ。"""
 
@@ -34,6 +43,8 @@ class ProjectRead(BaseModel):
     title: str
     status: ProjectStatus
     mode: ProjectMode
+    # 直近の生成が失敗していれば、その記録(次の生成を受け付けると消える)
+    generation_failure: GenerationFailureRead | None = None
     created_at: datetime
     updated_at: datetime
 

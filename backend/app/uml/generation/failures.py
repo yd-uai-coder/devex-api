@@ -14,10 +14,16 @@ from app.services.errors import (
     LLMInvalidOutputError,
     LLMQuotaExceededError,
     LLMTokenLimitError,
+    LlmUnavailableError,
 )
 
 ReasonCode = Literal[
-    "QUOTA_EXCEEDED", "TOKEN_LIMIT", "INVALID_OUTPUT", "GENERATION_FAILED", "STALE_GENERATION"
+    "QUOTA_EXCEEDED",
+    "TOKEN_LIMIT",
+    "INVALID_OUTPUT",
+    "LLM_UNAVAILABLE",
+    "GENERATION_FAILED",
+    "STALE_GENERATION",
 ]
 
 _MESSAGES: dict[ReasonCode, str] = {
@@ -30,6 +36,10 @@ _MESSAGES: dict[ReasonCode, str] = {
         "ER図はテーブルを絞った部分図にするなど対象を小さくして、再度生成を指示してください。"
     ),
     "INVALID_OUTPUT": "AIの出力を設計図として解釈できませんでした。再度生成を指示してください。",
+    "LLM_UNAVAILABLE": (
+        "使うAIのAPIキーが設定されていないため、生成できませんでした。"
+        "マイページでモデルかAPIキーを見直してください。"
+    ),
     "GENERATION_FAILED": "設計図の生成に失敗しました。時間をおいて、再度生成を指示してください。",
     # 例外の分類では出てこない(生成中のまま止まったものの回収用。詳細設計モードは段階の生成の
     # サービスが自分の文言を持つ)
@@ -53,6 +63,8 @@ def classify_failure(exc: BaseException) -> GenerationFailure:
     reason: ReasonCode
     if isinstance(exc, LLMQuotaExceededError):
         reason = "QUOTA_EXCEEDED"
+    elif isinstance(exc, LlmUnavailableError):
+        reason = "LLM_UNAVAILABLE"
     elif isinstance(exc, LLMTokenLimitError):
         reason = "TOKEN_LIMIT"
     elif isinstance(exc, LLMInvalidOutputError) or (

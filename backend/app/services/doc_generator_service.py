@@ -119,7 +119,6 @@ from app.services.errors import (
     DocumentNotFoundError,
     GenerationStartInvalidError,
     GenerationUpstreamMissingError,
-    LLMQuotaExceededError,
     RequirementNotAssumedError,
     RequirementNotFoundError,
     TestSpecUpstreamNotReadyError,
@@ -141,6 +140,7 @@ from app.services.test_spec_state import (
     current_test_spec,
     spec_inputs,
 )
+from app.uml.generation.failures import ReasonCode, classify_failure
 
 logger = structlog.get_logger(__name__)
 
@@ -172,12 +172,33 @@ _SELF_DIAGNOSIS_SYSTEM_PROMPT = (
     "指摘が無い場合は、その旨を簡潔に述べてください。"
 )
 
-# 生成の失敗・中断をチャットに残す文言(生の例外の文字列は利用者に見せず、ログにだけ残す)
-_QUOTA_MESSAGE = "本日の利用上限に達しました。時間をおいて再度お試しください。"
-_FAILED_MESSAGE = "設計書の生成に失敗しました。時間をおいて再度お試しください。"
-_STALE_MESSAGE = (
-    "設計書の生成が時間内に終わらなかったため、中断しました。もう一度生成してください。"
-)
+# 生成の失敗・中断の理由ごとの文言。チャットに残し、プロジェクトの`generation_failure`にも書く
+# (生の例外の文字列は利用者に見せず、ログにだけ残す。理由の分類は classify_failure を共有する)
+_FAILURE_MESSAGES: dict[ReasonCode, str] = {
+    "QUOTA_EXCEEDED": "本日の利用上限に達しました。時間をおいて再度お試しください。",
+    "TOKEN_LIMIT": (
+        "AIの入力または出力のトークン数が上限を超えたため、設計書を作れませんでした。"
+    ),
+    "INVALID_OUTPUT": "AIの出力を設計書として解釈できませんでした。もう一度生成してください。",
+    "LLM_UNAVAILABLE": (
+        "使うAIのAPIキーが設定されていないため、設計書を作れませんでした。"
+        "マイページでモデルかAPIキーを見直してください。"
+    ),
+    "GENERATION_FAILED": "設計書の生成に失敗しました。時間をおいて再度お試しください。",
+    "STALE_GENERATION": (
+        "設計書の生成が時間内に終わらなかったため、中断しました。もう一度生成してください。"
+    ),
+}
+
+
+def failure_record(reason: ReasonCode, targets: Sequence[str], now: datetime) -> dict:
+    """プロジェクトの`generation_failure`に書く失敗の記録(理由・文言・作り直そうとした文書・日時)。"""
+    return {
+        "reason_code": reason,
+        "message": _FAILURE_MESSAGES[reason],
+        "targets": list(targets),
+        "failed_at": now.isoformat(),
+    }
 
 
 async def generate_documents(
@@ -280,6 +301,8 @@ class DocGeneratorService:
             )
         status_before_generation = project.status
         project.status = "generating"
+        # 前の失敗の知らせは、次の生成を受け付けた時点で消す
+        project.generation_failure = None
         await self._session.commit()
         # updated_at(生成を始めた時刻。回収の判定に使う)はDB側で決まるため読み直す
         await self._session.refresh(project)
@@ -290,7 +313,8 @@ class DocGeneratorService:
         (app/services/generation_staleness.py)。戻した場合はTrue。
 
         生成前の状態は記録していないため、文書が既にあれば`revising`、無ければ`interviewing`にする
-        (どちらも再度「生成する」を押せる状態)。中断したことはチャットに残す。"""
+        (どちらも再度「生成する」を押せる状態)。中断したことはチャットと`generation_failure`に
+        残す(作り直そうとした文書は進み具合から読む。消えていればモードの全部とみなす)。"""
         if project.status != "generating":
             return False
         # updated_at はDB側で更新されるため、失効していれば読み直す(非同期では暗黙に読めない)
@@ -299,8 +323,17 @@ class DocGeneratorService:
             return False
         has_documents = bool(await self._documents.list_current_for_project(project.id))
         project.status = "revising" if has_documents else "interviewing"
+        progress = await self._progress.read(project.id)
+        targets = (
+            progress.targets if progress is not None else generation_targets(project.mode, None)
+        )
+        project.generation_failure = failure_record(
+            "STALE_GENERATION", targets, now or datetime.now(UTC)
+        )
         await self._chat_histories.add(
-            project_id=project.id, sender="others", message=_STALE_MESSAGE
+            project_id=project.id,
+            sender="others",
+            message=_FAILURE_MESSAGES["STALE_GENERATION"],
         )
         await self._session.commit()
         await self._session.refresh(project)
@@ -491,13 +524,13 @@ class DocGeneratorService:
                 return
             project.status = status_before_generation
             # LLM_QUOTA_EXCEEDEDはdocs/internal_design.md 3.4節が定めるとおり、
-            # ユーザーに分かりやすい専用メッセージを表示する。
+            # ユーザーに分かりやすい専用メッセージを表示する。画面は`generation_failure`で知らせる
+            reason = classify_failure(exc).reason_code
+            project.generation_failure = failure_record(
+                reason, _failure_targets(project.mode, start_from), datetime.now(UTC)
+            )
             await self._chat_histories.add(
-                project_id=project_id,
-                sender="others",
-                message=(
-                    _QUOTA_MESSAGE if isinstance(exc, LLMQuotaExceededError) else _FAILED_MESSAGE
-                ),
+                project_id=project_id, sender="others", message=_FAILURE_MESSAGES[reason]
             )
             await commit_if_live(self._session, project_id, job="documents")
             return
@@ -832,6 +865,14 @@ def generation_targets(mode: str, start_from: str | None) -> tuple[str, ...]:
         raise GenerationStartInvalidError("このモードには無い設計書から再生成しようとしました。")
     targets = doc_types if start_from is None else doc_types[doc_types.index(start_from) :]
     return (*targets, TEST_SPEC) if mode == "simple" else targets
+
+
+def _failure_targets(mode: str, start_from: str | None) -> tuple[str, ...]:
+    """失敗の記録に書く「作り直そうとした文書」。起点がモードに無ければ(その失敗自体)モードの全部。"""
+    try:
+        return generation_targets(mode, start_from)
+    except GenerationStartInvalidError:
+        return generation_targets(mode, None)
 
 
 def _render_transcript(history: list[ChatHistory]) -> str:

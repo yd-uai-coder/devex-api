@@ -1,5 +1,5 @@
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict
 
 import structlog
@@ -77,9 +77,11 @@ from app.detailed_design.validation import (
 from app.models.design_stage import DesignStage
 from app.models.generated_document import GeneratedDocument
 from app.models.project import Project
+from app.models.review import ReviewFinding
 from app.models.uml_diagram import UmlDiagram
 from app.repositories.design_stage import DesignStageRepository
 from app.repositories.generated_document import GeneratedDocumentRepository
+from app.repositories.review import ReviewRunRepository
 from app.repositories.uml_diagram import UmlDiagramRepository
 from app.schemas.design_stage import (
     DesignImpactRead,
@@ -87,6 +89,7 @@ from app.schemas.design_stage import (
     DesignStageRead,
     DfdAccessRead,
     ElementChangeRead,
+    GenerationFindingRead,
     ImpactMarkRead,
     RegenerationTargetRead,
     SequenceIssueRead,
@@ -147,7 +150,8 @@ class DesignStageService:
         簡易モードは段階8だけ)。"""
         rows, views, documents = await self._load(project)
         sources = await self._sources(project, rows, views, documents)
-        return [_to_read(views[stage], rows.get(stage), sources) for stage in views]
+        findings = await self._generation_findings(project.id, rows.values())
+        return [_to_read(views[stage], rows.get(stage), sources, findings) for stage in views]
 
     async def stage_view(
         self, project: Project, stage: int
@@ -545,7 +549,23 @@ class DesignStageService:
     async def _read_one(self, project: Project, stage: int) -> DesignStageRead:
         rows, views, documents = await self._load(project)
         sources = await self._sources(project, rows, views, documents)
-        return _to_read(views[stage], rows.get(stage), sources)
+        row = rows.get(stage)
+        findings = await self._generation_findings(project.id, [row] if row is not None else [])
+        return _to_read(views[stage], row, sources, findings)
+
+    async def _generation_findings(
+        self, project_id: uuid.UUID, rows: Iterable[DesignStage]
+    ) -> dict[str, ReviewFinding]:
+        """段階の直近の生成に渡した指摘を、ID の文字列で引けるようにまとめて1回で読む。"""
+        ids = {
+            uuid.UUID(finding_id)
+            for row in rows
+            for finding_id in (row.generation_finding_ids or [])
+        }
+        found = await ReviewRunRepository(self._session).list_findings(
+            project_id=project_id, finding_ids=sorted(ids)
+        )
+        return {str(finding.id): finding for finding in found}
 
     async def _sources(
         self,
@@ -850,7 +870,12 @@ def _relabeled(model: dict | None, basis: ProcedureBasis | None) -> dict | None:
     return relabel_units(doc, basis.plan).model_dump(mode="json")
 
 
-def _to_read(view: StageView, row: DesignStage | None, sources: StageSources) -> DesignStageRead:
+def _to_read(
+    view: StageView,
+    row: DesignStage | None,
+    sources: StageSources,
+    findings: Mapping[str, ReviewFinding] | None = None,
+) -> DesignStageRead:
     # 段階8の作業単位(詳細設計モードは段階7、簡易モードは実装計画書の WBS)。画面の単位の一覧が使う
     basis = (
         _basis(sources) if view.stage == PROCEDURE_DOC_STAGE and view.is_open else None
@@ -882,7 +907,23 @@ def _to_read(view: StageView, row: DesignStage | None, sources: StageSources) ->
         unit_req_ids=basis.unit_req_ids() if basis is not None else {},
         impact_open=impact.open_count,
         impact_reviewed=impact.reviewed_count,
+        generation_findings=_generation_finding_reads(row, findings or {}),
     )
+
+
+def _generation_finding_reads(
+    row: DesignStage | None, findings: Mapping[str, ReviewFinding]
+) -> list[GenerationFindingRead]:
+    """直近の生成に渡した指摘を、渡した順に(消えた指摘は飛ばす)。"""
+    if row is None:
+        return []
+    return [
+        GenerationFindingRead(
+            id=finding.id, level=finding.level, targets=finding.targets, problem=finding.problem
+        )
+        for finding_id in row.generation_finding_ids or []
+        if (finding := findings.get(finding_id)) is not None
+    ]
 
 
 def _dfd_access_reads(sources: StageSources) -> list[DfdAccessRead]:

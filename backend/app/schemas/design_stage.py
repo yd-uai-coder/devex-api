@@ -36,6 +36,15 @@ class DfdAccessRead(BaseModel):
     kind: Literal["read", "write"]
 
 
+class GenerationFindingRead(BaseModel):
+    """段階の直近の生成の修正指示に入れた、設計レビューの指摘1件の要約(画面に並べる分だけ)。"""
+
+    id: uuid.UUID
+    level: str
+    targets: list[str]
+    problem: str
+
+
 class DesignStageRead(BaseModel):
     """段階1つ分の状態。未着手の段階も含めて、モードの全段階を常に返す(詳細設計モードは段階1〜8、
     簡易モードは段階8だけ。行が無ければversion等はNone)。`mode`はプロジェクトのモード。
@@ -51,7 +60,8 @@ class DesignStageRead(BaseModel):
     段階8が開いていなければ None)。`unit_req_ids`は段階8だけが持つ、作業単位ごとの要件ID
     (詳細設計モードは単位の処理の段階1の要件、簡易モードは WBS の「要件」欄)。`impact_open`・
     `impact_reviewed`は、この段階に記録した変更の影響の印のうち、未確認・確認済みの件数(印の中身は
-    変更の影響の取得`DesignImpactRead`で読む)。"""
+    変更の影響の取得`DesignImpactRead`で読む)。`generation_findings`は、直近の生成の修正指示に
+    入れた指摘(差し戻しの作り直しのとき。消えた指摘は入らない。指摘の順は渡した順)。"""
 
     stage: int
     mode: Literal["simple", "detailed"] = "detailed"
@@ -70,6 +80,7 @@ class DesignStageRead(BaseModel):
     unit_req_ids: dict[str, list[str]] = Field(default_factory=dict)
     impact_open: int = 0
     impact_reviewed: int = 0
+    generation_findings: list[GenerationFindingRead] = Field(default_factory=list)
 
 
 class DesignStageSave(BaseModel):

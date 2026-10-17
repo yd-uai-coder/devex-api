@@ -153,6 +153,7 @@ class ProjectService:
             title=project.title,
             status=project.status,  # type: ignore[arg-type]
             mode=project.mode,  # type: ignore[arg-type]
+            generation_failure=project.generation_failure,  # type: ignore[arg-type]
             created_at=project.created_at,
             updated_at=project.updated_at,
             intake=project.intake,

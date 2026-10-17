@@ -48,6 +48,10 @@ class Project(Base):
     # hearing_scale: ヒアリングで決まった規模('personal'/'internal'/'public')。観点の必須を
     # 切り替える。未決の間はNone(必須は「個人・小規模」の列で数える。app/hearing/points.py)
     hearing_scale: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # generation_failure: 直近の設計書・テスト仕様書の生成が失敗した記録
+    # ({reason_code, message, targets, failed_at})。画面が失敗を知らせるために返し、次の生成を
+    # 受け付けたら消す(app/services/doc_generator_service.py)。失敗していなければ None
+    generation_failure: Mapped[dict | None] = mapped_column(PortableJSON, nullable=True)
     # template_id：テンプレートの永続化
     template_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("prompt_templates.id"), nullable=True
