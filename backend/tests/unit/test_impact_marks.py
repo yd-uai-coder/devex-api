@@ -2,6 +2,7 @@
 
 SUT: marks_for / merged_elements / record / set_reviewed / blocking_marks / group_by_stage /
      StageImpact の保存形(to_dict・from_dict)(app/detailed_design/impact/marks.py)、
+     ui_spec_only(diff.py)・path_axis(trace.py)、
      パッケージの re-export(app/detailed_design/impact)
 ドライバ: 各テスト関数
 スタブ不要 ── どれも純粋関数(副作用なし)で、DB や LLM を呼ばないため。前と後の要素は fixture の
@@ -27,7 +28,9 @@ from app.detailed_design.impact import (
     set_reviewed,
     stage_source,
 )
+from app.detailed_design.impact.diff import ui_spec_only
 from app.detailed_design.impact.elements import DesignModels
+from app.detailed_design.impact.trace import path_axis
 
 NEW_SERVICE = "app/services/reservation_service.py"
 
@@ -107,6 +110,54 @@ def test_rename_marks_referrers_still_pointing_to_the_old_key():
     assert all(len(m.path) == 2 for m in marks)
     # 依存する側のモジュール(入口)は、依存先の名前を書き換えただけなので直接の参照元として印が付く
     assert "module:app/api/routes/reservations.py" in keys
+
+
+def _screen_marks(*, name: str | None = None, fr001: bool = True) -> tuple[set[str], list]:
+    """画面 SCR-001(F-01・F-02 の画面)の UI 仕様を変え、要件 FR-001(F-01 だけ)も変えた差分の印。"""
+    documents = impact_documents()
+    changed = copy.deepcopy(documents)
+    screen = changed["external_design"]["screens"][0]
+    screen["ui_spec"] = "- 表示項目: 予約は最大5件"
+    if name is not None:
+        screen["name"] = name
+    if fr001:
+        changed["requirements"]["rows"][0]["text"] = "予約を5件まで登録できる"
+    before, after = _elements(impact_stages(), documents), _elements(impact_stages(), changed)
+    changes = diff_elements(before, after, stages=[0])
+    marks = marks_for(before, after, changes, doc_source("external_design"))
+    return {m.key for m in marks}, changes
+
+
+def test_screen_text_change_is_narrowed_to_processes_reached_by_co_changes():
+    """UI 仕様の本文だけが変わった画面は、一緒に変わった要件が届いた処理(F-01)にだけ印を付ける。"""
+    keys, changes = _screen_marks()
+
+    screen = next(c for c in changes if c.key == "screen:SCR-001")
+    assert ui_spec_only(screen)
+    assert {"fn:F-01", "proc:F-01"} <= keys
+    assert not any(k.endswith("F-02") for k in keys)
+
+
+def test_screen_text_change_alone_reaches_all_screen_processes():
+    """ほかに変わったものが無ければ絞らない(本文のどこが変わったか分からないので、見落としを作らない)。"""
+    keys, _ = _screen_marks(fr001=False)
+
+    assert {"fn:F-01", "fn:F-02", "proc:F-01", "proc:F-02"} <= keys
+
+
+def test_screen_change_beyond_text_is_not_narrowed():
+    """名前など UI 仕様の本文の外も変わった画面は、今までどおり画面のすべての処理に届く。"""
+    keys, changes = _screen_marks(name="予約の画面")
+
+    screen = next(c for c in changes if c.key == "screen:SCR-001")
+    assert not ui_spec_only(screen)
+    assert {"fn:F-01", "fn:F-02"} <= keys
+
+
+def test_path_axis_finds_the_first_process_on_a_path():
+    elements = {e.key: e for e in _elements(impact_stages())}
+    assert path_axis(("screen:SCR-001", "fn:F-02", "proc:F-02"), elements) == "fn:F-02"
+    assert path_axis(("screen:SCR-001", "api:POST /api/v1/reservations"), elements) is None
 
 
 def test_merged_elements_keep_old_only_elements_and_old_refs():

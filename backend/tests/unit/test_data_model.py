@@ -2,7 +2,7 @@
 
 SUT: dfd_accesses / merge_crud / confirm_drafts / infer_write_ops / normalize_ops / table_key /
      er_table_names / tables_without_primary_key(app/detailed_design/data_model.py)、
-     validate_data_model / selected_dfd_accesses / STAGE_VALIDATORS
+     validate_data_model / selected_dfd_accesses / selected_dfd_processes / STAGE_VALIDATORS
      (app/detailed_design/validation.py)、
      ErColumn・ErElement の制約・説明(app/uml/domain/er.py)、
      パッケージの re-export(app/detailed_design/__init__.py)
@@ -43,7 +43,7 @@ from app.detailed_design import (
     tables_without_primary_key,
     validate_stage,
 )
-from app.detailed_design.validation import validate_data_model
+from app.detailed_design.validation import selected_dfd_processes, validate_data_model
 from app.uml.domain.er import ErColumn, ErElement, ErSemanticModel
 
 
@@ -201,8 +201,15 @@ def test_er_column_and_table_notes_default_to_empty() -> None:
     assert model.elements[0].columns[0].constraints == "UNIQUE"
 
 
+# `crud_model()`の F-01 × reservations の C に当たる、DFD の書き込みの線
+_WRITE = DfdAccess("F-01", "reservations", "write")
+
+
 def _sources(
-    *, er: ErDiagramSummary | None, accesses: tuple[DfdAccess, ...] = (), groups=("reservations",)
+    *,
+    er: ErDiagramSummary | None,
+    accesses: tuple[DfdAccess, ...] = (_WRITE,),
+    groups=("reservations",),
 ) -> StageSources:
     return StageSources(
         stages={1: function_list_model(), 2: data_flow_model(dfd_groups=list(groups))},
@@ -289,7 +296,7 @@ def test_validate_against_dfd_lines() -> None:
 def test_validate_warnings() -> None:
     stray = DfdAccess("F-01", "logs", "write")
     sources = _sources(
-        er=_approved_er("reservations", "users", without_pk=("users",)), accesses=(stray,)
+        er=_approved_er("reservations", "users", without_pk=("users",)), accesses=(_WRITE, stray)
     )
     issues = validate_data_model(crud_model(draft=True), sources)
     assert not has_errors(issues)
@@ -299,7 +306,29 @@ def test_validate_warnings() -> None:
         ("UNUSED_TABLE", "users"),
         ("TABLE_WITHOUT_PK", "users"),
     ]
-    assert selected_dfd_accesses(sources) == [stray]
+    assert selected_dfd_accesses(sources) == [stray, _WRITE]
+
+
+def test_validate_warns_crud_write_without_dfd_store() -> None:
+    """逆向きの照合: CRUD 図に C/U/D があるのに、DFD にその処理からの線が無い(警告)。"""
+    read = DfdAccess("F-01", "reservations", "read")
+    sources = _sources(er=_approved_er(), accesses=(read,))
+    issues = validate_data_model(crud_model(ops="CR"), sources)
+    assert not has_errors(issues)
+    assert [(i.code, i.severity, i.target) for i in issues] == [
+        ("DFD_STORE_MISSING", "warning", "F-01 × reservations")
+    ]
+    assert "段階2の DFD に F-01 からデータストア「reservations」への線がありません" in (
+        issues[0].message
+    )
+    assert selected_dfd_processes(sources) == {"F-01"}
+    # 読むだけのセルは指摘しない。DFD に書き込みの線があれば指摘しない
+    assert _codes(crud_model(ops="R"), sources) == []
+    assert _codes(crud_model(ops="C"), _sources(er=_approved_er())) == []
+    # DFD を描くと選んでいないグループの処理は見ない(DFD に描いていないため)
+    unselected = _sources(er=_approved_er(), accesses=(), groups=())
+    assert _codes(crud_model(ops="C"), unselected) == []
+    assert selected_dfd_processes(unselected) == set()
 
 
 def test_validate_warns_inferred_cells_and_guides_to_dfd() -> None:

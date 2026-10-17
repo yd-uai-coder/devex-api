@@ -12,15 +12,19 @@ docs/external_design.md 2.10節・docs/internal_design.md 3.3節「7. 変更影�
 - 段階の承認を止めるのは、他の段階・文書から届いた未確認の印だけ。自分の承認で付いた印(同じ段階の
   中の依存)は止めず、次の承認で置き換える。
 - 段階を承認すると、その段階の印は消える(サービス層が`impact`を空にする)。
+- 画面の変更が UI 仕様の本文だけなら、本文のどの部分が変わったかは画面の ID では分からない。同じ
+  差分のほかの変更(要件・API など)がその画面の処理の一部に届いていれば、画面からの印をその処理に
+  絞る(変わった部分は、一緒に変わった要件・API の処理に当たるため)。どの処理にも届いていなければ、
+  画面のすべての処理に付ける(見落としを作らないため)。
 """
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from typing import Any
 
-from app.detailed_design.impact.diff import ElementChange, to_trace_changes
+from app.detailed_design.impact.diff import ElementChange, to_trace_changes, ui_spec_only
 from app.detailed_design.impact.elements import DOCUMENT_STAGE, Element, Ref
-from app.detailed_design.impact.trace import impact_of
+from app.detailed_design.impact.trace import ImpactItem, impact_of, path_axis
 
 
 @dataclass(frozen=True)
@@ -128,8 +132,10 @@ def marks_for(
     by_key = {e.key: e for e in graph}
     changed = {c.key for c in changes} | {c.new_key for c in changes if c.new_key}
     found: dict[str, Mark] = {}
-    for change in to_trace_changes(changes):
-        for item in impact_of(graph, change):
+    reached = {c.key: impact_of(graph, c) for c in to_trace_changes(changes)}
+    text_only = {c.key for c in changes if ui_spec_only(c)}
+    for items in _narrowed_screen_text(reached, text_only, by_key).values():
+        for item in items:
             element = by_key.get(item.key)
             if element is None or element.stage == DOCUMENT_STAGE or item.key in changed:
                 continue
@@ -139,6 +145,33 @@ def marks_for(
                     item.key, element.label, element.stage, item.path, item.reason, (source,)
                 )
     return sorted(found.values(), key=lambda m: (m.stage, m.key))
+
+
+def _narrowed_screen_text(
+    reached: Mapping[str, list[ImpactItem]],
+    text_only: set[str],
+    by_key: Mapping[str, Element],
+) -> dict[str, list[ImpactItem]]:
+    """UI 仕様の本文だけが変わった画面の印を、ほかの変更が届いた処理に絞る
+    (届いていなければ絞らない)。処理を通らない印(画面を直接参照する API など)は残す。"""
+    others = {
+        axis
+        for key, items in reached.items()
+        if key not in text_only
+        for item in items
+        if (axis := path_axis(item.path, by_key)) is not None
+    }
+    narrowed = dict(reached)
+    for key in text_only & reached.keys():
+        axes = {path_axis(item.path, by_key) for item in reached[key]} - {None}
+        kept = axes & others
+        if kept:
+            narrowed[key] = [
+                item
+                for item in reached[key]
+                if (axis := path_axis(item.path, by_key)) is None or axis in kept
+            ]
+    return narrowed
 
 
 def record(

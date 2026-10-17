@@ -123,3 +123,5 @@ def test_group_dfd_messages_contain_only_group_summaries_and_dictionary() -> Non
     assert "- 予約(id, item_id)" in content
     # 読むだけの処理に書き込みの線を描かない(CRUD 図の書き込みと食い違わないように)
     assert "読むだけの処理は データストア → 処理 の線だけ" in str(messages[0].content)
+    # 保存するデータはすべてデータストアにする(CRUD 図との逆向きの照合で抜けにならないように)
+    assert "処理が保存するデータ(アップロードしたファイル・会話の記録" in str(messages[0].content)

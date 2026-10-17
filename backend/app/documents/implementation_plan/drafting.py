@@ -13,6 +13,7 @@ from typing import Literal
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
+from app.detailed_design.plan_goal import GOAL_RULE
 from app.documents.implementation_plan.assemble import (
     ImplementationPlanDraft,
     MilestoneDraft,
@@ -118,6 +119,7 @@ SYSTEM_PROMPT = (
     "- 【要件定義書】の Must の機能要件は、すべていずれかのタスクの要件に入れる。"
     "Won't have の機能はタスクにしない\n"
     "- タスクの依存先は、前に書いたタスクだけを指す\n"
+    f"{GOAL_RULE}"
     "- モジュールは【内部設計書】のモジュール一覧のパスを使う\n"
     "- 要件定義書・内部設計書に無い技術を創作しない\n"
     "- 【前の版のタスク】に同じタスクがあれば、その key を prev_key に書く\n"

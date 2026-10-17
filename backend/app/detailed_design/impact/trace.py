@@ -211,6 +211,11 @@ def _is_axis(element: Element | None) -> bool:
     return element.kind == "task" and element.stage == DOCUMENT_STAGE
 
 
+def path_axis(path: Sequence[str], by_key: Mapping[str, Element]) -> str | None:
+    """道の上にある最初の軸(処理・処理別データフロー・文書のタスク)。無ければ None。"""
+    return next((key for key in path if _is_axis(by_key.get(key))), None)
+
+
 def _kind(by_key: Mapping[str, Element], key: str) -> ElementKind | None:
     element = by_key.get(key)
     return element.kind if element is not None else None
