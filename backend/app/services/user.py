@@ -7,6 +7,8 @@ from app.models.user import User
 from app.repositories.user import UserRepository
 from app.services.errors import (
     CurrentPasswordMismatchError,
+    PasswordAlreadySetError,
+    PasswordNotSetError,
     ReviewNotAllowedError,
     UserAlreadyExistsError,
 )
@@ -62,7 +64,9 @@ class UserService:
 
     async def change_email(self, user: User, *, new_email: str, current_password: str) -> User:
         """今のパスワードで本人を確かめてから、メールアドレスを即時に変える(確認メールは送らない)。
-        ほかのユーザーが使っているメールは 409。今と同じメールなら何もせずに返す。"""
+        ほかのユーザーが使っているメールは 409。今と同じメールなら何もせずに返す。パスワードを
+        持たない人は 409 PASSWORD_NOT_SET(先に設定させる)。"""
+        require_password(user)
         self._verify_current_password(user, current_password)
         if new_email == user.email:
             return user
@@ -77,8 +81,21 @@ class UserService:
         self, user: User, *, current_password: str, new_password: str
     ) -> User:
         """今のパスワードで本人を確かめてから、パスワードを変える。refresh の失効と出し直しは
-        呼び出し側(ルート)が AuthService で行う(このサービスは Redis を持たない)。"""
+        呼び出し側(ルート)が AuthService で行う(このサービスは Redis を持たない)。パスワードを
+        持たない人は 409 PASSWORD_NOT_SET(「設定」を使わせる)。"""
+        require_password(user)
         self._verify_current_password(user, current_password)
+        user.hashed_password = hash_password(new_password)
+        await self._session.commit()
+        await self._session.refresh(user)
+        return user
+
+    async def set_password(self, user: User, *, new_password: str) -> User:
+        """パスワードを持たない(Google だけの)利用者に、今のパスワードを求めずにパスワードを
+        設定する。持つ人は 409 PASSWORD_ALREADY_SET(今のパスワードで確かめる「変更」を使わせる)。
+        refresh の失効と出し直しは、変更と同じく呼び出し側が行う。"""
+        if user.hashed_password is not None:
+            raise PasswordAlreadySetError("パスワードは設定済みです。")
         user.hashed_password = hash_password(new_password)
         await self._session.commit()
         await self._session.refresh(user)
@@ -91,3 +108,10 @@ class UserService:
             current_password, user.hashed_password
         ):
             raise CurrentPasswordMismatchError("今のパスワードが正しくありません。")
+
+
+def require_password(user: User) -> None:
+    """パスワードを持たない(Google だけの)利用者を 409 PASSWORD_NOT_SET で断る。今のパスワードが
+    要る操作と、連携の解除(app/services/google_auth.py)で共有する。"""
+    if user.hashed_password is None:
+        raise PasswordNotSetError("先にパスワードを設定してください。")

@@ -33,7 +33,7 @@ routes (app/api/routes) → services (app/services) → repositories (app/reposi
 
 - `app/services/rate_limit.py`の`RateLimiter`は、Redisのカウンタを用いた汎用的な複数ウィンドウ（時間単位・日単位など）のレート制限クラス。`INCR`+`EXPIRE(NX)`を`pipeline`(MULTI/EXEC)で1往復にまとめている。**なぜ1往復にまとめるか**：別々に送ると`INCR`直後にプロセスが落ちた場合にTTL無しのキーが残り、その利用者が永久に制限される（`EXPIRE`のNXは「TTL未設定のときだけ設定」。Redis 7.0以降が必要）。
 - **なぜ`ChatService`のコンストラクタに直接ロジックを書かず、独立したサービスに切り出したか**：レート制限の対象・ウィンドウ・上限値は機能ごとに異なりうるため、`RateLimiter`を汎用部品として切り出し、各サービスは「どのresource名で、どのウィンドウ設定を使うか」だけを指定する形にしている。
-- 認証前（login/register/Google）は利用者idが無いため、`app/services/auth_rate_limit.py`の`AuthRateLimiter`がIP（`app/api/deps.py`の`ClientIpDep`）・メール単位で`RateLimiter`を組み合わせて総当たり・大量登録を防ぐ。Googleでのログインと連携の確かめは`google_ip`で数え、連携の確かめのパスワードはログインと同じカウンタでも数える。
+- 認証前（login/register/Google）は利用者idが無いため、`app/services/auth_rate_limit.py`の`AuthRateLimiter`がIP（`app/api/deps.py`の`ClientIpDep`）・メール単位で`RateLimiter`を組み合わせて総当たり・大量登録を防ぐ。Googleでのログインと連携の確かめ（マイページからの連携も）は`google_ip`で数え、連携の確かめのパスワード（マイページでは今のパスワード）はログインと同じカウンタでも数える。
 - **開発用の上限**：`docker-compose.yml`のbackendの`environment`で、4つの認証の上限を1000回/時に上げている（統合テスト・E2E・手元の確かめで登録とログインを繰り返すため）。`docker-compose.test.yml`・`docker-compose.e2e.yml`はこのファイルに重ねるので同じ値になる。本番は`docker-compose.prod.yml`だけで起動するので、この値は漏れない（本番は`app/core/config.py`の既定値か`.env`の値）。
 
 ## リクエスト保護

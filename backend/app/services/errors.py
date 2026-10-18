@@ -479,3 +479,18 @@ class GoogleAccountConflictError(ConflictError):
     ほかの利用者と連携済みの場合に送出する。"""
 
     code: ClassVar[str | None] = "GOOGLE_ACCOUNT_CONFLICT"
+
+
+class PasswordAlreadySetError(ConflictError):
+    """パスワードを持つ利用者が、パスワードの「設定」(今のパスワードを求めない)を使った場合に
+    送出する。持つ人は今のパスワードで確かめる「変更」を使う。"""
+
+    code: ClassVar[str | None] = "PASSWORD_ALREADY_SET"
+
+
+class PasswordNotSetError(ConflictError):
+    """パスワードを持たない(Google だけの)利用者が、今のパスワードを要る操作(メール・パスワード
+    の変更、マイページからの連携)や、連携の解除(どちらでもログインできなくなる)を使った場合に
+    送出する。先にパスワードを設定させる。"""
+
+    code: ClassVar[str | None] = "PASSWORD_NOT_SET"

@@ -3,7 +3,8 @@
 本人は `google_sub`(ID トークンの sub)で先に探す。Google 側のメールが後で変わっても、連携した
 アカウントのまま入れるようにするため(アプリのメールは変えない)。sub で見つからないときだけメールで
 探す。登録でメールを確かめないので、同じメールのアカウントには確かめずに紐付けない(409 を返し、
-パスワードで確かめる連携へ進ませる)。
+パスワードで確かめる連携へ進ませる)。マイページからの連携は、ログイン中の本人が今のパスワードで
+確かめるので、メールが違う Google も紐付けられる。
 """
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,12 +13,14 @@ from app.core.security import verify_password
 from app.models.user import User
 from app.repositories.user import UserRepository
 from app.services.errors import (
+    CurrentPasswordMismatchError,
     GoogleAccountConflictError,
     GoogleEmailNotVerifiedError,
     GoogleLinkRequiredError,
     InvalidCredentialsError,
 )
 from app.services.google_identity import GoogleIdentity
+from app.services.user import require_password
 
 # users.user_name の列の長さ
 _USER_NAME_MAX_LENGTH = 255
@@ -73,6 +76,38 @@ class GoogleAuthService:
             raise InvalidCredentialsError("Invalid email or password")
         _require_active(user)
 
+        return await self._attach(user, identity)
+
+    async def link_current(
+        self, user: User, identity: GoogleIdentity, *, current_password: str
+    ) -> User:
+        """マイページから、ログイン中の本人を Google と連携する。メールの一致は求めない。今の
+        パスワードで確かめる(盗まれたセッションで他人の Google を足させない。不一致は 400、
+        ログイン中の操作なので 401 にしない)。パスワードを持たない人は 409 PASSWORD_NOT_SET。"""
+        _require_verified_email(identity)
+        require_password(user)
+        if user.hashed_password is None or not verify_password(
+            current_password, user.hashed_password
+        ):
+            raise CurrentPasswordMismatchError("今のパスワードが正しくありません。")
+        return await self._attach(user, identity)
+
+    async def unlink(self, user: User) -> User:
+        """Google との連携を解く。パスワードを持たない人は 409 PASSWORD_NOT_SET(どちらでも
+        ログインできなくなるため)。連携していなくても成功。refresh の失効と出し直しは呼び出し側
+        (ルート)が AuthService で行う。"""
+        require_password(user)
+        if user.google_sub is None:
+            return user
+        user.google_sub = None
+        await self._session.commit()
+        await self._session.refresh(user)
+        return user
+
+    async def _attach(self, user: User, identity: GoogleIdentity) -> User:
+        """本人の確かめが済んだ利用者に google_sub を記録する(ログインの連携とマイページで共有)。
+        同じ Google でのやり直しは成功。その人が別の Google と、またはその Google がほかの人と
+        連携済みなら 409 GOOGLE_ACCOUNT_CONFLICT。"""
         if user.google_sub == identity.sub:
             return user
         linked = await self._users.get_by_google_sub(identity.sub)

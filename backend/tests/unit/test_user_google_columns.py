@@ -2,7 +2,7 @@
 テスト。
 
 SUT: UserRepository.create / get_by_google_sub、AuthService.authenticate、
-     UserService.change_email / change_password(今のパスワードの照合)、user_read
+     UserService.change_email / change_password(パスワードが無い人の断り)、user_read
 ドライバ: pytest のテスト関数
 スタブ: FakeRedis(AuthService の生成に要るだけ。この観点では使わない)。DB はテスト用の SQLite の
      セッション
@@ -16,7 +16,7 @@ from app.api.user_read import user_read
 from app.models.user import User
 from app.repositories.user import UserRepository
 from app.services.auth import AuthService
-from app.services.errors import CurrentPasswordMismatchError, InvalidCredentialsError
+from app.services.errors import InvalidCredentialsError, PasswordNotSetError
 from app.services.user import UserService
 
 _PASSWORD = "Pass-word-01"
@@ -50,15 +50,15 @@ async def test_password_login_of_google_only_user_is_the_same_401(
     assert str(exc.value) == "Invalid email or password"
 
 
-async def test_current_password_of_google_only_user_never_matches(
+async def test_changes_needing_current_password_refuse_google_only_user(
     db_session: AsyncSession,
 ) -> None:
     user = await _google_only(db_session)
     service = UserService(db_session)
 
-    with pytest.raises(CurrentPasswordMismatchError):
+    with pytest.raises(PasswordNotSetError):
         await service.change_email(user, new_email="new@example.com", current_password="")
-    with pytest.raises(CurrentPasswordMismatchError):
+    with pytest.raises(PasswordNotSetError):
         await service.change_password(user, current_password="", new_password=_PASSWORD)
 
 
