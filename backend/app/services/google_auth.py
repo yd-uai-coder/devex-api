@@ -13,6 +13,8 @@ from app.core.security import verify_password
 from app.models.user import User
 from app.repositories.user import UserRepository
 from app.services.errors import (
+    INACTIVE_USER_MESSAGE,
+    INVALID_CREDENTIALS_MESSAGE,
     CurrentPasswordMismatchError,
     GoogleAccountConflictError,
     GoogleEmailNotVerifiedError,
@@ -73,7 +75,7 @@ class GoogleAuthService:
             or user.hashed_password is None
             or not verify_password(password, user.hashed_password)
         ):
-            raise InvalidCredentialsError("Invalid email or password")
+            raise InvalidCredentialsError(INVALID_CREDENTIALS_MESSAGE)
         _require_active(user)
 
         return await self._attach(user, identity)
@@ -130,5 +132,5 @@ def _require_verified_email(identity: GoogleIdentity) -> None:
 
 def _require_active(user: User) -> User:
     if not user.is_active:
-        raise InvalidCredentialsError("User is inactive")
+        raise InvalidCredentialsError(INACTIVE_USER_MESSAGE)
     return user

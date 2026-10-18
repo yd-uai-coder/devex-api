@@ -14,7 +14,12 @@ from app.core.security import (
 )
 from app.models.user import User
 from app.repositories.user import UserRepository
-from app.services.errors import InvalidCredentialsError, InvalidTokenError
+from app.services.errors import (
+    INACTIVE_USER_MESSAGE,
+    INVALID_CREDENTIALS_MESSAGE,
+    InvalidCredentialsError,
+    InvalidTokenError,
+)
 
 _REFRESH_TOKEN_KEY_PREFIX = "refresh_token"
 
@@ -39,9 +44,9 @@ class AuthService:
             or user.hashed_password is None
             or not verify_password(password, user.hashed_password)
         ):
-            raise InvalidCredentialsError("Invalid email or password")
+            raise InvalidCredentialsError(INVALID_CREDENTIALS_MESSAGE)
         if not user.is_active:
-            raise InvalidCredentialsError("User is inactive")
+            raise InvalidCredentialsError(INACTIVE_USER_MESSAGE)
         return user
 
     async def issue_tokens(self, user: User) -> tuple[str, str]:

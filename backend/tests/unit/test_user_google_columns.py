@@ -16,7 +16,11 @@ from app.api.user_read import user_read
 from app.models.user import User
 from app.repositories.user import UserRepository
 from app.services.auth import AuthService
-from app.services.errors import InvalidCredentialsError, PasswordNotSetError
+from app.services.errors import (
+    INVALID_CREDENTIALS_MESSAGE,
+    InvalidCredentialsError,
+    PasswordNotSetError,
+)
 from app.services.user import UserService
 
 _PASSWORD = "Pass-word-01"
@@ -47,7 +51,7 @@ async def test_password_login_of_google_only_user_is_the_same_401(
     with pytest.raises(InvalidCredentialsError) as exc:
         await auth.authenticate(email="gina@example.com", password=_PASSWORD)
 
-    assert str(exc.value) == "Invalid email or password"
+    assert str(exc.value) == INVALID_CREDENTIALS_MESSAGE
 
 
 async def test_changes_needing_current_password_refuse_google_only_user(

@@ -3,7 +3,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import decode_token
 from app.services.auth import AuthService
-from app.services.errors import InvalidCredentialsError, InvalidTokenError
+from app.services.errors import (
+    INACTIVE_USER_MESSAGE,
+    INVALID_CREDENTIALS_MESSAGE,
+    InvalidCredentialsError,
+    InvalidTokenError,
+)
 from app.services.user import UserService
 
 
@@ -54,8 +59,26 @@ async def test_authenticate_rejects_wrong_password(
     await _create_user(db_session)
     auth_service = AuthService(db_session, fake_redis)
 
-    with pytest.raises(InvalidCredentialsError):
+    with pytest.raises(InvalidCredentialsError) as exc:
         await auth_service.authenticate(email="dave@example.com", password="wrong")
+
+    # 画面はこの文をそのまま出すので、日本語の文であることを確かめる
+    assert str(exc.value) == "メールアドレスまたはパスワードが正しくありません。"
+    assert str(exc.value) == INVALID_CREDENTIALS_MESSAGE
+
+
+async def test_authenticate_rejects_inactive_user_in_japanese(
+    db_session: AsyncSession, fake_redis: FakeRedis
+) -> None:
+    user = await _create_user(db_session)
+    user.is_active = False
+    await db_session.commit()
+    auth_service = AuthService(db_session, fake_redis)
+
+    with pytest.raises(InvalidCredentialsError) as exc:
+        await auth_service.authenticate(email="dave@example.com", password="s3cret")
+
+    assert str(exc.value) == INACTIVE_USER_MESSAGE
 
 
 async def test_authenticate_rejects_unknown_email(

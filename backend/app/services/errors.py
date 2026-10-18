@@ -17,6 +17,12 @@ class InvalidCredentialsError(UnauthorizedError):
     """メールアドレスまたはパスワードが誤っている、もしくは無効化済みユーザーの場合に送出する。"""
 
 
+# InvalidCredentialsError の文。パスワードでのログインと、Google との連携の確かめで同じ文にする
+# (画面はこの文をそのまま出す)。
+INVALID_CREDENTIALS_MESSAGE = "メールアドレスまたはパスワードが正しくありません。"
+INACTIVE_USER_MESSAGE = "このアカウントは使えません。"
+
+
 class InvalidTokenError(UnauthorizedError):
     """JWTが不正・期限切れ、またはRedis上で失効済みの場合に送出する。"""
 
