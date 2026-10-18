@@ -19,6 +19,7 @@ from tests.fixtures.uml import create_project
 
 from app.api.routes.projects import trigger_generation
 from app.models.generated_document import GeneratedDocument
+from app.models.project import Project
 from app.models.user import User
 from app.repositories.chat_history import ChatHistoryRepository
 from app.repositories.generated_document import GeneratedDocumentRepository
@@ -27,7 +28,16 @@ from app.services.doc_generator_service import DocGeneratorService, generate_doc
 from app.services.errors import DocGenerationInProgressError
 from app.services.project import ProjectService
 
-LATER = datetime.now(UTC) + timedelta(minutes=16)
+
+def _after_start(project: Project, minutes: int) -> datetime:
+    """生成を始めた時刻(updated_at。SQLiteではタイムゾーン無しなのでUTCとみなす)から`minutes`分後。
+
+    モジュールの読み込み時の時刻から作ると、テストの実行が遅れたとき(負荷の高いとき)に、
+    始めた時刻との差がしきい値(15分)を下回って判定が変わるため、テストの中で作る。"""
+    started_at = project.updated_at
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=UTC)
+    return started_at + timedelta(minutes=minutes)
 
 
 @pytest.fixture(autouse=True)
@@ -82,7 +92,12 @@ async def test_failure_midway_rolls_back_partial_versions(db_session: AsyncSessi
     await db_session.refresh(project)
     assert project.status == "interviewing"
     history = await ChatHistoryRepository(db_session).list_for_project(project.id)
-    assert history[-1].message == "設計書の生成に失敗しました。時間をおいて再度お試しください。"
+    # 出力を解釈できなかった失敗は、その理由の文言で残す
+    assert history[-1].message == (
+        "AIの出力を設計書として解釈できませんでした。もう一度生成してください。"
+    )
+    assert project.generation_failure is not None
+    assert project.generation_failure["reason_code"] == "INVALID_OUTPUT"
 
 
 async def test_stale_generating_is_recovered_before_new_request(db_session: AsyncSession) -> None:
@@ -91,7 +106,8 @@ async def test_stale_generating_is_recovered_before_new_request(db_session: Asyn
     await service.request_generation(project)
     await db_session.refresh(project)
 
-    recovered = await service.recover_if_stale(project, now=LATER)
+    assert await service.recover_if_stale(project, now=_after_start(project, 14)) is False
+    recovered = await service.recover_if_stale(project, now=_after_start(project, 16))
 
     assert recovered is True
     assert project.status == "interviewing"

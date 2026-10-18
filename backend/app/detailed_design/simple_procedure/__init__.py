@@ -20,6 +20,7 @@ from app.detailed_design.simple_procedure.refs import (
     simple_ref_label,
     simple_unit_context,
     simple_unit_refs,
+    unit_error_statuses,
 )
 from app.detailed_design.simple_procedure.wbs import (
     ENVIRONMENT_SECTION,
@@ -44,4 +45,5 @@ __all__ = [
     "simple_ref_label",
     "simple_unit_context",
     "simple_unit_refs",
+    "unit_error_statuses",
 ]

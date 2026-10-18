@@ -32,7 +32,7 @@ PLAN_MD = """# 4. 実装計画書
   - 処理: なし
   - 依存: なし
   - モジュール: app/main.py
-  - 環境・設定: docker-compose.yml, .env.example
+  - 環境・設定: docker-compose.yml, .env.example, alembic/versions/0001_reservations.py
 - [ ] M-01-T02 [機能] 予約を登録する
   - 処理: DF-1
   - 要件: FR-001
@@ -194,7 +194,10 @@ def simple_procedure_doc_model(*, module: str = "app/api/reservations.py") -> di
                 "unit_id": "M-01-T02",
                 "title": "予約を登録する",
                 "purpose": "予約を登録できるようにする",
-                "files": [{"path": module, "kind": "module", "responsibility": "予約の API"}],
+                "files": [
+                    {"path": module, "kind": "module", "responsibility": "予約の API"},
+                    {"path": "tests/test_reservations.py", "kind": "test"},
+                ],
                 "tests": [
                     {
                         "viewpoint": "予約を登録できる",
@@ -265,7 +268,13 @@ def simple_procedure_output() -> SimpleProcedureDocGenerationOutput:
                 kind="module",
                 responsibility="予約の API",
                 basis="内部設計書 3.3",
-            )
+            ),
+            GeneratedUnitFile(
+                path="tests/test_reservations.py",
+                kind="test",
+                responsibility="予約の API のテスト",
+                basis="テスト観点",
+            ),
         ],
         notes=[],
         tests=[

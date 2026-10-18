@@ -88,7 +88,10 @@ Traefikはdocker-composeの`nginx`+`certbot`をまとめて置き換える(TLS�
   - `ENVIRONMENT=production` / `DEBUG=false` ── `docker-compose.prod.yml`の`backend`サービスが`environment:`で強制上書きするため、`.env`側の値に関わらず必ずこの値になる。ただし`JWT_SECRET_KEY`が32文字未満、または`change-me`で始まる場合は`app/core/config.py`の起動時バリデーションで拒否される(`ENVIRONMENT=production`時のみ)。
   - `GOOGLE_API_KEY` ── 実際のGemini APIキー。`GEMINI_MODEL`は`gemini-3.5-flash-lite`を使うこと(`gemini-2.5-flash-lite`は新規利用不可、404 NOT_FOUND)。
   - `CORS_ORIGINS` ── **Vercelの本番URL(例: `https://devex-ui.vercel.app`、カスタムドメインを設定した場合はそちらも)を含める**。未設定時のデフォルトは`["http://localhost:3000"]`のみで、Vercel上のdevex-uiからのAPI呼び出しがすべてCORSエラーになるため、初回デプロイ前に必ず設定する。
+  - `ENCRYPTION_KEY` ── マイページで登録する API キーを暗号化する Fernet の鍵。本番の backend のコンテナで作り、`.env`とパスワード管理ツールにだけ置く(作り方は 10.7節、回し方は 10.6節)。
   - `E2E_FAKE_LLM` ── `.env`に**書かない、または`false`のままにする**(起動時バリデーションが`ENVIRONMENT=production`かつ`E2E_FAKE_LLM=true`を拒否する)。
+  - `GOOGLE_CLIENT_ID` ── Google でのログインの OAuth クライアント ID(本番用に作ったもの。devex-ui の`NEXT_PUBLIC_GOOGLE_CLIENT_ID`と同じ値)。無ければ Google でのログインだけが 503 になる(作り方は 10.7節)。
+  - `E2E_FAKE_GOOGLE` ── `E2E_FAKE_LLM`と同じく**書かない**(偽の credential でだれにでもなれる。`ENVIRONMENT=production`では起動時に拒否される)。
 
 ## 3. 初回デプロイ手順(devex-api)
 
@@ -430,3 +433,265 @@ GitHubリポジトリの Settings → Secrets and variables → Actions → New 
 - `d4e5f6a7b8c0`の downgrade は、段階7のタスクの単位のキーと、段階8の手順書の`unit_key`を外す(内容の意味は変わらない)。
 - 開発環境の DB の複製(段階 175行・写し 154・印 45)で、2本の downgrade → upgrade → downgrade → upgrade を往復して確かめた。upgrade の後、写しは承認済みで変わっていない行(153)だけに戻り、印は 0 になる。詳細設計モードの手順書のキーはすべて戻るが、簡易モードの手順書に付いていたキー(5行)は戻らない(この移行は簡易モードを変えないため)。
 - 印や確認済みの記録を残す必要があるなら、downgrade ではなく、1 のバックアップから戻すことを考える。
+
+### 10.5 AI 設計レビュー・テスト仕様書(レビューの区切り・差し戻し・「直ったか」・手順書の検証・テスト仕様書)を含む版への更新
+
+本番が 10.4 の版(alembic の head が`e5f6a7b8c9d1`)のときに、AI 設計レビューとテスト設計を含む版(ステージ8)へ更新する手順。10節と同じく、**API を先に、UI を後に出す**(UI を先に出すと、レビューのパネル・テスト仕様書のタブ・再生成の起点の選択が古い API を呼んで失敗する)。
+
+この版で増えるもの:
+
+- **環境変数**: `ANTHROPIC_API_KEY`(設計レビューの Claude Sonnet と、「直ったか」の判定の Claude Haiku が使う)。任意で`REVIEW_MODEL`(既定`claude-sonnet-5-5`)・`JUDGE_MODEL`(既定`claude-haiku-5-5`)・`REVIEW_RATE_LIMIT_PER_DAY`(superuser ごとの1日のレビューの回数。既定20)・`JUDGE_RATE_LIMIT_PER_DAY`(既定200)。キーが無いと、レビューは失敗の回として残り、今までどおりの自己診断に切り替わる(生成は止まらない)。
+- **依存**: `langchain-anthropic`(`pyproject.toml`・`uv.lock`)。これに伴い`langchain-core`が 1.5.4 → 1.6.10 に上がる(生成・ヒアリングの Gemini の呼び出しも同じ`langchain-core`を通る。全体テストと E2E で確かめた)。9節の自動デプロイがイメージを作り直すので、手で入れる作業は無い。
+- **マイグレーション**: 5本で、どれもテーブル・列を足すだけ(既存の行は書き換えない)。9節の自動デプロイが流す。
+
+| リビジョン | 内容 | 利用者への影響 |
+|---|---|---|
+| `f6a7b8c9d0e1` | `review_runs`(レビューの回)・`review_findings`(指摘と採否)を作り、`users.review_enabled`(レビューのオン・オフ。既定オフ)を足す | なし。レビューは superuser がオンにしたときだけ流れる(実効値 = `is_superuser` かつ`review_enabled`) |
+| `a7b8c9d0e1f2` | `review_findings.documents`(指摘に関わる文書)を足す | なし |
+| `5a1c7e93d2b4` | `review_runs.snapshots`(段階の区切りのレビューの、段階の写し)を足す | なし |
+| `6b2d8fa4e3c5` | `hearing_points.reopened_after`(聞き直しで観点を未決に戻した発言)を足す | なし |
+| `7c3e9ab5f4d6` | `review_fix_checks`(採用した指摘が直ったかの判定)を作る | なし |
+
+既存のデータについて:
+
+- **テスト仕様書**: 移行は作らない(`generated_documents`の新しい`doc_type="test_spec"`)。簡易モードの既存のプロジェクトは、4文書を再生成すると一緒に作られる(タブは「まだテスト仕様書がありません」)。詳細設計モードは、段階1・7 を承認していれば詳細設計画面の段階8の下の行から作れる。
+- **実装手順書の検証**: 以前に生成した手順書にも、新しい検証(`DEPENDENCY_BUILT_LATER`・`NO_TEST_FILE`・`NO_SCHEMA_UNIT`・`TABLE_WITHOUT_UNIT`・`NO_ERROR_TEST`)の指摘が出ることがある(表示のときに検証するため)。手順書の中身は変わらない。
+- **レビュー**: 既存のプロジェクトの区切りは「未レビュー」で始まる(自動では流さない)。レビューをオンにした後、パネルの「レビューする」で流せる。
+
+1. **バックアップ**(VPS。5節): `pg_dump`でダンプを取り、VPS の外へコピーする。
+2. **更新前の head の確認**(VPS):
+
+   ```bash
+   docker compose -f docker-compose.prod.yml exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT version_num FROM alembic_version"'
+   # → e5f6a7b8c9d1 であることを確かめる
+   ```
+
+3. **鍵の設定**(VPS): devex-api の`.env`に`ANTHROPIC_API_KEY=<鍵>`を足す(必要なら上の任意の変数も)。4 の自動デプロイの`up -d`がコンテナを作り直すときに読み込まれる。鍵は Anthropic Console で、このサービス専用に作る(使用量の上限を Console 側にも設定しておくと、費用の歯止めが二重になる)。
+4. **devex-api の反映**(手元): ステージ8のコミット(Phase 51〜60)は、手元の`stage7`ブランチの上に積んである。`git fetch`で origin を取り込み、`stage8`ブランチを作って push する(`git switch -c stage8`・`git push -u origin stage8`)。`stage8`と origin/main の差を確かめてから、`stage8`→`main`の PR を作ってマージする。CI の test が通ると、9節の自動デプロイが走る。
+5. **確認**: GitHub Actions のログで、マイグレーション5本が`Running upgrade`と出ていることを確かめる。`curl -s https://<ドメイン>/health`が`{"status":"ok",...}`を返すことを確かめる。2 の SQL が`7c3e9ab5f4d6`を返すことを確かめ、鍵がコンテナに入ったかを値を出さずに確かめる。
+
+   ```bash
+   docker compose -f docker-compose.prod.yml exec -T backend sh -c 'test -n "$ANTHROPIC_API_KEY" && echo set || echo missing'
+   # → set
+   ```
+
+6. **superuser の昇格**(VPS): レビューを使うアカウントを、画面から登録してから手で昇格させる(seed は dev 専用で、本番では流さない)。
+
+   ```bash
+   docker compose -f docker-compose.prod.yml exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
+     UPDATE users SET is_superuser = true WHERE email = '\''<メールアドレス>'\'' RETURNING email, is_superuser, review_enabled;"'
+   # → 1行。review_enabled は false(画面のパネルでオンにする)
+   ```
+
+7. **devex-ui の反映**(手元): 5 が済んでから`main`を push する(Vercel が自動でデプロイする)。開いていた画面は再読み込み(Shift+F5)する。メニューの「開発用」は無くなる(デモのページ`/design-review-demo`は URL を直接開けば見られる)。
+8. **本番での確認**(実際の Gemini・Claude で): 次の表の項目を確かめ、結果と Anthropic の費用(Console の使用量)を記録しておく。Claude を流すのは表の「費用」の欄の分だけにする(見込み 約 $0.6・最大 約 $1.2。単価は Sonnet 5.5 入力 $2・出力 $10 / 100万トークン、Haiku 5.5 入力 $0.10・出力 $0.50)。
+
+   | 対象 | 確かめること | 費用 |
+   |---|---|---|
+   | レビューのオン・オフ | 一般の利用者にはパネルが出ない。superuser はパネルのスイッチでオンにでき、オフのときは生成の後に今の自己診断が出る | なし |
+   | 簡易モード(新しいプロジェクト、オン) | 4文書の生成の後に自動のレビューが流れ、チャットに件数の一行、パネルに指摘(重要度の順・文書の凡例 A〜D・対象へ飛ぶ)。採用・却下・保留、「採用 n(未対応 m)」、各タブの表のバッジ | Sonnet 1回 約 $0.10 |
+   | 〃(聞き直しの通し。Phase 59 の申し送り) | ヒアリングの指摘を採用 →「チャットで聞き直す」→ 観点が未決に戻り、値の選択肢カードで答える →「おすすめでよい」と答えても値が決まる → 要件定義書から再生成 → 自動のレビューが流れ直し、前の回で採用した指摘のチップ(「変更あり」・「AI: 直った」)が出る | Sonnet 1回 約 $0.10 + Haiku 数件 |
+   | 〃(差し戻し) | 設計の指摘を採用 → 再生成のダイアログで、採用した指摘が選ばれた状態・起点の初期値が関連する最も上流の文書になる(「AI 設計レビューの採用した指摘を、再生成の指示に入れる」)→ 作り直した版で指摘の対象が直っている | (上の流れ直しに含む) |
+   | 〃(テスト仕様書) | 5つ目のタブ「テスト仕様書(結合・総合)」・作り直しと進み具合・検証の結果の表と絞り込み・版の履歴の復元・zip の`test_spec.md`と注記 | なし(Gemini) |
+   | 〃(実装手順書) | 手順書の「未定義・要決定の一覧」、参照の 2.6 の行のエラー欄、検証の結果に`NO_ERROR_TEST`などが出たときの読みやすさ | なし |
+   | 詳細設計モード(新しいプロジェクト、オン) | 要件・外部の生成の後の自動のレビュー。段階6・7 の承認のダイアログから「レビューする」、区切りの状態(未レビュー・レビュー中・レビュー済み)、指摘から段階の対象へ飛ぶ(推定の当たり)、「採用した指摘で段階を作り直す」、各段階のバッジの強調、承認の知らせ、手順書の生成のときの未レビューの知らせ | Sonnet 3回 約 $0.38 |
+   | 〃(テスト仕様書) | 段階8の下の行・作るボタンと理由(段階1・7 が未承認のとき)・段階7 のダイアログ | なし(Gemini) |
+   | 〃 | レビューの出力が上限(`REVIEW_MAX_TOKENS`=16000)に当たらないか(当たるとレビューが失敗の回になる)。パネルの長さ | なし |
+   | 費用 | Anthropic Console の使用量が見込み(最大 約 $1.2)に収まったか | ── |
+
+**ロールバック**(6節): コードは`main`を`git revert`して push する。マイグレーションは`alembic downgrade e5f6a7b8c9d1`で戻す。
+
+- downgrade は、レビューの回・指摘・採否・「直ったか」の判定のテーブルと、`users.review_enabled`・`hearing_points.reopened_after`の列を消す。**レビューの記録はすべて消える**。superuser の昇格(`is_superuser`)は残る。
+- テスト仕様書の行(`doc_type="test_spec"`)は残るが、以前の版のコードは4種の文書しか読まないので、画面にも zip にも出ない(もう一度更新すると、また見える)。
+- 開発環境の DB の複製(利用者 70・テスト仕様書の版 34・レビューの回 28・指摘 314・判定 74)で、5本の downgrade → upgrade を2往復して確かめた。どちらの往復でも、upgrade の後はレビューの記録が 0・`review_enabled`はすべてオフ、利用者・観点の表・テスト仕様書の行の数は変わらない。
+- レビューの記録を残す必要があるなら、downgrade ではなく、1 のバックアップから戻すことを考える。
+
+### 10.6 使い勝手・マイページ(削除・検索・アカウント・モデルと API キー・生成の失敗の知らせ)を含む版への更新
+
+> **この節の手順では本番へ出していない。** ステージ9はステージ10とまとめて、10.7節の手順で出す。この節は、ステージ9で増えるもの(鍵・既定のモデル・マイグレーション)と、鍵を回す手順・ロールバックの注意の参照先として残す。
+
+本番が 10.5 の版(alembic の head が`7c3e9ab5f4d6`)のときに、使い勝手とマイページを含む版(ステージ9)へ更新する手順。10節と同じく、**API を先に、UI を後に出す**(UI を先に出すと、一覧の`{items, total}`・マイページ・削除が古い API を呼んで失敗する。逆に API だけ先に出た間は、古い UI の一覧が新しいレスポンスの形を読めずに空になる。間を短くする)。
+
+この版で増えるもの:
+
+- **環境変数**: `ENCRYPTION_KEY`(マイページで登録する API キーを暗号化する Fernet の鍵。カンマ区切りで複数)。無くても起動し、キーの登録だけが 503 になる(画面は「暗号の鍵が設定されていない」と出し、既定のキーでの利用は続く)。任意で`JUDGE_MODEL`(既定`claude-haiku-5-5`)。`LLM_TIMEOUT_SECONDS`・`REVIEW_TIMEOUT_SECONDS`・`JUDGE_TIMEOUT_SECONDS`は使わなくなった(タイムアウトはモデルごとに`app/ai/llm/catalog.py`が持つ)。`.env`に残っていても無視される。
+- **既定のモデル**: `.env`の`GEMINI_MODEL`(チャットと生成)・`REVIEW_MODEL`・`JUDGE_MODEL`が、そのまま全員の既定になる。利用者がマイページで選んだときだけ、その利用者の分が替わる。**本番では既定値の行(`user_model_settings`の`user_id`が NULL の行)を入れない**(seed は dev 専用)。既定を替えるときは`.env`を書き換えて`up -d`する。3つの値は選べるモデルの表(`app/ai/llm/catalog.py`)に無いと、その用途の呼び出しが失敗するので、4 の前に表と照らす。
+- **依存**: devex-api に`cryptography`、devex-ui に`@tamagui/toast`(2.6.0 に固定)。どちらもイメージ・ビルドが作り直すので、手で入れる作業は無い。
+- **マイグレーション**: 5本。9節の自動デプロイが流す。
+
+| リビジョン | 内容 | 利用者への影響 |
+|---|---|---|
+| `8d4f1a2b6c3e` | `projects.deleted_at`(削除の印)を足す | なし |
+| `4b7e2d9c1a6f` | `users.full_name`を`user_name`に改名する(列名だけを変え、値は残す) | なし(登録の欄の名前が「ユーザーネーム」になる) |
+| `9e1c5a7b3d20` | `user_model_settings`(用途ごとのモデル)・`user_api_keys`(暗号化した API キー)を作る | なし(行は利用者が選んだときにできる) |
+| `a7d3c9e1f5b2` | `projects.generation_failure`(直近の生成の失敗)を足す | なし |
+| `b8e4d0f2a6c3` | `design_stages.generation_finding_ids`(作り直しで渡した指摘)を足す | なし |
+
+既存のデータについて:
+
+- **レビュー**: superuser は今までどおり既定のキーでレビューできる。一般の利用者は、マイページでレビューの用途の AI(既定は Claude)の自分のキーを登録すると、レビューのパネルが出る(自分のキーの回は1日の上限で数えない)。
+- **削除**: 削除はすぐに印を付けて 204 を返し、行は後で消す(生成中のジョブの終わりにも消す)。
+
+1. **バックアップ**(VPS。5節): `pg_dump`でダンプを取り、VPS の外へコピーする。
+2. **更新前の head の確認**(VPS):
+
+   ```bash
+   docker compose -f docker-compose.prod.yml exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT version_num FROM alembic_version"'
+   # → 7c3e9ab5f4d6 であることを確かめる
+   ```
+
+3. **暗号の鍵の生成と設定**(VPS): 鍵は本番の backend のコンテナで作る(手元の端末やチャットに値を残さない)。
+
+   ```bash
+   docker compose -f docker-compose.prod.yml run --rm --no-deps backend \
+     uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+   ```
+
+   出た値を devex-api の`.env`に`ENCRYPTION_KEY=<値>`として足し、パスワード管理ツールにも控える(VPS の外に控えが無いと、VPS を作り直したときに鍵を失う)。4 の自動デプロイの`up -d`がコンテナを作り直すときに読み込まれる。`GEMINI_MODEL`・`REVIEW_MODEL`・`JUDGE_MODEL`が表にあることも、ここで確かめる。
+4. **devex-api の反映**(手元): ステージ9のコミット(Phase 61〜72)は、手元の`stage7`ブランチの上に積んである。`git fetch`で origin を取り込み、`git log --oneline origin/main..stage7`で、ステージ9のコミットだけが並ぶ(ステージ8のコミットは既に main に入っている)ことを確かめる。違っていれば、本番に出ている版を確かめてから進む。`stage9`ブランチを作って push し(`git switch -c stage9`・`git push -u origin stage9`)、`stage9`→`main`の PR を作ってマージする。CI の test が通ると、9節の自動デプロイが走る。
+5. **確認**: GitHub Actions のログで、マイグレーション5本が`Running upgrade`と出ていることを確かめる。`curl -s https://<ドメイン>/health`が`{"status":"ok",...}`を返すことを確かめる。2 の SQL が`b8e4d0f2a6c3`を返すことを確かめ、鍵がコンテナに入ったかを値を出さずに確かめる。
+
+   ```bash
+   docker compose -f docker-compose.prod.yml exec -T backend sh -c 'test -n "$ENCRYPTION_KEY" && echo set || echo missing'
+   # → set
+   ```
+
+6. **devex-ui の反映**(手元): 5 が済んでから、`git fetch`・`git log --oneline origin/main..main`で出すコミットを確かめ、`main`を push する(Vercel が自動でデプロイする)。開いていた画面は再読み込み(Shift+F5)する。ログイン中の利用者は、次に認証ページを開くまでログインの印の cookie を持たない(印が無くても困らない。ログインし直すか、トークンの更新で付く)。
+7. **本番での確認**(実際の Gemini・Claude で): 次の表の項目を確かめ、結果と Anthropic の費用(Console の使用量)を記録しておく。Claude を流すのは表の「費用」の欄の分だけにする(見込み 約 $0.15・最大 約 $0.3。単価は Sonnet 5.5 入力 $2・出力 $10、Haiku 5.5 入力 $0.10・出力 $0.50 / 100万トークン)。一般の利用者の自分のキーの分は、そのキーの Anthropic のアカウントに付く。
+
+   | 対象 | 確かめること | 費用 |
+   |---|---|---|
+   | ヘッダー・メニュー・モード選択 | タイトルがトップへのリンク。メニューの TOP / CONTENTS / Authentication / Guide と、ログインの状態での出し分け。メニューのログアウト。`/projects/new`をモードなしで開くとダイアログ | なし |
+   | 認証ページの振り分け | ログイン中に`/login`・`/register`を開くと`/dashboard`へ。ログアウトの後は開ける。DevTools で、ログインの印の cookie(`devex_logged_in`)に`Secure`が付いている | なし |
+   | 削除 | カードのゴミ箱・文書と詳細設計の画面の「削除」→ ダイアログ → トースト → 一覧から消える。生成中のプロジェクトも消せる。削除した URL を開いたときの表示(今は「Project … not found」) | なし |
+   | 検索・絞込み・ページ送り | 検索は Enter か「検索」で確定。モード・進行状態(複数)・条件のクリア・10件ごとのページ送り・URL に条件が残る。幅 375px での見出しの折り返し | なし |
+   | アカウント | ユーザーネーム・メール・パスワードの変更。パスワードを変えても、この端末のログインは続く | なし |
+   | 生成の失敗の知らせ | 失敗したときの画面の上の知らせ・承認できない理由と「検証の結果へ」・「この作り直しで渡した指摘」(失敗が起きたときだけ見られる) | なし |
+   | 一般の利用者の自分のキー | 新しい一般の利用者で、マイページから Claude のキーを登録(末尾4文字だけが出る)→ チャット・生成・レビュー・判定を Claude Haiku に → 簡易モード1本(ヒアリング → 4文書 → レビューのパネル → レビュー1回)。Haiku の推論のトークンの量(Console)も見る | Haiku 約 $0.05 |
+   | superuser の既定 | superuser(マイページで何も選ばない)で、既定の Sonnet のレビューを1回(ユーザーごとの解決の後も、既定の経路が動く) | Sonnet 約 $0.10 |
+   | 聞き直し | 上の流れで聞き直しを通すなら、値の欠けた答えの観点が未決(open)に残るかを見る | (上に含む) |
+   | 決める項目 | 一覧の検索欄の幅(`maxWidth`)・一般の利用者へのレビューの案内・ダッシュボードのカードの「前回の生成に失敗」を出すか | なし |
+   | 費用 | Anthropic Console の使用量が見込み(最大 約 $0.3)に収まったか | ── |
+
+**暗号の鍵を回す**: 新しい鍵を作り(3 と同じコマンド)、`.env`の`ENCRYPTION_KEY`の**先頭に**カンマで足して(`ENCRYPTION_KEY=<新>,<旧>`)`up -d`する。新しく登録・置き換えたキーは新しい鍵で暗号化され、前からのキーは古い鍵で読める。古い鍵を外すと、古い鍵で暗号化したキーは読めなくなり、マイページに「登録し直してください」と出る(その利用者の用途は既定のモデルに従う)。全行を暗号化し直すスクリプトは無いので、古い鍵は外さずに残しておく。**鍵を失ったとき**も同じで、新しい鍵を設定すれば、利用者がキーを登録し直すまで既定のモデルで動く。
+
+**ロールバック**(6節): コードは`main`を`git revert`して push する(devex-ui も同じ)。マイグレーションは`alembic downgrade 7c3e9ab5f4d6`で戻す。
+
+- downgrade の前に、削除の印が付いたまま残っている行が無いかを確かめる。`deleted_at`の列が消えると、その行は一覧に戻る(dev の DB の複製で確かめた)。残っていれば、先に消すか、戻ってもよいかを決める。
+
+   ```bash
+   docker compose -f docker-compose.prod.yml exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT count(*) FROM projects WHERE deleted_at IS NOT NULL"'
+   # → 0 であることを確かめる
+   ```
+
+- downgrade は、用途ごとのモデルと登録した API キーのテーブル、生成の失敗の記録と作り直しで渡した指摘の列を消す。**利用者の選んだモデルと登録したキーは消える**(もう一度更新しても戻らない。利用者が登録し直す)。`user_name`は`full_name`に戻り、値は残る。
+- 開発環境の DB の複製(利用者 111・プロジェクト 127・用途ごとのモデル 8・API キー 5・生成の失敗の記録 9)で、5本の downgrade → upgrade を2往復して確かめた。どちらの往復でも、upgrade の後はモデル・キー・失敗の記録が 0、利用者・プロジェクトの数と`user_name`の値は変わらない。
+- 選んだモデルと登録したキーを残す必要があるなら、downgrade ではなく、1 のバックアップから戻すことを考える。
+
+### 10.7 ステージ9・10(使い勝手・マイページ・Google 認証)をまとめて出す手順
+
+本番が 10.5 の版(alembic の head が`7c3e9ab5f4d6`)のときに、ステージ9(10.6節)とステージ10(Google でのログイン・登録・連携)を**1回で**出す手順。10節と同じく、**API を先に、UI を後に出す**。ステージ9で増えるもの(`ENCRYPTION_KEY`・既定のモデル・5本のマイグレーション・既存のデータの扱い)は 10.6節の「この版で増えるもの」のとおりで、ここには繰り返さない。
+
+ステージ10で増えるもの:
+
+- **Google Cloud の OAuth クライアント**: 本番用に新しく作る(手元の開発用のクライアントとは分ける。生成元と同意画面を本番だけで管理するため)。
+- **環境変数**: devex-api の`GOOGLE_CLIENT_ID`と、Vercel の`NEXT_PUBLIC_GOOGLE_CLIENT_ID`(同じ値)。どちらかが無いと、Google のボタンが出ないか(UI)、Google でのログインだけが 503 になる(API)。メールとパスワードのログインは影響を受けない。`E2E_FAKE_GOOGLE`・`NEXT_PUBLIC_E2E_FAKE_GOOGLE`は**どちらにも書かない**(API は本番で起動を拒否する。UI は偽のボタンになり、だれにでもなれる)。
+- **依存**: devex-api に`google-auth`、devex-ui に`@react-oauth/google`。イメージ・ビルドが作り直すので、手で入れる作業は無い。
+- **マイグレーション**: 1本(10.6節の5本の後)。
+
+| リビジョン | 内容 | 利用者への影響 |
+|---|---|---|
+| `c4f8a2e6d1b9` | `users.google_sub`(Google アカウントの識別子。unique)を足し、`users.hashed_password`を null 可にする | なし(既存の利用者は今までどおりパスワードでログインする) |
+
+- **ログインの失敗の文**: パスワードが違うとき・無効な利用者の文が日本語になる(「メールアドレスまたはパスワードが正しくありません。」「このアカウントは使えません。」)。
+
+手順:
+
+1. **バックアップ**(VPS。5節): `pg_dump`でダンプを取り、VPS の外へコピーする。
+2. **更新前の版の確認**(VPS):
+
+   ```bash
+   docker compose -f docker-compose.prod.yml exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT version_num FROM alembic_version"'
+   # → 7c3e9ab5f4d6 であることを確かめる
+   git -C <VPS の devex-api のパス> log --oneline -1
+   # → 本番が動かしているコミットを控える(ロールバックの戻り先)
+   ```
+
+   **origin の状態に注意**: 2026-10-18 の時点で、devex-api・devex-ui とも origin の`main`はステージ7の版(devex-api`25974d9`・devex-ui`3c8369e`)で、ステージ8(Phase 51〜60)のコミットも origin に無い。ステージ8は 10.5節で本番に出た記録があるので、2 の head が`7c3e9ab5f4d6`なら、ステージ8は origin を通らずに出ている。その場合も、4 の PR にはステージ8〜10のコミットが並ぶ(内容は本番と同じなので、そのまま出してよい)。**head が`e5f6a7b8c9d1`(ステージ7)だったときは**、ステージ8も未反映なので、先に 10.5節の 3(`ANTHROPIC_API_KEY`)を済ませ、5 のマイグレーションの数を 11本(10.5節の5本 + 10.6節の5本 + 上の1本)として読み替え、7 の確認に 10.5節の表を足す。
+3. **Google Cloud の準備**(Google Cloud Console。手元):
+   1. 「API とサービス」→「OAuth 同意画面」: アプリ名・サポートのメール・デベロッパーの連絡先を入れる。スコープは`openid`・`email`・`profile`だけ(足さない)。**公開ステータスを「本番環境」にする**(「テスト」のままだと、登録したテストユーザーしかログインできない)。この3つのスコープだけなら、Google の審査は要らない(ロゴを出すなら、ブランドの確認が要る)。
+   2. 「認証情報」→「認証情報を作成」→「OAuth クライアント ID」→ 種類「ウェブ アプリケーション」。名前は本番用と分かるもの(例: `devex-prod`)。
+   3. 「承認済みの JavaScript 生成元」に、**Vercel の本番 URL とカスタムドメインの両方**を入れる(例: `https://devex-ui.vercel.app`・`https://<カスタムドメイン>`)。末尾に`/`を付けない。「承認済みのリダイレクト URI」は空のままでよい(ポップアップで ID トークンを受け取るため)。
+   4. 出てきたクライアント ID(`….apps.googleusercontent.com`)を控える。クライアントシークレットは使わない(ID トークンの検証は公開鍵で行う)。
+4. **devex-api の設定**(VPS): `.env`に次を足す。8節の`CORS_ORIGINS`に、カスタムドメインも入っているかを確かめる(Google の生成元と同じ2つ)。
+
+   ```bash
+   # 暗号の鍵は本番の backend のコンテナで作る(手元の端末やチャットに値を残さない。10.6節の 3)
+   docker compose -f docker-compose.prod.yml run --rm --no-deps backend \
+     uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+   ```
+
+   - `ENCRYPTION_KEY=<上の値>`(パスワード管理ツールにも控える)
+   - `GOOGLE_CLIENT_ID=<3 のクライアント ID>`
+   - `GEMINI_MODEL`・`REVIEW_MODEL`・`JUDGE_MODEL`が選べるモデルの表(`app/ai/llm/catalog.py`)にあることも確かめる(10.6節)。
+
+   5 の自動デプロイの`up -d`がコンテナを作り直すときに読み込まれる。
+5. **devex-api の反映**(手元): ステージ8〜10のコミットは、手元の`stage7`ブランチの上に積んである。`git fetch`で origin を取り込み、`git log --oneline origin/main..stage7`で、並ぶのがステージ8〜10のコミット(Phase 51〜79)だけであることを確かめる。`stage10`ブランチを作って push し(`git switch -c stage10`・`git push -u origin stage10`)、`stage10`→`main`の PR を作ってマージする。CI の test が通ると、9節の自動デプロイが走る。
+6. **API の確認**: GitHub Actions のログで、マイグレーション6本(10.6節の5本 + `c4f8a2e6d1b9`)が`Running upgrade`と出ていることを確かめる。`curl -s https://<ドメイン>/health`が`{"status":"ok",...}`を返すことを確かめる。2 の SQL が`c4f8a2e6d1b9`を返すことを確かめ、鍵と ID がコンテナに入ったかを値を出さずに確かめる。
+
+   ```bash
+   docker compose -f docker-compose.prod.yml exec -T backend sh -c 'for v in ENCRYPTION_KEY GOOGLE_CLIENT_ID; do eval "test -n \"\$$v\"" && echo "$v set" || echo "$v missing"; done; test -z "$E2E_FAKE_GOOGLE" && echo "fake unset"'
+   # → ENCRYPTION_KEY set / GOOGLE_CLIENT_ID set / fake unset
+   ```
+
+7. **devex-ui の設定と反映**(Vercel・手元): 6 が済んでから行う。
+   1. Vercel のプロジェクトの環境変数(Production)に`NEXT_PUBLIC_GOOGLE_CLIENT_ID=<3 のクライアント ID>`を足す。`NEXT_PUBLIC_E2E_FAKE_GOOGLE`は足さない。
+   2. `git fetch`・`git log --oneline origin/main..main`で、並ぶのがステージ8〜10のコミットだけであることを確かめ、`main`を push する(Vercel が自動でデプロイする)。`NEXT_PUBLIC_*`はビルドで埋め込まれるので、1 の後のデプロイでなければボタンが出ない(1 を後から足したときは、Vercel で再デプロイする)。
+   3. 開いていた画面は再読み込み(Shift+F5)する。ログイン中の利用者は、次に認証ページを開くまでログインの印の cookie を持たない(10.6節の 6)。
+8. **本番での確認**: 次の2つの表を確かめ、結果と Anthropic の費用(Console の使用量)を記録しておく。Claude を流すのは「費用」の欄の分だけにする(見込み 約 $0.15・最大 約 $0.3。単価は 10.6節の 7)。画面は、ライトとダークの両方、幅 375px でも見る。
+
+   **ステージ9**(10.6節の 7 の表に、ステージ10の最後の Phase までに積んだ分を足した):
+
+   | 対象 | 確かめること | 費用 |
+   |---|---|---|
+   | ヘッダー・メニュー・モード選択 | タイトルがトップへのリンク。メニューの TOP / CONTENTS / Authentication / Guide と、ログインの状態での出し分け。メニューのログアウト。`/projects/new`をモードなしで開くとダイアログ | なし |
+   | 認証ページの振り分け | ログイン中に`/login`・`/register`を開くと`/dashboard`へ。ログアウトの後は開ける。DevTools で、ログインの印の cookie(`devex_logged_in`)に`Secure`が付いている | なし |
+   | 削除 | カードのゴミ箱・文書と詳細設計の画面の「削除」→ ダイアログ → トースト → 一覧から消える。生成中のプロジェクトも消せる。**削除した URL を、チャット・文書・詳細設計の3画面で開くと「プロジェクトが見つかりません」の知らせとダッシュボードへのリンク**が出る(見出し・リンク・ダーク・375px) | なし |
+   | 作成の後の一覧 | プロジェクトを作ってすぐダッシュボードへ戻ると、一覧に出る | なし |
+   | 検索・絞込み・ページ送り | 検索は Enter か「検索」で確定。モード・進行状態(複数)・条件のクリア・10件ごとのページ送り・URL に条件が残る | なし |
+   | アカウント | ユーザーネーム・メール・パスワードの変更。パスワードを変えても、この端末のログインは続く | なし |
+   | 押せないボタンの見た目 | 押せないボタンが薄くなる(緑・gray・red の各テーマ、ダーク)。承認できない段階の「承認する」・連携のダイアログの「連携する」(パスワードが空のとき)・送っている間の「連携を解除する」 | なし |
+   | 生成の失敗の知らせ | 失敗したときの画面の上の知らせ・承認できない理由と「検証の結果へ」・「この作り直しで渡した指摘」(失敗が起きたときだけ見られる) | なし |
+   | 一般の利用者の自分のキー | 新しい一般の利用者で、マイページから Claude のキーを登録(末尾4文字だけが出る)→ チャット・生成・レビュー・判定を Claude Haiku に → 簡易モード1本(ヒアリング → 4文書 → レビューのパネル → レビュー1回)。Haiku の推論のトークンの量(Console)も見る | Haiku 約 $0.05 |
+   | superuser の既定 | superuser(マイページで何も選ばない)で、既定の Sonnet のレビューを1回 | Sonnet 約 $0.10 |
+   | 聞き直し | 上の流れで聞き直しを通すなら、値の欠けた答えの観点が未決(open)に残るかを見る | (上に含む) |
+   | 操作感 | アカウントの節の縦の余白と長さ(Google の連携の枠が増え、Google だけの人は設定のフォームになった)・モデルの節を閉じると保存していない編集が消えること | なし |
+   | 決める項目 | 一般の利用者へのレビューの案内・ダッシュボードのカードの「前回の生成に失敗」を出すか・幅 375px でのダッシュボードの見出しの折り返し | なし |
+
+   **ステージ10**:
+
+   | 対象 | 確かめること | 費用 |
+   |---|---|---|
+   | ボタンの見た目 | ログイン・登録の画面で、フォームの下に「または」と Google のボタン。ダーク・375px での位置と幅。マイページの「Google の連携」の枠に、Google のボタン(幅 300px)が収まる | なし |
+   | 初めての Google | まだ使っていない Google アカウントで「Google でログイン」→ ポップアップ → `/dashboard`。`origin_mismatch`が出ない(Vercel の URL とカスタムドメインの両方で開いて確かめる)。リロードしてもログインが続く | なし |
+   | 連携の確かめ | パスワードで登録済みのメールの Google でログイン → ダイアログ「Google アカウントと連携」→ 違うパスワードで「メールアドレスまたはパスワードが正しくありません。」→ 正しいパスワードで入る。その後、メールとパスワードでもログインできる | なし |
+   | マイページの連携と解除 | パスワードの利用者で「Google で続行」→ ダイアログ → 連携。確認のダイアログの後に解除。解除の後もこの端末のログインが続く | なし |
+   | Google だけの人 | 初めての Google で作った利用者のマイページに、パスワードの「設定」だけが出る(メールの変更・解除は出ない)。設定すると、メールの変更・パスワードの変更・解除が出る | なし |
+   | ログインの失敗の文 | メールでのログインでパスワードが違うと、日本語の文が出る | なし |
+   | 費用 | Anthropic Console の使用量が見込み(最大 約 $0.3)に収まったか | ── |
+
+**ロールバック**(6節): **ステージ10だけを戻すなら、マイグレーションは戻さず、コードだけを戻す**のを先に考える。`c4f8a2e6d1b9`は列を足して NOT NULL を外すだけなので、ステージ9のコードはそのまま動く(余分な列は読まない)。ただし、Google だけの利用者がパスワードでログインしようとすると、ステージ9のコードは null のパスワードを照合できずに 500 になる(その利用者はどのみちログインできない)。コードは`main`を`git revert`して push する(devex-ui も同じ。UI からは Google のボタンが消える)。
+
+マイグレーションも戻すときは、`alembic downgrade 7c3e9ab5f4d6`(ステージ9も戻す)か`alembic downgrade b8e4d0f2a6c3`(ステージ10だけ)で、行き先のリビジョンを指定する(相対の指定はしない)。
+
+- downgrade の前に、パスワードが null の行(Google だけの利用者)と、削除の印の付いた行の数を確かめる。
+
+   ```bash
+   docker compose -f docker-compose.prod.yml exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT count(*) FROM users WHERE hashed_password IS NULL; SELECT count(*) FROM projects WHERE deleted_at IS NOT NULL"'
+   # → どちらも 0 であることを確かめる
+   ```
+
+- **パスワードが null の行が1件でもあると、downgrade は`c4f8a2e6d1b9`で失敗する**(`NotNullViolationError`)。失敗しても DB は元の head のまま(マイグレーションはトランザクションの中で流れる)。行があるときは、downgrade をやめてコードだけ戻すか、その利用者(とプロジェクト。`users`を消すと`projects`・`conversations`・用途ごとのモデル・API キーも消える)を消してよいかを決める。
+- **downgrade は Google の連携をすべて消す**(`google_sub`の列が消える)。もう一度更新しても戻らない。パスワードのある利用者は、次に Google でログインするときに連携の確かめ(パスワード)からやり直す。
+- 削除の印・モデル・API キーについては 10.6節のロールバックのとおり。
+- 開発環境の DB の複製(利用者 155・うちパスワードが null 13・Google と連携済み 25・プロジェクト 137)で確かめた。null の行があるまま`downgrade 7c3e9ab5f4d6`を流すと`c4f8a2e6d1b9`で失敗し、head は`c4f8a2e6d1b9`のまま、行の数も変わらなかった。null の13件を消してから、6本の downgrade → upgrade を2往復した。どちらの往復でも、利用者 142・プロジェクト 137 は変わらず、upgrade の後の`google_sub`は 0 件(連携は戻らない)。

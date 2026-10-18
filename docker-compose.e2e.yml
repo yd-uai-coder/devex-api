@@ -2,7 +2,7 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.e2e.yml up
 #
-# backendコンテナにE2E_FAKE_LLM=trueだけを上書きし、それ以外(DB接続・ポート等)は
+# backendコンテナにE2E_FAKE_LLM=trueと、E2E専用の暗号の鍵(ENCRYPTION_KEY)だけを上書きし、それ以外(DB接続・ポート等)は
 # docker-compose.ymlのまま使う。devex-ui(別リポジトリ)のPlaywright E2Eテスト
 # (devex-ui の playwright.config.ts)がこのコマンドをwebServerとして
 # 起動する想定。GOOGLE_API_KEY未設定のままでも、実際のGemini APIを一切呼ばずに
@@ -15,3 +15,9 @@ services:
   backend:
     environment:
       E2E_FAKE_LLM: "true"
+      # Google のログインの spec のための偽の検証(fake:<sub>:<email> を受け付ける。本番では起動時に拒否)
+      E2E_FAKE_GOOGLE: "true"
+      # マイページで API キーを登録する spec(stage9-flow.spec.ts)のための、E2E 専用の Fernet の鍵。
+      # 偽のキーしか暗号化しないので、ここに書いてよい。.env に自分の鍵があっても E2E の間はこちらが勝つ
+      # (その間、開発で登録したキーは「登録し直す」と出る。通常の起動に戻せば読める)。
+      ENCRYPTION_KEY: "oqM3KvgOQpsE8fRB_zIrMRp-vGBiBIssq81MAUbYJx8="

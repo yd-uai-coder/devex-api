@@ -31,6 +31,7 @@ from app.detailed_design.plan import (
     Risk,
     UnitKind,
 )
+from app.detailed_design.plan_goal import GOAL_RULE
 from app.detailed_design.prompt_rules import NAMING_RULES
 from app.detailed_design.requirement_trace import normalize_req_id
 
@@ -143,6 +144,11 @@ PLAN_SYSTEM_PROMPT = (
     "- modules には作る・直すモジュールのパスを、【モジュールのパスの一覧】からそのまま選んで書く"
     "(一覧に無いパスは書かない)。Dockerfile・docker-compose.yml・CI の設定などの環境・設定の"
     "ファイルは config_files に書く\n"
+    "- 詳細設計書のテーブルを作るタスク(モデルとマイグレーション)を、最初のマイルストーンに"
+    "置く(kind=base にするか、そのテーブルを最初に使う機能のタスクに含める)。モデルのファイルは"
+    "【モジュールのパスの一覧】にあれば modules に、マイグレーションのファイル"
+    "(例: alembic/versions/)は config_files に書く\n"
+    f"{GOAL_RULE}"
     "- リスクは3〜5件。納期・予算を超えそうなときに削る機能・代替手段も対策に書く" + NAMING_RULES
 )
 

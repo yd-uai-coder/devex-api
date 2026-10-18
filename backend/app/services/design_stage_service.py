@@ -1,5 +1,5 @@
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict
 
 import structlog
@@ -23,6 +23,7 @@ from app.detailed_design import (
     StageView,
     assign_unit_keys,
     can_approve,
+    component_element_layers,
     component_layers,
     confirm_drafts,
     current_inputs,
@@ -76,9 +77,11 @@ from app.detailed_design.validation import (
 from app.models.design_stage import DesignStage
 from app.models.generated_document import GeneratedDocument
 from app.models.project import Project
+from app.models.review import ReviewFinding
 from app.models.uml_diagram import UmlDiagram
 from app.repositories.design_stage import DesignStageRepository
 from app.repositories.generated_document import GeneratedDocumentRepository
+from app.repositories.review import ReviewRunRepository
 from app.repositories.uml_diagram import UmlDiagramRepository
 from app.schemas.design_stage import (
     DesignImpactRead,
@@ -86,6 +89,7 @@ from app.schemas.design_stage import (
     DesignStageRead,
     DfdAccessRead,
     ElementChangeRead,
+    GenerationFindingRead,
     ImpactMarkRead,
     RegenerationTargetRead,
     SequenceIssueRead,
@@ -146,7 +150,8 @@ class DesignStageService:
         簡易モードは段階8だけ)。"""
         rows, views, documents = await self._load(project)
         sources = await self._sources(project, rows, views, documents)
-        return [_to_read(views[stage], rows.get(stage), sources) for stage in views]
+        findings = await self._generation_findings(project.id, rows.values())
+        return [_to_read(views[stage], rows.get(stage), sources, findings) for stage in views]
 
     async def stage_view(
         self, project: Project, stage: int
@@ -164,6 +169,19 @@ class DesignStageService:
         rows, views, documents = await self._load(project)
         sources = await self._sources(project, rows, views, documents)
         return views, sources
+
+    async def approved_stages(
+        self, project: Project, stages: Sequence[int]
+    ) -> dict[int, tuple[int, dict]]:
+        """承認済みで古くない段階の、承認した版と内容(テスト仕様書の入力。承認されていない・古い
+        段階は入れない)。"""
+        rows, views, _ = await self._load(project)
+        approved = _approved_versions(rows, views)
+        return {
+            stage: (version, rows[stage].approved_model or {})
+            for stage in stages
+            if (version := approved.get(stage)) is not None
+        }
 
     async def current_fingerprint(self, project: Project, stage: int) -> Fingerprint:
         """段階が今入力にしているものの版(下書きの生成時に記録する。承認時と同じ規則)。"""
@@ -334,6 +352,30 @@ class DesignStageService:
         impact = set_reviewed(StageImpact.from_dict(row.impact), keys, reviewed)
         row.impact = impact.to_dict()
         await self._session.commit()
+
+    async def elements_since(
+        self, project: Project, snapshots: Mapping[int, dict]
+    ) -> dict[int, tuple[list[Element], list[Element]]]:
+        """段階ごとに、写し(`snapshots`。レビューしたときの段階の内容)の要素と、今の内容の要素
+        (その段階の置き場の要素だけ)。写しの側は、ほかの段階・文書を今のものとして組み立てる
+        (承認の変更の影響と同じ求め方)。"""
+        rows, _, documents = await self._load(project)
+        stages = {s: row.model for s, row in rows.items()}
+        docs = _document_models(documents)
+        er = await self._er_tables(project.id) if project.mode == "detailed" else {}
+        after = build_elements(DesignModels.from_dicts(stages, docs, er))
+        result: dict[int, tuple[list[Element], list[Element]]] = {}
+        for stage, snapshot in snapshots.items():
+            before = build_elements(
+                DesignModels.from_dicts(
+                    {**stages, stage: snapshot}, docs, _snapshot_er(stage, snapshot, er)
+                )
+            )
+            result[stage] = (
+                [e for e in before if e.stage == stage],
+                [e for e in after if e.stage == stage],
+            )
+        return result
 
     async def _er_tables(self, project_id: uuid.UUID) -> dict[str, dict]:
         """段階3の ER のテーブル名 → 定義(列と説明)。ER がまだ無ければ空。"""
@@ -507,7 +549,23 @@ class DesignStageService:
     async def _read_one(self, project: Project, stage: int) -> DesignStageRead:
         rows, views, documents = await self._load(project)
         sources = await self._sources(project, rows, views, documents)
-        return _to_read(views[stage], rows.get(stage), sources)
+        row = rows.get(stage)
+        findings = await self._generation_findings(project.id, [row] if row is not None else [])
+        return _to_read(views[stage], row, sources, findings)
+
+    async def _generation_findings(
+        self, project_id: uuid.UUID, rows: Iterable[DesignStage]
+    ) -> dict[str, ReviewFinding]:
+        """段階の直近の生成に渡した指摘を、ID の文字列で引けるようにまとめて1回で読む。"""
+        ids = {
+            uuid.UUID(finding_id)
+            for row in rows
+            for finding_id in (row.generation_finding_ids or [])
+        }
+        found = await ReviewRunRepository(self._session).list_findings(
+            project_id=project_id, finding_ids=sorted(ids)
+        )
+        return {str(finding.id): finding for finding in found}
 
     async def _sources(
         self,
@@ -730,6 +788,7 @@ def _component_summary(diagram: UmlDiagram) -> ComponentDiagramSummary:
         status=diagram.status,
         generation_status=diagram.generation_status,
         layers=tuple(component_layers(diagram.semantic_model)),
+        element_layers=component_element_layers(diagram.semantic_model),
     )
 
 
@@ -811,7 +870,12 @@ def _relabeled(model: dict | None, basis: ProcedureBasis | None) -> dict | None:
     return relabel_units(doc, basis.plan).model_dump(mode="json")
 
 
-def _to_read(view: StageView, row: DesignStage | None, sources: StageSources) -> DesignStageRead:
+def _to_read(
+    view: StageView,
+    row: DesignStage | None,
+    sources: StageSources,
+    findings: Mapping[str, ReviewFinding] | None = None,
+) -> DesignStageRead:
     # 段階8の作業単位(詳細設計モードは段階7、簡易モードは実装計画書の WBS)。画面の単位の一覧が使う
     basis = (
         _basis(sources) if view.stage == PROCEDURE_DOC_STAGE and view.is_open else None
@@ -843,7 +907,23 @@ def _to_read(view: StageView, row: DesignStage | None, sources: StageSources) ->
         unit_req_ids=basis.unit_req_ids() if basis is not None else {},
         impact_open=impact.open_count,
         impact_reviewed=impact.reviewed_count,
+        generation_findings=_generation_finding_reads(row, findings or {}),
     )
+
+
+def _generation_finding_reads(
+    row: DesignStage | None, findings: Mapping[str, ReviewFinding]
+) -> list[GenerationFindingRead]:
+    """直近の生成に渡した指摘を、渡した順に(消えた指摘は飛ばす)。"""
+    if row is None:
+        return []
+    return [
+        GenerationFindingRead(
+            id=finding.id, level=finding.level, targets=finding.targets, problem=finding.problem
+        )
+        for finding_id in row.generation_finding_ids or []
+        if (finding := findings.get(finding_id)) is not None
+    ]
 
 
 def _dfd_access_reads(sources: StageSources) -> list[DfdAccessRead]:

@@ -1,13 +1,16 @@
 import uuid
 
+from langchain_core.runnables import RunnableConfig
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.graph.workflow import get_chat_workflow
+from app.ai.llm.catalog import Purpose
 from app.core.config import settings
 from app.models.conversation import Conversation, Message
 from app.repositories.conversation import ConversationRepository
 from app.services.errors import ConversationNotFoundError
+from app.services.llm_resolver import LlmResolver
 from app.services.llm_retry import invoke_with_retry
 from app.services.rate_limit import RateLimit, RateLimiter
 
@@ -49,6 +52,10 @@ class ChatService:
             conversation_id=conversation.id, role="user", content=message
         )
 
+        resolver = LlmResolver(self._session)
+        llm = (await resolver.resolve(user_id, Purpose.CHAT)).llm
+        evaluator_llm = (await resolver.resolve(user_id, Purpose.CHAT, temperature=0)).llm
+        config: RunnableConfig = {"configurable": {"llm": llm, "evaluator_llm": evaluator_llm}}
         workflow = get_chat_workflow()
         initial_state = {
             "question": message,
@@ -61,7 +68,7 @@ class ChatService:
         }
         # 再試行とクォータ超過の判定は、Devexの他のLLM呼び出しと同じ共通の部品に寄せる
         # (クォータ超過はLLM_QUOTA_EXCEEDED、規定回数の失敗はLLM_API_ERRORになる)
-        result = await invoke_with_retry(lambda: workflow.ainvoke(initial_state))
+        result = await invoke_with_retry(lambda: workflow.ainvoke(initial_state, config))
 
         assistant_message = await self._conversations.add_message(
             conversation_id=conversation.id, role="assistant", content=result["answer"]

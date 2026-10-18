@@ -1,7 +1,10 @@
+import contextlib
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import structlog
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.project import Project
@@ -9,16 +12,27 @@ from app.repositories.chat_history import ChatHistoryRepository
 from app.repositories.intake_file import IntakeFileRepository
 from app.repositories.project import ProjectRepository
 from app.repositories.prompt_template import PromptTemplateRepository
-from app.schemas.project import IntakeFileRead, ProjectDetail, ProjectMode
+from app.schemas.project import (
+    PROJECT_PAGE_SIZE,
+    IntakeFileRead,
+    ProjectDetail,
+    ProjectListPage,
+    ProjectMode,
+    ProjectRead,
+    ProjectStatus,
+)
 from app.services.doc_generator_service import DocGeneratorService
 from app.services.errors import (
     FileTooLargeError,
     InvalidProjectNameError,
+    LlmUnavailableError,
     PromptTemplateNotFoundError,
     TooManyFilesError,
     UnsupportedFileTypeError,
 )
+from app.services.generation_progress import GenerationProgressStore
 from app.services.intake_file_processor import ALLOWED_FILE_TYPES, extract_text
+from app.services.llm_resolver import LlmResolver
 
 logger = structlog.get_logger(__name__)
 
@@ -85,15 +99,45 @@ class ProjectService:
         )
 
         for file in files:
-            await self._ingest_file(project.id, file)
+            await self._ingest_file(project.id, user_id, file)
 
         await self._session.commit()
         logger.info("project_created", project_id=str(project.id))
         return project
 
-    async def list_for_user(self, user_id: uuid.UUID) -> list[Project]:
-        """指定ユーザーのプロジェクト一覧を取得する。"""
-        return await self._projects.list_for_user(user_id)
+    async def list_page(
+        self,
+        user_id: uuid.UUID,
+        *,
+        q: str | None = None,
+        mode: ProjectMode | None = None,
+        statuses: Sequence[ProjectStatus] = (),
+        page: int = 1,
+    ) -> ProjectListPage:
+        """指定ユーザーのプロジェクト一覧の1ページ(10件)と、条件に合う全件数を返す。
+        `q`は前後の空白を落とし、空なら絞らない。
+        最後より後のページは、空の items と全件数を返す。"""
+        keyword = q.strip() if q else ""
+        items, total = await self._projects.search_for_user(
+            user_id,
+            q=keyword or None,
+            mode=mode,
+            statuses=statuses,
+            offset=(page - 1) * PROJECT_PAGE_SIZE,
+            limit=PROJECT_PAGE_SIZE,
+        )
+        return ProjectListPage(
+            items=[ProjectRead.model_validate(p) for p in items], total=total
+        )
+
+    async def delete(self, project: Project, *, redis: Redis | None = None) -> None:
+        """プロジェクトに削除の印を付け、生成の進み具合を消す。生成中でも削除できる。
+        行と子の行の物理削除は、呼び出し元がバックグラウンドで行う
+        (app/services/project_deletion.py の purge_deleted_projects)。"""
+        await self._projects.mark_deleted(project)
+        await self._session.commit()
+        await GenerationProgressStore(redis).clear(project.id)
+        logger.info("project_deleted", project_id=str(project.id))
 
     async def get_detail(self, project: Project) -> ProjectDetail:
         """プロジェクトの詳細(初期ヒアリング入力・添付ファイルサマリを含む)を返す。
@@ -109,6 +153,7 @@ class ProjectService:
             title=project.title,
             status=project.status,  # type: ignore[arg-type]
             mode=project.mode,  # type: ignore[arg-type]
+            generation_failure=project.generation_failure,  # type: ignore[arg-type]
             created_at=project.created_at,
             updated_at=project.updated_at,
             intake=project.intake,
@@ -124,14 +169,22 @@ class ProjectService:
         if len(file.data) > MAX_FILE_SIZE_BYTES:
             raise FileTooLargeError(f"ファイルサイズが上限を超えています: {file.filename}")
 
-    async def _ingest_file(self, project_id: uuid.UUID, file: UploadedFileInput) -> None:
+    async def _ingest_file(
+        self, project_id: uuid.UUID, user_id: uuid.UUID, file: UploadedFileInput
+    ) -> None:
         """1ファイルをテキスト化し、intake_filesへ記録する。成功時はchat_historiesにも追記する
         (sender='attachment' ── チャット画面には表示しないが、ヒアリング対話・ドキュメント生成
         双方のLLMコンテキストとしては引き続き使う。ファイル名自体は_format_intake_summaryが
         intake要約側に表示する)。テキスト化に失敗しても例外は送出しない(ヒアリング自体を
-        ブロックしないため)。"""
+        ブロックしないため)。PDFは持ち主の Gemini(自分のキー、無ければ既定)で読む。"""
         file_type = _resolve_file_type(file.filename)
-        extracted_text, error_message = await extract_text(file_type=file_type, data=file.data)
+        llm = None
+        if file_type == "pdf":
+            with contextlib.suppress(LlmUnavailableError):
+                llm = (await LlmResolver(self._session).resolve_pdf_reader(user_id)).llm
+        extracted_text, error_message = await extract_text(
+            file_type=file_type, data=file.data, llm=llm
+        )
         status = "processed" if extracted_text is not None else "failed"
         await self._intake_files.create(
             project_id=project_id,

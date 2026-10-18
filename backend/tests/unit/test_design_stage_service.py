@@ -1,5 +1,5 @@
 import pytest
-from fastapi import FastAPI
+from fastapi import BackgroundTasks, FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession
 from tests.fixtures.detailed_design import create_detailed_project, function_list_model
 
@@ -9,7 +9,7 @@ from app.api.routes.design_stages import (
     list_design_stages,
     save_design_stage,
 )
-from app.models import DesignStage
+from app.models import DesignStage, User
 from app.repositories.design_stage import DesignStageRepository
 from app.repositories.generated_document import GeneratedDocumentRepository
 from app.schemas.design_stage import DesignStageApprove, DesignStageSave, StageIssueRead
@@ -34,8 +34,11 @@ async def test_routes_save_approve_and_list_stage1(db_session: AsyncSession) -> 
     saved = await save_design_stage(
         1, DesignStageSave(version=None, model=MODEL), db_session, project
     )
+    owner = await db_session.get(User, project.user_id)
+    assert owner is not None
     approved = await approve_design_stage(
-        1, DesignStageApprove(version=saved.version or 0), db_session, project
+        1, DesignStageApprove(version=saved.version or 0), db_session, project, owner,
+        BackgroundTasks(),
     )
     stages = await list_design_stages(db_session, project)
 

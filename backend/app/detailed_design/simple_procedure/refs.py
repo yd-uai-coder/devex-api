@@ -5,7 +5,8 @@
 展開した中身は保存しない(詳細設計モードと同じく、生成の入力・画面の単位の詳細・AI 向けの出力の
 3か所が同じ関数を使う)。
 
-- DF の参照には、流れの表とデータ項目に加えて、同じ API の内部設計書 3.3・外部設計書 2.6 の行と、
+- DF の参照には、流れの表とデータ項目に加えて、同じ API の内部設計書 3.3・外部設計書 2.6 の行
+  (エラー欄を含む。異常系のテスト観点の手がかり)と、
   流れに出てくる 3.2節のテーブルを添える(作成方針 10章: API の契約・データ)。DF を持たない単位
   (基盤の単位など)には、3.2節のデータモデル全体を添える(`datamodel`)。
 - モジュールは層まで照合する(`module_layer`)。簡易モードのモジュール一覧は層ごとにまとめた行なので、
@@ -16,7 +17,7 @@
 - 関数の契約とシーケンス図は無い(`ExpandedRef.svg`・`mermaid`は None)。
 """
 
-from app.detailed_design.api_list import endpoint_key
+from app.detailed_design.api_list import endpoint_key, error_statuses
 from app.detailed_design.plan import PlanTask
 from app.detailed_design.procedure_doc import DesignRef, PlanUnit
 from app.detailed_design.procedure_doc_refs import ExpandedRef, UnitContext
@@ -96,10 +97,25 @@ def _api_lines(trigger: tuple[str, str] | None, book: SimpleDesignBook) -> list[
     external = book.external_apis.get(key)
     if external is not None:
         screens = "/".join(external.screens) or "—"
+        errors = f" / エラー: {external.errors}" if external.errors.strip() else ""
         lines.append(
-            f"- API(外部設計書 2.6): {key} ── {external.summary or '—'}(関連画面: {screens})"
+            f"- API(外部設計書 2.6): {key} ── {external.summary or '—'}"
+            f"(関連画面: {screens}){errors}"
         )
     return lines
+
+
+def unit_error_statuses(task: PlanTask, book: SimpleDesignBook) -> list[str]:
+    """単位の処理(DF)の API の、外部設計書 2.6 の「エラー」欄の HTTP ステータス(出てきた順)。"""
+    statuses: list[str] = []
+    for key in _clean(task.function_ids):
+        flow = book.dataflows.get(key)
+        if flow is None or flow.trigger is None:
+            continue
+        external = book.external_apis.get(endpoint_key(*flow.trigger))
+        if external is not None:
+            statuses += error_statuses(external.errors)
+    return list(dict.fromkeys(statuses))
 
 
 def crosscutting_section(book: SimpleDesignBook) -> str:

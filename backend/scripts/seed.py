@@ -1,11 +1,13 @@
-"""開発用のシードデータ ── ブラウザで `/docs` からログインを試すためのテストユーザーを 1 人作る。
+"""開発用のシードデータ ── `/docs` からログインを試すテストユーザー(一般・superuser)を作り、
+用途ごとのモデルのシステムの既定値を `.env` のモデルで書く。
 
 使い方:
     uv run python -m scripts.seed
     # docker:
     docker compose run --rm backend uv run python -m scripts.seed
 
-冪等 ── 既に居れば何もしない。**dev 専用**(本番 DB では実行しない)。
+冪等 ── 既に居れば何もしない。既定のモデルは実行のたびに `.env` の値で上書きする
+(`.env` が正)。**dev 専用**(本番 DB では実行しない)。
 """
 
 from __future__ import annotations
@@ -14,17 +16,27 @@ import asyncio
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.models.prompt_template import PromptTemplate
 from app.repositories.prompt_template import PromptTemplateRepository
+from app.repositories.user_model_setting import UserModelSettingRepository
 from app.services.errors import UserAlreadyExistsError
+from app.services.llm_defaults import env_default_models
 from app.services.user import UserService
 
-# ログインフォームに入れる固定ユーザー(full_name = 表示名。ログインは email + password)
+# ログインフォームに入れる固定ユーザー(user_name = ユーザーネーム。ログインは email + password)
 SEED_USER = {
-    "full_name": "sample-user",
+    "user_name": "sample-user",
     "email": "example-user@example.com",
     "password": "Sample-user-0123",
+}
+
+# superuser(レビュー機能のオン・オフを切り替えられるアカウント)
+SEED_SUPERUSER = {
+    "user_name": "sample-super-user",
+    "email": "example-super-user@example.com",
+    "password": "Sample-super-user-0123",
 }
 
 
@@ -63,23 +75,33 @@ SEED_PROMPT_TEMPLATES = [
 
 
 async def seed() -> None:
-    """テストユーザーを1人登録し、固定プロンプトテンプレートを投入する(いずれも既存ならスキップ)。"""
+    """テストユーザー(一般・superuser)を登録し、固定プロンプトテンプレートを投入する
+    (いずれも既存ならスキップ)。
+    用途ごとのモデルの既定値は `.env` の値で書く(既存なら上書き)。"""
     async with AsyncSessionLocal() as session:
-        await _seed_user(session)
+        await seed_users(session)
         await seed_prompt_templates(session)
+        await seed_default_models(session)
 
 
-async def _seed_user(session: AsyncSession) -> None:
+async def seed_users(session: AsyncSession) -> None:
+    """一般ユーザーと superuser を作る(email 一致で冪等判定。既存ユーザーの権限は変えない)。"""
     service = UserService(session)
-    try:
-        user = await service.create_user(
-            email=SEED_USER["email"],
-            password=SEED_USER["password"],
-            full_name=SEED_USER["full_name"],
-        )
-        print(f"created user: {user.email} ({user.id})")
-    except UserAlreadyExistsError:
-        print(f"user already exists: {SEED_USER['email']} (skip)")
+    for data, is_superuser in ((SEED_USER, False), (SEED_SUPERUSER, True)):
+        try:
+            user = await service.create_user(
+                email=data["email"],
+                password=data["password"],
+                user_name=data["user_name"],
+            )
+        except UserAlreadyExistsError:
+            print(f"user already exists: {data['email']} (skip)")
+            continue
+        if is_superuser:
+            # 登録の経路(create_user)からは superuser を作れないため、作成後に昇格させる
+            user.is_superuser = True
+            await session.commit()
+        print(f"created user: {user.email} ({user.id}, superuser={user.is_superuser})")
 
 
 async def seed_prompt_templates(session: AsyncSession) -> None:
@@ -94,6 +116,17 @@ async def seed_prompt_templates(session: AsyncSession) -> None:
         session.add(template)
         await session.flush()
         print(f"created prompt template: {template.name} ({template.id})")
+    await session.commit()
+
+
+async def seed_default_models(session: AsyncSession) -> None:
+    """用途ごとのモデルのシステムの既定値(user_id が null の行)を、`.env` のモデルで書く。
+    値は seed に書かず、設定から読む。既にある行は上書きする
+    (`.env` を変えて流し直せば反映される)。"""
+    repo = UserModelSettingRepository(session)
+    for purpose, (provider, model) in env_default_models(settings).items():
+        await repo.upsert_default(purpose=purpose, provider=provider, model=model)
+        print(f"default model: {purpose} = {provider}/{model}")
     await session.commit()
 
 

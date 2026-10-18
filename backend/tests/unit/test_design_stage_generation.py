@@ -729,7 +729,7 @@ async def test_stage4_generation_writes_component_and_modules_and_can_be_approve
     assert STAGE_GENERATORS[4] is generate_structure
     assert llm.structured_output_calls == [ComponentGenerationOutput, ModuleListGenerationOutput]
     [module_prompt] = prompts
-    assert "- api/routes(層: api)" in module_prompt
+    assert "- 箱「api/routes」 / 層: api" in module_prompt
     assert "- F-01 × reservations: C" in module_prompt
     assert "## テーブル\n- reservations" in module_prompt
     assert stage4.state == "draft"
@@ -860,7 +860,7 @@ async def test_stage5_route_generates_pending_procedure_and_can_be_approved(
 
     assert accepted.generation_status == "generating"
     # 対象の指定なし → 実行時に手順の無い処理を選ぶ
-    assert tasks.tasks[0].args[3:] == (None, None, None)
+    assert tasks.tasks[0].args[3:] == (None, None, None, [])
     assert STAGE_GENERATORS[5] is generate_procedures
     assert llm.structured_output_calls == [ProcedureGenerationOutput]
     [prompt] = prompts
@@ -1029,7 +1029,7 @@ async def test_stage6_route_generates_pending_logic_and_can_be_approved(
     stage6 = await service.read(project_id, 6)
 
     assert accepted.generation_status == "generating"
-    assert tasks.tasks[0].args[3:] == (None, None, None)
+    assert tasks.tasks[0].args[3:] == (None, None, None, [])
     assert STAGE_GENERATORS[6] is generate_logics
     assert llm.structured_output_calls == [LogicGenerationOutput]
     [prompt] = prompts

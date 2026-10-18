@@ -307,7 +307,8 @@ def plan_model(
 ) -> dict:
     """段階7の検証を通る横断事項と実装計画(既定の横断事項4項目・マイルストーン1つ・リスク1件)。
 
-    マイルストーンには、基盤の単位 M-01-T01(キー U-001。環境・設定のファイル`Dockerfile`)と、
+    マイルストーンには、基盤の単位 M-01-T01(キー U-001。環境・設定のファイル`Dockerfile`と、
+    段階3の reservations を作るマイグレーション)と、
     それに依存する機能の単位 M-01-T02(キー U-002。F-01、モジュール`module`)を置く。
     `function_list_model()`の F-01 と`module_list_model()`のパスを参照する。`function_ids`に
     機能一覧に無い処理IDを、`module`にモジュール一覧に無いパスを渡すと、検証のエラーになる。"""
@@ -335,7 +336,7 @@ def plan_model(
                         "function_ids": [],
                         "depends_on": [],
                         "modules": [],
-                        "config_files": ["Dockerfile"],
+                        "config_files": ["Dockerfile", "alembic/versions/0001_reservations.py"],
                     },
                     {
                         "key": "U-002",

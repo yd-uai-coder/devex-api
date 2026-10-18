@@ -2,7 +2,7 @@
 
 `tests/fixtures/fake_llm.py`のFakeLLM(pytestが個々のテストでコンストラクタ引数として
 台本を注入する設計)とは別物。こちらは`docker compose`で起動する実プロセスに対して
-`E2E_FAKE_LLM=true`という環境変数経由でのみ有効化され(app/ai/llm/gemini.py参照)、
+`E2E_FAKE_LLM=true`という環境変数経由でのみ有効化され(app/ai/llm/factory.py参照)、
 Playwrightのブラウザ操作からPythonプロセス内部へ台本を注入する経路が無い。
 そのため、LLMに渡された`messages`自体(システムプロンプトの文言・HumanMessageの件数)を
 手がかりに、外部から一切設定を注入されなくても意味のある応答を返せるよう、ステートレスかつ
@@ -68,7 +68,10 @@ from app.documents.requirements.drafting import (
     GeneratedUserScene,
     RequirementsGenerationOutput,
 )
+from app.documents.test_spec.drafting import GeneratedCase, TestSpecGenerationOutput
 from app.hearing import POINT_DEFS, is_point_key
+from app.review.fix_check import FixCheckOut
+from app.review.schemas import ReviewFindingOut, ReviewOutput
 from app.schemas.hearing import (
     CardOptionOut,
     CardOut,
@@ -181,7 +184,7 @@ _IMPLEMENTATION_PLAN_OUTPUT = plan_doc.ImplementationPlanGenerationOutput(
                     req_ids=[],
                     depends_on=[],
                     modules=["app/main.py"],
-                    config_files=["docker-compose.yml"],
+                    config_files=["docker-compose.yml", "alembic/versions/0001_reservations.py"],
                 ),
                 plan_doc.GeneratedTask(
                     id="M-01-T02",
@@ -237,6 +240,41 @@ _EXTERNAL_DESIGN_OUTPUT = ExternalDesignGenerationOutput(
             req_ids=["FR-002"],
             response="200 予約の配列",
         ),
+    ],
+)
+
+
+def _case(
+    level: str, target: str, viewpoint: str, expected: str, req_ids: list[str]
+) -> GeneratedCase:
+    return GeneratedCase.model_validate(
+        {
+            "level": level,
+            "target": target,
+            "viewpoint": viewpoint,
+            "precondition": "",
+            "steps": "[E2E Fake] 手順",
+            "expected": expected,
+            "design_gap": "",
+            "req_ids": req_ids,
+            "screens": ["SCR-001"],
+        }
+    )
+
+
+# テスト仕様書の下書き。_EXTERNAL_DESIGN_OUTPUT の2つの API に正常・異常を1件ずつと、画面の流れを
+# 1件(決定的な検証の指摘が0件になる形)。要件ID は偽の要件定義書の FR-001・FR-002。
+_TEST_SPEC_OUTPUT = TestSpecGenerationOutput(
+    target="[E2E Fake] API 2本と予約画面",
+    out_of_scope="なし",
+    environment="Docker Compose。LLM は偽 LLM",
+    done_criteria="Must の要件すべてにテストがある",
+    cases=[
+        _case("integration", "POST /api/v1/reservations", "正常", "201", ["FR-001"]),
+        _case("integration", "POST /api/v1/reservations", "異常", "409", ["FR-001"]),
+        _case("integration", "GET /api/v1/reservations", "正常", "200", ["FR-002"]),
+        _case("integration", "GET /api/v1/reservations", "異常", "401", ["FR-002"]),
+        _case("system", "SCR-001", "正常", "予約が一覧に出る", ["FR-001", "FR-002"]),
     ],
 )
 
@@ -461,7 +499,11 @@ _UML_OUTPUTS[PlanGenerationOutput] = PlanGenerationOutput(
                     function_ids=[],
                     depends_on=[],
                     modules=[],
-                    config_files=["Dockerfile", "docker-compose.yml"],
+                    config_files=[
+                        "Dockerfile",
+                        "docker-compose.yml",
+                        "alembic/versions/0001_reservations.py",
+                    ],
                 ),
                 GeneratedTask(
                     kind="feature",
@@ -512,6 +554,12 @@ _UML_OUTPUTS[ProcedureDocGenerationOutput] = ProcedureDocGenerationOutput(
             responsibility="[E2E Fake] 予約の API",
             basis="段階4",
         ),
+        GeneratedUnitFile(
+            path="tests/test_reservations.py",
+            kind="test",
+            responsibility="[E2E Fake] 予約の登録と一覧のテスト",
+            basis="テスト観点",
+        ),
     ],
     notes=["[E2E Fake] サービスを先に書き、ルートから呼ぶ"],
     tests=_PROCEDURE_DOC_TESTS,
@@ -541,6 +589,12 @@ _UML_OUTPUTS[SimpleProcedureDocGenerationOutput] = SimpleProcedureDocGenerationO
             responsibility="[E2E Fake] 予約のルート",
             basis="内部設計書 3.3",
         ),
+        GeneratedUnitFile(
+            path="tests/test_reservations.py",
+            kind="test",
+            responsibility="[E2E Fake] 予約の登録のテスト",
+            basis="テスト観点",
+        ),
     ],
     notes=["[E2E Fake] サービスを先に書き、ルートから呼ぶ"],
     tests=_PROCEDURE_DOC_TESTS,
@@ -555,6 +609,37 @@ _UML_OUTPUTS[SimpleProcedureDocGenerationOutput] = SimpleProcedureDocGenerationO
         )
     ],
 )
+
+# 設計レビューの偽物(ヒアリングが原因の指摘を1件含め、観点のキーの受け渡しを試せるようにする)
+_REVIEW_OUTPUT = ReviewOutput(
+    findings=[
+        ReviewFindingOut(
+            level="critical",
+            cause="design",
+            targets=["[E2E Fake] SCR-001"],
+            documents=["external_design", "internal_design"],
+            point_key=None,
+            problem="[E2E Fake] 予約の取り消しの API が無い",
+            evidence="[E2E Fake] 予約を取り消せる",
+            reason="[E2E Fake] 画面の操作に API が無い",
+            suggestion="[E2E Fake] 取り消しの API を足す",
+        ),
+        ReviewFindingOut(
+            level="major",
+            cause="hearing",
+            targets=["[E2E Fake] 観点 セキュリティ"],
+            documents=["requirements", "external_design"],
+            point_key="security",
+            problem="[E2E Fake] 誰が誰の予約を見られるかが決まっていない",
+            evidence="[E2E Fake] 通信を HTTPS で暗号化する",
+            reason="[E2E Fake] 要件にアクセス制御が無い",
+            suggestion="[E2E Fake] 本人以外の閲覧の可否を聞き直す",
+        ),
+    ]
+)
+
+# 採用した指摘が直ったかの判定の偽物
+_FIX_CHECK_OUTPUT = FixCheckOut(verdict="fixed", reason="[E2E Fake] 指摘の対象が直っている")
 
 _HEARING_REPLY = "[E2E Fake] 承知しました。次に、想定している主なユーザー層を教えてください。"
 _SELF_DIAGNOSIS_REPLY = "[E2E Fake] 自己診断: 特に致命的な不足点はありません。"
@@ -698,13 +783,19 @@ class _FakeStructuredE2e:
             return _INTERNAL_DESIGN_OUTPUT
         if self._schema is plan_doc.ImplementationPlanGenerationOutput:
             return _IMPLEMENTATION_PLAN_OUTPUT
+        if self._schema is TestSpecGenerationOutput:
+            return _TEST_SPEC_OUTPUT
+        if self._schema is ReviewOutput:
+            return _REVIEW_OUTPUT
+        if self._schema is FixCheckOut:
+            return _FIX_CHECK_OUTPUT
         # ヒアリング・UML生成スキーマ以外のスキーマが追加された場合は
         # 「対応漏れ」に気づけるよう黙って汎用値を返さず例外にする。
         raise NotImplementedError(f"E2eFakeLLMが未対応のスキーマ: {self._schema}")
 
 
 class E2eFakeLLM:
-    """`E2E_FAKE_LLM=true`のときget_gemini_llm()が返すスタブ実装。
+    """`E2E_FAKE_LLM=true`のとき LLM の組み立て(build_llm)がすべての用途に返すスタブ実装。
 
     chat_service.py・doc_generator_service.pyが実際に呼び出すメソッド(astream/ainvoke/
     with_structured_output().ainvoke)のみを実装する(invoke()の同期版は呼ばれないため
@@ -719,8 +810,9 @@ class E2eFakeLLM:
         return AIMessage(content=self._reply_for(messages))
 
     def with_structured_output(
-        self, schema: type[BaseModel], *, include_raw: bool = False
+        self, schema: type[BaseModel], *, include_raw: bool = False, method: str | None = None
     ) -> _FakeStructuredE2e:
+        # method(構造化出力の方式。設計レビューが "json_schema" を渡す)は偽物では使わない
         return _FakeStructuredE2e(schema, include_raw=include_raw)
 
     def _reply_for(self, messages: list[Any]) -> str:
@@ -737,5 +829,5 @@ class E2eFakeLLM:
 
 @lru_cache
 def get_e2e_fake_llm() -> E2eFakeLLM:
-    """E2eFakeLLMインスタンスをプロセス内で1つだけ生成する(get_gemini_llmと同じキャッシュ方針)。"""
+    """E2eFakeLLMインスタンスをプロセス内で1つだけ生成する(実クライアントと同じく使い回す)。"""
     return E2eFakeLLM()

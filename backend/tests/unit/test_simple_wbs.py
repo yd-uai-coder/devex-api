@@ -27,7 +27,11 @@ def test_parses_milestones_and_units_in_order() -> None:
     assert unit_ids(plan) == ["M-01-T01", "M-01-T02", "M-02-T01"]
     base, feature = plan.milestones[0].tasks
     assert (base.kind, base.function_ids, base.depends_on) == ("base", [], [])
-    assert base.config_files == ["docker-compose.yml", ".env.example"]
+    assert base.config_files == [
+        "docker-compose.yml",
+        ".env.example",
+        "alembic/versions/0001_reservations.py",
+    ]
     assert (feature.kind, feature.title) == ("feature", "予約を登録する")
     assert feature.function_ids == ["DF-1"]
     assert feature.req_ids == ["FR-001"]

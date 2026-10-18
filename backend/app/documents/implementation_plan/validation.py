@@ -7,6 +7,8 @@
 指摘する。こちらは文書のプレビューに出すため、同じ種類の指摘を1件にまとめる。
 """
 
+from app.detailed_design.plan import milestone_id
+from app.detailed_design.plan_goal import uncovered_goal_terms
 from app.detailed_design.procedure_doc import PlanUnit, plan_units
 from app.detailed_design.requirement_trace import unit_req_ids
 from app.documents.implementation_plan.model import ImplementationPlanModel
@@ -115,4 +117,25 @@ def validate_implementation_plan(model: ImplementationPlanModel) -> list[Documen
             "どのタスクにも入っていない内部設計書の処理があります",
             [f for f in model.known_dataflow_ids if f not in set(planned)],
         )
-    return issues + _dependency_issues(units) + _requirement_issues(model, units)
+    return (
+        issues
+        + _dependency_issues(units)
+        + _requirement_issues(model, units)
+        + _goal_issues(model)
+    )
+
+
+def _goal_issues(model: ImplementationPlanModel) -> list[DocumentIssue]:
+    """ゴールが挙げるのに、そのマイルストーンのどのタスクも作らないもの(`plan_goal`)。"""
+    targets = [
+        f"{milestone_id(i)}({'・'.join(terms)})"
+        for i, m in enumerate(model.milestones)
+        if (terms := uncovered_goal_terms(m))
+    ]
+    return _issue(
+        "major",
+        "GOAL_WITHOUT_TASK",
+        "ゴールに書いたものを作るタスクが、そのマイルストーンにありません",
+        targets,
+        "(作るタスクを足すか、ゴールから外してください)",
+    )

@@ -71,7 +71,9 @@ COMPONENT_SYSTEM_PROMPT = (
     "(例: ルーター(api/routes)、サービス(services)、リポジトリ(repositories))\n"
     "- description にはパッケージの責務を短く書く\n"
     "- dependencies は呼び出し・import の向き(依存する側 → 依存される側)で表す\n"
-    "- 設定・ログ・入出力の型のように、ほぼ全層から使う定型のパッケージは省く\n"
+    "- 設定・ログ・入出力の型のように、ほぼ全層から使う定型のパッケージは省く。ただし"
+    "【テーブル】があれば、テーブルを定義するモデル(ORM)のパッケージ"
+    "(例: モデル(models))はリポジトリと同じ層に置く\n"
     f"- 要素は合計{MAX_ELEMENTS}個以内にし、ID は図の中で一意にする\n"
     "- 入力に書かれていない業務のパッケージを創作しない"
     + NAMING_RULES
@@ -82,13 +84,17 @@ MODULE_SYSTEM_PROMPT = (
     "(パス / 層 / 責務 / 主な依存先 / 関わる処理)にします。\n"
     "規則:\n"
     "- path は【構成図】のパッケージの下のファイルのパスにする。同じパスを2回書かない\n"
-    "- layer は、そのファイルが属する【構成図】のパッケージの層の名前をそのまま書く\n"
+    "- layer は、そのファイルが属する【構成図】のパッケージの「層」の値をそのまま書く"
+    "(箱の名前ではない。例: 箱「ルーター」/ 層: 入口 なら 入口)\n"
     "- functions には、そのモジュールが関わる処理の処理IDを書く。テーブルを読み書きするモジュールは"
     "【CRUD図】でそのテーブルを使う処理を手がかりにする\n"
     "- 全処理が通るモジュール(アプリの組み立て・認証の DI・例外の変換)は"
     " all_functions を true にし、"
     "functions を空にする\n"
     "- 全ての処理が、少なくとも1つのモジュールの functions に現れるようにする\n"
+    "- リポジトリとは別に、【テーブル】のテーブルを定義するモデル(ORM)のファイルを、"
+    "モデルのパッケージの下に置く(例: app/models/user.py。似たものは app/models/*.py に"
+    "まとめてよい)。layer はリポジトリと同じにし、責務にはテーブルの名前を書く\n"
     "- 入出力の型・設定のような定型のファイルは省くか1行にまとめる\n"
     "- 処理ID・層の名前は入力の値をそのまま書き、入力に無い処理を創作しない"
     + NAMING_RULES
@@ -142,7 +148,8 @@ def build_module_messages(
     """モジュール一覧の下書きの入力。構成図は要素(名前・層・責務)と依存の向きを文で渡す。"""
     names = {element.id: element.name for element in component.elements}
     packages = "\n".join(
-        f"- {e.name}(層: {e.layer or '未設定'}){e.description or ''}" for e in component.elements
+        f"- 箱「{e.name}」 / 層: {e.layer or '未設定'} / 責務: {e.description or '—'}"
+        for e in component.elements
     )
     dependencies = "\n".join(
         f"- {names.get(r.source_id, r.source_id)} → {names.get(r.target_id, r.target_id)}"

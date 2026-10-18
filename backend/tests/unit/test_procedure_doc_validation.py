@@ -187,3 +187,71 @@ def test_stub_naming_the_sut_or_unknown_sut_is_not_reported() -> None:
 
     assert validate_procedure_doc(sut_named, _sources()) == []
     assert validate_procedure_doc(unknown, _sources()) == []
+
+
+def _plan_without_migration() -> dict:
+    plan = plan_model()
+    plan["milestones"][0]["tasks"][0]["config_files"] = ["Dockerfile"]
+    return plan
+
+
+def test_dependency_built_by_a_later_unit_points_to_stage7() -> None:
+    """単位のモジュールの依存先(段階4)を、後ろの単位が作る。基盤の単位のファイルは見ない。"""
+    service = "app/services/reservation.py"
+    modules = module_list_model()
+    modules["modules"][0]["depends_on"] = ["fastapi", service]
+    modules["modules"].append({"path": service, "layer": "service", "functions": ["F-01"]})
+    plan = plan_model()
+    task = {"key": "U-003", "kind": "feature", "title": "予約を検証する", "modules": [service]}
+    plan["milestones"][0]["tasks"].append(task)
+
+    issues = validate_procedure_doc(procedure_doc_model(), _sources({4: modules, 7: plan}))
+
+    assert [(i.code, i.level, i.fix_stage, i.target, i.unit) for i in issues] == [
+        ("DEPENDENCY_BUILT_LATER", "major", 7, service, "M-01-T02")
+    ]
+    assert "後の単位 M-01-T03 で作られます" in issues[0].message
+
+
+def test_procedure_without_test_file_is_minor_to_stage8() -> None:
+    model = procedure_doc_model()
+    files = model["units"][0]["files"]
+    model["units"][0]["files"] = [f for f in files if f["kind"] != "test"]
+
+    issues = validate_procedure_doc(model, _sources())
+
+    assert [(i.code, i.level, i.fix_stage, i.target, i.unit) for i in issues] == [
+        ("NO_TEST_FILE", "minor", 8, "M-01-T02", "M-01-T02")
+    ]
+    # テスト観点が無ければ、テストのファイルが無くても指摘しない
+    model["units"][0]["tests"] = []
+    assert validate_procedure_doc(model, _sources()) == []
+
+
+def test_no_schema_unit_is_critical_to_stage4_or_stage7() -> None:
+    """スキーマのファイルを作る単位が無い。モジュール一覧に無ければ段階4、あれば段階7で直す。"""
+    without_row = validate_procedure_doc({}, _sources({7: _plan_without_migration()}))
+    modules = module_list_model()
+    modules["modules"].append({"path": "app/models/reservation.py", "layer": "model"})
+    with_row = validate_procedure_doc({}, _sources({4: modules, 7: _plan_without_migration()}))
+
+    assert [(i.code, i.level, i.fix_stage, i.target, i.unit) for i in without_row] == [
+        ("NO_SCHEMA_UNIT", "critical", 4, None, None)
+    ]
+    assert "reservations" in without_row[0].message
+    assert [(i.code, i.fix_stage) for i in with_row] == [("NO_SCHEMA_UNIT", 7)]
+
+
+def test_table_without_schema_file_is_minor_to_stage7() -> None:
+    crud = {
+        "cells": [
+            {"function_id": "F-01", "table": "reservations", "ops": "C"},
+            {"function_id": "F-01", "table": "items", "ops": "R"},
+        ]
+    }
+
+    issues = validate_procedure_doc({}, _sources({3: crud}))
+
+    assert [(i.code, i.level, i.fix_stage, i.target, i.unit) for i in issues] == [
+        ("TABLE_WITHOUT_UNIT", "minor", 7, "items", None)
+    ]

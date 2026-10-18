@@ -4,14 +4,23 @@ from app.core.errors import (
     BadGatewayError,
     BadRequestError,
     ConflictError,
+    ForbiddenError,
     NotFoundError,
+    ServiceUnavailableError,
     TooManyRequestsError,
     UnauthorizedError,
+    UnprocessableEntityError,
 )
 
 
 class InvalidCredentialsError(UnauthorizedError):
     """メールアドレスまたはパスワードが誤っている、もしくは無効化済みユーザーの場合に送出する。"""
+
+
+# InvalidCredentialsError の文。パスワードでのログインと、Google との連携の確かめで同じ文にする
+# (画面はこの文をそのまま出す)。
+INVALID_CREDENTIALS_MESSAGE = "メールアドレスまたはパスワードが正しくありません。"
+INACTIVE_USER_MESSAGE = "このアカウントは使えません。"
 
 
 class InvalidTokenError(UnauthorizedError):
@@ -317,3 +326,177 @@ class RequirementNotAssumedError(ConflictError):
     """推測でない要件を「採用」にしようとした場合に送出する(画面が古いまま押したときに起きうる)。"""
 
     code: ClassVar[str | None] = "REQUIREMENT_NOT_ASSUMED"
+
+
+class ReviewNotAllowedError(ForbiddenError):
+    """設計レビューを使えないアカウント(superuser 以外・設定がオフ)が、レビューの設定の変更や
+    レビューを要求した場合に送出する。"""
+
+    code: ClassVar[str | None] = "REVIEW_NOT_ALLOWED"
+
+
+class LlmUnavailableError(BadGatewayError):
+    """チャット・生成の LLM を使えない(選んだ AI のキーが自分にも既定にも無い)場合に送出する。"""
+
+    code: ClassVar[str | None] = "LLM_UNAVAILABLE"
+
+
+class ReviewUnavailableError(BadGatewayError):
+    """設計レビューの LLM を使えない(API キーが無い)場合に送出する。自動のレビューでは失敗として
+    記録し、自己診断に切り替える。"""
+
+    code: ClassVar[str | None] = "REVIEW_UNAVAILABLE"
+
+
+class ReviewRateLimitExceededError(TooManyRequestsError):
+    """superuser ごとの1日のレビューの回数の上限を超えた場合に送出する。"""
+
+    code: ClassVar[str | None] = "REVIEW_LIMIT_EXCEEDED"
+
+
+class ReviewInProgressError(ConflictError):
+    """同じプロジェクトでレビューが実行中のときに、レビューを再度要求した場合に送出する。"""
+
+    code: ClassVar[str | None] = "REVIEW_IN_PROGRESS"
+
+
+class ReviewFindingNotFoundError(NotFoundError):
+    """プロジェクトに無い(別のプロジェクトの・存在しない)設計レビューの指摘の採否を変えようとした
+    場合に送出する。"""
+
+    code: ClassVar[str | None] = "REVIEW_FINDING_NOT_FOUND"
+
+
+class ReviewDocumentsNotReadyError(ConflictError):
+    """レビューの区切りがそろっていない(文書を生成していない・段階が承認されていない・モードに無い
+    区切り)プロジェクトで、レビューを要求した場合に送出する。"""
+
+    code: ClassVar[str | None] = "REVIEW_DOCUMENTS_NOT_READY"
+
+
+class GenerationStartInvalidError(BadRequestError):
+    """設計書の再生成の起点が、プロジェクトのモードに無い文書のときに送出する(詳細設計モードの
+    内部設計書など)。"""
+
+    code: ClassVar[str | None] = "GENERATION_START_INVALID"
+
+
+class GenerationUpstreamMissingError(ConflictError):
+    """設計書の再生成の起点より上流の文書がまだ無いときに送出する(上流を入力にして作るため)。"""
+
+    code: ClassVar[str | None] = "GENERATION_UPSTREAM_MISSING"
+
+
+class TestSpecUpstreamNotReadyError(ConflictError):
+    """詳細設計モードで、段階1(処理)・段階7(実装計画)が承認されていない(または古い)のに
+    テスト仕様書を作ろうとしたときに送出する(処理・単位の列をその内容から引くため)。"""
+
+    __test__ = False  # pytest に集めさせない(名前が Test で始まるため)
+    code: ClassVar[str | None] = "TEST_SPEC_UPSTREAM_NOT_READY"
+
+
+class SendbackFindingInvalidError(ConflictError):
+    """再生成の指示に、採用していない指摘・ヒアリングが原因の指摘(聞き直しで直す)を渡した場合に
+    送出する。"""
+
+    code: ClassVar[str | None] = "SENDBACK_FINDING_INVALID"
+
+
+class RehearingFindingInvalidError(ConflictError):
+    """聞き直しに、採用していない指摘・ヒアリングが原因でない指摘・観点のキーの無い指摘を渡した
+    場合に送出する。"""
+
+    code: ClassVar[str | None] = "REHEARING_FINDING_INVALID"
+
+class CurrentPasswordMismatchError(BadRequestError):
+    """メールアドレス・パスワードの変更で、今のパスワードが合わない場合に送出する。ログイン中の
+    操作なので 401 にはしない(画面の apiFetch が 401 をセッション切れとみなしてログアウトする
+    ため)。"""
+
+    code: ClassVar[str | None] = "CURRENT_PASSWORD_MISMATCH"
+
+class EncryptionUnavailableError(ServiceUnavailableError):
+    """API キーを暗号化する鍵(ENCRYPTION_KEY)がサーバーに無い、または鍵の形が正しくない場合に
+    送出する。キーの登録だけを断り、既定(環境変数)のキーでの利用は続く。"""
+
+    code: ClassVar[str | None] = "ENCRYPTION_UNAVAILABLE"
+
+class DecryptionFailedError(Exception):
+    """登録済みの API キーの暗号文を、今の鍵のどれでも復号できない場合に送出する(鍵を替えて古い鍵を
+    残さなかったときなど)。HTTP の応答にはせず、呼び出し側が「登録し直す」状態に読み替える。"""
+
+class ModelNotInCatalogError(UnprocessableEntityError):
+    """用途に選んだモデルが、選べるモデルの表(app/ai/llm/catalog.py)に無い場合に送出する。"""
+
+    code: ClassVar[str | None] = "MODEL_NOT_IN_CATALOG"
+
+class ModelProviderKeyRequiredError(UnprocessableEntityError):
+    """superuser でないユーザーが、自分のキーの無い provider を、既定値と違う provider の用途に
+    選んだ場合に送出する(既定のキーで使えるのは既定値と同じ provider だけ)。"""
+
+    code: ClassVar[str | None] = "MODEL_PROVIDER_KEY_REQUIRED"
+
+class ApiKeyInvalidError(UnprocessableEntityError):
+    """登録しようとした API キーを、provider が無効と答えた(400・401・403)場合に送出する。"""
+
+    code: ClassVar[str | None] = "API_KEY_INVALID"
+
+class ApiKeyCheckFailedError(BadGatewayError):
+    """API キーの確かめ(モデルの一覧の取得)が、タイムアウト・5xx・接続の失敗で結論を出せなかった
+    場合に送出する。キーは保存しない。"""
+
+    code: ClassVar[str | None] = "API_KEY_CHECK_FAILED"
+
+
+class GoogleAuthUnavailableError(ServiceUnavailableError):
+    """Google でのログインの設定(GOOGLE_CLIENT_ID)がサーバーに無い場合に送出する。メールと
+    パスワードのログインは続く。"""
+
+    code: ClassVar[str | None] = "GOOGLE_AUTH_UNAVAILABLE"
+
+
+class GoogleTokenInvalidError(UnauthorizedError):
+    """Google の ID トークンが不正(署名・発行者・aud・期限のどれかが合わない)な場合に送出する。"""
+
+
+class GoogleVerifyFailedError(BadGatewayError):
+    """ID トークンの検証に要る Google の公開鍵を取りに行けなかった場合に送出する。"""
+
+    code: ClassVar[str | None] = "GOOGLE_VERIFY_FAILED"
+
+
+class GoogleEmailNotVerifiedError(BadRequestError):
+    """ID トークンのメールアドレスが Google で確認されていない(email_verified が false)場合に
+    送出する。メールでアカウントを探したり、登録したりする根拠にならないため。"""
+
+    code: ClassVar[str | None] = "GOOGLE_EMAIL_NOT_VERIFIED"
+
+
+class GoogleLinkRequiredError(ConflictError):
+    """Google でログインしたが、同じメールのアカウントがあり、まだ Google と連携していない場合に
+    送出する。画面は credential を保ったままパスワードを聞き、連携の確かめ(POST /auth/google/link)
+    へ進む(登録でメールを確かめないため、確かめずに紐付けると乗っ取りの準備を許す)。"""
+
+    code: ClassVar[str | None] = "GOOGLE_LINK_REQUIRED"
+
+
+class GoogleAccountConflictError(ConflictError):
+    """紐付けようとしたアカウントが別の Google アカウントと連携済み、またはその Google アカウントが
+    ほかの利用者と連携済みの場合に送出する。"""
+
+    code: ClassVar[str | None] = "GOOGLE_ACCOUNT_CONFLICT"
+
+
+class PasswordAlreadySetError(ConflictError):
+    """パスワードを持つ利用者が、パスワードの「設定」(今のパスワードを求めない)を使った場合に
+    送出する。持つ人は今のパスワードで確かめる「変更」を使う。"""
+
+    code: ClassVar[str | None] = "PASSWORD_ALREADY_SET"
+
+
+class PasswordNotSetError(ConflictError):
+    """パスワードを持たない(Google だけの)利用者が、今のパスワードを要る操作(メール・パスワード
+    の変更、マイページからの連携)や、連携の解除(どちらでもログインできなくなる)を使った場合に
+    送出する。先にパスワードを設定させる。"""
+
+    code: ClassVar[str | None] = "PASSWORD_NOT_SET"

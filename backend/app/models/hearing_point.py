@@ -35,6 +35,9 @@ class HearingPoint(Base):
     summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
     # 根拠の発言(chat_histories.idの文字列のリスト)
     evidence: Mapped[list | None] = mapped_column(PortableJSON, nullable=True)
+    # 設計レビューの指摘で未決に戻したときの聞き直しの発言(chat_histories.idの文字列)。それより後の
+    # 発言を根拠にしないと、決まったことに戻さない。決まったら null に戻る
+    reopened_after: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

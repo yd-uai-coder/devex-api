@@ -14,7 +14,12 @@ from app.core.security import (
 )
 from app.models.user import User
 from app.repositories.user import UserRepository
-from app.services.errors import InvalidCredentialsError, InvalidTokenError
+from app.services.errors import (
+    INACTIVE_USER_MESSAGE,
+    INVALID_CREDENTIALS_MESSAGE,
+    InvalidCredentialsError,
+    InvalidTokenError,
+)
 
 _REFRESH_TOKEN_KEY_PREFIX = "refresh_token"
 
@@ -30,12 +35,18 @@ class AuthService:
         self._users = UserRepository(session)
 
     async def authenticate(self, *, email: str, password: str) -> User:
-        """メールアドレスとパスワードを検証し、一致すればUserを返す。"""
+        """メールアドレスとパスワードを検証し、一致すればUserを返す。パスワードを持たない
+        (Google だけの)利用者も、違うときと同じ 401 にする(どのアカウントが Google だけかを
+        外から見分けさせない)。"""
         user = await self._users.get_by_email(email)
-        if user is None or not verify_password(password, user.hashed_password):
-            raise InvalidCredentialsError("Invalid email or password")
+        if (
+            user is None
+            or user.hashed_password is None
+            or not verify_password(password, user.hashed_password)
+        ):
+            raise InvalidCredentialsError(INVALID_CREDENTIALS_MESSAGE)
         if not user.is_active:
-            raise InvalidCredentialsError("User is inactive")
+            raise InvalidCredentialsError(INACTIVE_USER_MESSAGE)
         return user
 
     async def issue_tokens(self, user: User) -> tuple[str, str]:
@@ -73,6 +84,19 @@ class AuthService:
             # 既に不正・期限切れのトークンは削除する必要が無いため何もしない
             return
         await self._redis.delete(self._redis_key(claims["sub"], claims["jti"]))
+
+    async def revoke_all_refresh_tokens(self, user_id: uuid.UUID) -> int:
+        """その人のリフレッシュトークンをすべて失効させ、消した数を返す(パスワードの変更で、
+        ほかの端末のログインを切る)。鍵は SCAN で探す(KEYS と違い Redis を止めない)。"""
+        keys = [
+            key
+            async for key in self._redis.scan_iter(
+                match=f"{_REFRESH_TOKEN_KEY_PREFIX}:{user_id}:*"
+            )
+        ]
+        if not keys:
+            return 0
+        return await self._redis.delete(*keys)
 
     async def _store_refresh_token(self, *, user_id: uuid.UUID, jti: str, expires_at: int) -> None:
         """発行したリフレッシュトークンのjtiをTTL付きでRedisに保存する。"""

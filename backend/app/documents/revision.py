@@ -6,14 +6,20 @@
 行をそのまま写す。言い回しを AI に任せない(写すのはシステム)ので、変更なしの行は版を重ねても
 一字も変わらない。
 
-- AI への手がかりは2つ。前の版の行(`rows_text`)と、上流の文書で変わった行(`changed_rows`。
-  前の版と今回の版の行を比べたもの)。要件定義書の上流は会話なので、会話の新しい依頼が手がかり。
+- AI への手がかりは、前の版の行(`rows_text`)と、変更のきっかけの節。きっかけは文書ごとに違い
+  (外部・内部・計画は上流の文書で変わった行(`changed_rows`)と、設計レビューの採用した指摘から
+  組み立てた修正指示(`instruction_text`。app/review/sendback.py)。要件定義書は観点の表・修正指示・
+  会話)、各文書の drafting が`RevisionInputs`で、プロンプトの節を「前の版・きっかけ・参照」に
+  分けて持つ。規則の文(`revision_rule`)はそこから組み立てる。新しい入力の節を足したら、
+  どれに分けるかを決めないとテストが落ちる(きっかけの一覧の直し忘れを防ぐ。Phase 59 で、
+  観点の表の変化がきっかけに入っていなかった)。
 - 行の照合のキーは各文書の安定した ID か名前(要件ID・画面ID・API・テーブル名・モジュールの
   パス・処理別データフローのトリガー・作業単位のキー)。
 """
 
 import json
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 
 from pydantic import BaseModel
 
@@ -23,12 +29,41 @@ from app.documents.requirements.model import RequirementsModel
 
 NONE_TEXT = "なし"
 
-REVISION_RULE = (
-    "- 【前の版】があるときは、前の版を直す再生成。変更のきっかけ(【会話】の新しい依頼・"
-    "【上流の変わった行】)に関係しない行は、前の版の同じ行を指して unchanged を true にし、"
-    "言い換え・並べ替え・項目名の変更をしない(unchanged の行は、システムが前の版の行をそのまま"
-    "使う)。関係する行だけを書き直す。前の版が「なし」なら unchanged は false"
-)
+
+@dataclass(frozen=True)
+class RevisionInputs:
+    """再生成のプロンプトの節(`## 名前`)の分け方。`previous`は前の版の行、`triggers`は変更の
+    きっかけ(節の名前 → 何が変わったら書き直すか)、`context`は読むだけの節(きっかけにしない)。"""
+
+    previous: tuple[str, ...]
+    triggers: Mapping[str, str]
+    context: tuple[str, ...] = ()
+
+    @property
+    def sections(self) -> set[str]:
+        return {*self.previous, *self.triggers, *self.context}
+
+
+def _names(sections: Iterable[str]) -> str:
+    return "".join(f"【{name}】" for name in sections)
+
+
+def revision_rule(inputs: RevisionInputs) -> str:
+    """再生成の規則の文。きっかけの節に関係しない行は前の版のまま(`unchanged`)にさせる。"""
+    triggers = "・".join(f"【{name}】({when})" for name, when in inputs.triggers.items())
+    context = (
+        f"{_names(inputs.context)}は読むだけで、それ自体はきっかけにしない。"
+        if inputs.context
+        else ""
+    )
+    return (
+        f"- {_names(inputs.previous)}(前の版)があるときは、前の版を直す再生成。変更のきっかけは"
+        f"{triggers}。どのきっかけにも関係しない行は、前の版の同じ行を指して unchanged を true に"
+        "し、言い換え・並べ替え・項目名の変更をしない(unchanged の行は、システムが前の版の行を"
+        f"そのまま使う)。関係する行だけを書き直す。{context}前の版が「なし」なら unchanged は false"
+    )
+
+
 UNCHANGED_DESCRIPTION = (
     "【前の版】の同じ行を変えないなら true(システムが前の版の行をそのまま使う)。"
     "書き直す行・新しい行は false"
@@ -55,6 +90,11 @@ def changed_rows(before: Mapping[str, BaseModel], after: Mapping[str, BaseModel]
 
 def changed_rows_text(changes: Sequence[str]) -> str:
     return "\n".join(f"- {c}" for c in changes) or NONE_TEXT
+
+
+def instruction_text(instruction: str) -> str:
+    """プロンプトの【修正指示】の節。無ければ「なし」。"""
+    return instruction.strip() or NONE_TEXT
 
 
 def requirement_rows(model: RequirementsModel | None) -> dict[str, BaseModel]:

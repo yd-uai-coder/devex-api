@@ -111,7 +111,10 @@ def test_plan_markdown_has_sections_in_order():
     # マイルストーンの処理は単位の処理から導く
     assert "| M-01 | 予約の登録 | Must | 予約を登録できる | F-01 |" in text
     assert "| " + " | ".join(UNIT_HEADERS) + " |" in text
-    assert "| M-01-T01 | 基盤 | 開発環境を用意する | — | — | — | Dockerfile |" in text
+    assert (
+        "| M-01-T01 | 基盤 | 開発環境を用意する | — | — | — |"
+        " Dockerfile, alembic/versions/0001_reservations.py |"
+    ) in text
     assert f"| M-01-T02 | 機能 | 予約を登録する | F-01 | M-01-T01 | {ROUTE} | — |" in text
     assert "| F-01 | 予約を登録する | M-01-T02 |" in text
     assert "Python 3.13 と PostgreSQL" in text

@@ -4,13 +4,19 @@ import uuid
 from typing import Annotated
 
 import structlog
-from fastapi import APIRouter, BackgroundTasks, File, Form, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, File, Form, Query, UploadFile, status
 from fastapi.responses import Response, StreamingResponse
 
-from app.api.deps import CurrentProjectDep, CurrentUserDep, SessionDep
+from app.api.deps import CurrentProjectDep, CurrentUserDep, RedisDep, SessionDep
 from app.api.responses import content_disposition
 from app.core.errors import AppError, BadRequestError
-from app.schemas.document import DocType, GeneratedDocumentRead
+from app.schemas.document import (
+    DocType,
+    GeneratedDocumentRead,
+    GenerationProgressRead,
+    GenerationRequest,
+    TestSpecRead,
+)
 from app.schemas.generation import HearingCompletionCheck
 from app.schemas.hearing import (
     ChatHistoryRead,
@@ -18,15 +24,27 @@ from app.schemas.hearing import (
     HearingPointsRead,
     HearingPointUpdate,
 )
-from app.schemas.project import ProjectDetail, ProjectMode, ProjectRead
+from app.schemas.project import (
+    ProjectDetail,
+    ProjectListPage,
+    ProjectMode,
+    ProjectRead,
+    ProjectStatus,
+)
 from app.services.chat_service import ChatService, ReplyCards
 from app.services.doc_generator_service import (
     DocGeneratorService,
     document_read,
     generate_documents,
 )
-from app.services.errors import GenerationFailedError, LLMQuotaExceededError
+from app.services.errors import (
+    GenerationFailedError,
+    LLMQuotaExceededError,
+    LlmUnavailableError,
+)
+from app.services.generation_progress import GenerationProgressStore
 from app.services.project import ProjectService, UploadedFileInput
+from app.services.project_deletion import purge_deleted_projects
 
 logger = structlog.get_logger(__name__)
 
@@ -86,18 +104,28 @@ async def create_project(
         template_id=template_id,
         mode=mode,
     )
-    with contextlib.suppress(LLMQuotaExceededError, GenerationFailedError):
-        # AIの最初の発話生成に失敗しても、プロジェクト作成自体は成功させる
+    with contextlib.suppress(LLMQuotaExceededError, GenerationFailedError, LlmUnavailableError):
+        # AIの最初の発話生成に失敗しても(キーが無く LLM を使えないときも)、プロジェクト作成
+        # 自体は成功させる
         # (ユーザーは通常通りチャット欄から発話を始められる)
         await ChatService(session).generate_opening_reply(project)
     return ProjectRead.model_validate(project)
 
 
-@router.get("", response_model=list[ProjectRead])
-async def list_projects(session: SessionDep, current_user: CurrentUserDep) -> list[ProjectRead]:
-    """認証ユーザーのプロジェクト一覧を取得する。"""
-    projects = await ProjectService(session).list_for_user(current_user.id)
-    return [ProjectRead.model_validate(p) for p in projects]
+@router.get("", response_model=ProjectListPage)
+async def list_projects(
+    session: SessionDep,
+    current_user: CurrentUserDep,
+    q: Annotated[str | None, Query(max_length=100)] = None,
+    mode: ProjectMode | None = None,
+    # クエリの名前は status(複数回で OR)。引数名は fastapi.status とぶつかるため statuses にする
+    statuses: Annotated[list[ProjectStatus] | None, Query(alias="status")] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+) -> ProjectListPage:
+    """認証ユーザーのプロジェクト一覧を、タイトルの部分一致・モード・進行状態で絞り、10件ずつ返す。"""
+    return await ProjectService(session).list_page(
+        current_user.id, q=q, mode=mode, statuses=statuses or (), page=page
+    )
 
 
 @router.get("/{project_id}", response_model=ProjectDetail)
@@ -175,12 +203,27 @@ async def update_hearing_point(
     return await ChatService(session).mark_point_not_applicable(current_project, point_key)
 
 
+@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_project(
+    session: SessionDep,
+    redis: RedisDep,
+    current_project: CurrentProjectDep,
+    background_tasks: BackgroundTasks,
+) -> None:
+    """プロジェクトを削除する(所有者だけ。他人・無いものは404。生成中でも削除できる)。
+    削除の印を付けてすぐに返し、行と子の行の物理削除はバックグラウンドで行う(生成中のジョブが
+    ロックを持つ間は飛ばし、ジョブの終わりにもう一度試す)。"""
+    await ProjectService(session).delete(current_project, redis=redis)
+    background_tasks.add_task(purge_deleted_projects)
+
+
 @router.post("/{project_id}/generate", status_code=status.HTTP_202_ACCEPTED)
 async def trigger_generation(
     session: SessionDep,
     current_project: CurrentProjectDep,
     current_user: CurrentUserDep,
     background_tasks: BackgroundTasks,
+    payload: GenerationRequest | None = None,
 ) -> None:
     """設計書4種の一括生成(+自己診断)をバックグラウンドでトリガーする。
 
@@ -191,13 +234,36 @@ async def trigger_generation(
 
     生成中なら409(DOC_GENERATION_IN_PROGRESS)。受け付けた時点で`generating`にし、受け付ける前の
     状態(失敗時に戻す先)をbackground taskへ渡す。
+
+    本文の`start_from`は再生成の起点(その文書から下流を作り直す。省略で全部)。モードに無い起点は
+    400、起点より上流の文書が無ければ409。`test_spec`はテスト仕様書だけを作る(詳細設計モードは
+    段階1・段階7 が承認済みでなければ409)。`finding_ids`は再生成の指示に入れる採用した指摘
+    (プロジェクトに無い指摘は404、採用していない・ヒアリングが原因の指摘は409)。
     """
+    start_from = payload.start_from if payload else None
+    finding_ids = payload.finding_ids if payload else []
     status_before_generation = await DocGeneratorService(session).request_generation(
-        current_project
+        current_project, start_from=start_from, finding_ids=finding_ids
     )
     background_tasks.add_task(
-        generate_documents, current_project.id, current_user.id, status_before_generation
+        generate_documents,
+        current_project.id,
+        current_user.id,
+        status_before_generation,
+        start_from=start_from,
+        finding_ids=finding_ids,
     )
+
+
+@router.get("/{project_id}/generation-progress", response_model=GenerationProgressRead | None)
+async def get_generation_progress(
+    redis: RedisDep, current_project: CurrentProjectDep
+) -> GenerationProgressRead | None:
+    """生成の進み具合(作り直す文書・できた文書・今作っている文書)。生成していなければ null。"""
+    progress = await GenerationProgressStore(redis).read(current_project.id)
+    if progress is None:
+        return None
+    return GenerationProgressRead.model_validate(progress, from_attributes=True)
 
 @router.get("/{project_id}/documents", response_model=list[GeneratedDocumentRead])
 async def list_generated_documents(
@@ -206,6 +272,12 @@ async def list_generated_documents(
     """生成された設計書(各doc_typeの最新バージョンのみ)一覧を取得する。"""
     documents = await DocGeneratorService(session).list_current_documents(current_project.id)
     return [document_read(d) for d in documents]
+
+@router.get("/{project_id}/test-spec", response_model=TestSpecRead)
+async def get_test_spec(session: SessionDep, current_project: CurrentProjectDep) -> TestSpecRead:
+    """テスト仕様書の今の版と、テストの件数・検証の指摘・古いか。まだ無ければ404。"""
+    return await DocGeneratorService(session).get_test_spec(current_project)
+
 
 @router.get("/{project_id}/documents/{doc_id}/download")
 async def download_generated_document(

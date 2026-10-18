@@ -3,7 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, Path, status
 from fastapi.responses import Response
 
-from app.api.deps import CurrentProjectDep, SessionDep
+from app.api.deps import CurrentProjectDep, CurrentUserDep, SessionDep
 from app.api.responses import content_disposition
 from app.schemas.design_stage import (
     DesignImpactRead,
@@ -23,6 +23,8 @@ from app.services.design_stage_generation_service import (
 )
 from app.services.design_stage_service import DesignStageService
 from app.services.detailed_design_export_service import BundleFile, DetailedDesignExportService
+from app.services.fix_check_service import run_fix_checks
+from app.services.llm_resolver import LlmResolver
 
 # UMLと同じく、プロジェクト配下の独立したサブツリーとしてprefixにproject_idを含める
 router = APIRouter(prefix="/projects/{project_id}/design-stages", tags=["design-stages"])
@@ -123,7 +125,7 @@ async def generate_design_stage(
     段階は「生成中」になり、終わると`completed`/`failed`になる。background taskには値だけを渡す
     (doc生成・UML図の生成と同じ理由)。段階5は、本文の`function_ids`で下書きを作る処理を選べる。
     段階6は、本文の`logics`で下書きを作る関数を選べる。段階8は、本文の`unit_ids`で手順書を作る
-    作業単位を選べる。"""
+    作業単位を選べる。`finding_ids`(設計レビューの採用した指摘)は修正指示にして生成に渡す。"""
     function_ids = payload.function_ids if payload is not None else None
     unit_ids = payload.unit_ids if payload is not None else None
     logics = (
@@ -131,8 +133,14 @@ async def generate_design_stage(
         if payload is not None and payload.logics is not None
         else None
     )
+    finding_ids = payload.finding_ids if payload is not None else []
     accepted = await DesignStageGenerationService(session).request_generation(
-        current_project, stage=stage, function_ids=function_ids, logics=logics, unit_ids=unit_ids
+        current_project,
+        stage=stage,
+        function_ids=function_ids,
+        logics=logics,
+        unit_ids=unit_ids,
+        finding_ids=finding_ids,
     )
     background_tasks.add_task(
         run_design_stage_generation,
@@ -142,6 +150,7 @@ async def generate_design_stage(
         function_ids,
         logics,
         unit_ids,
+        finding_ids,
     )
     return accepted
 
@@ -165,12 +174,18 @@ async def approve_design_stage(
     payload: DesignStageApprove,
     session: SessionDep,
     current_project: CurrentProjectDep,
+    current_user: CurrentUserDep,
+    background_tasks: BackgroundTasks,
 ) -> DesignStageRead:
     """段階を承認する(古い段階は、内容を変えずに承認し直せる)。他の段階・文書の変更から届いた
-    見直しの印が未確認なら409(`DESIGN_STAGE_UNREVIEWED_IMPACT`)。"""
-    return await DesignStageService(session).approve(
+    見直しの印が未確認なら409(`DESIGN_STAGE_UNREVIEWED_IMPACT`)。設計レビューがオンなら、
+    承認の後に、採用した指摘が直ったかをバックグラウンドで判定する(シャドーモード)。"""
+    approved = await DesignStageService(session).approve(
         current_project, stage=stage, expected_version=payload.version
     )
+    if await LlmResolver(session).review_effective(current_user):
+        background_tasks.add_task(run_fix_checks, current_project.id, current_user.id)
+    return approved
 
 
 @router.post("/{stage}/impact/review", response_model=StageImpactRead)

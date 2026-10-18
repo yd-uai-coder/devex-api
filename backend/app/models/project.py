@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from app.models.generated_document import GeneratedDocument
     from app.models.hearing_point import HearingPoint
     from app.models.intake_file import IntakeFile
+    from app.models.review import ReviewRun
     from app.models.uml_diagram import UmlDiagram
     from app.models.uml_generation_run import UmlGenerationRun
     from app.models.user import User
@@ -47,6 +48,10 @@ class Project(Base):
     # hearing_scale: ヒアリングで決まった規模('personal'/'internal'/'public')。観点の必須を
     # 切り替える。未決の間はNone(必須は「個人・小規模」の列で数える。app/hearing/points.py)
     hearing_scale: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # generation_failure: 直近の設計書・テスト仕様書の生成が失敗した記録
+    # ({reason_code, message, targets, failed_at})。画面が失敗を知らせるために返し、次の生成を
+    # 受け付けたら消す(app/services/doc_generator_service.py)。失敗していなければ None
+    generation_failure: Mapped[dict | None] = mapped_column(PortableJSON, nullable=True)
     # template_id：テンプレートの永続化
     template_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("prompt_templates.id"), nullable=True
@@ -57,6 +62,10 @@ class Project(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+    # deleted_at: 削除の印。付いた行は取得・一覧から外し、ロックが空いたときに子の行ごと物理削除する
+    # (生成中のジョブが持つ外部キーのロックで、削除の要求を待たせないため。
+    # app/services/project_deletion.py)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     user: Mapped["User"] = relationship()
     # back_populates="table_name"：相手モデル側とのrelationship"project"と対応させる
@@ -84,5 +93,8 @@ class Project(Base):
         back_populates="project", cascade="all, delete-orphan"
     )
     design_stages: Mapped[list["DesignStage"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    review_runs: Mapped[list["ReviewRun"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )

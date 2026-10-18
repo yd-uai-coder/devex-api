@@ -308,6 +308,18 @@ def test_validate_warns_missing_topic_empty_policy_tasks_and_risks():
     assert {"EMPTY_POLICY", "EMPTY_TASKS", "NO_RISKS"} <= set(codes)
 
 
+def test_validate_warns_goal_without_task_with_milestone_target():
+    model = plan_model()
+    model["milestones"][0]["goal"] = "予約を登録でき、CI/CD が動く"
+    issues = validate_plan(model, _sources())
+    assert [(i.code, i.severity, i.target) for i in issues] == [
+        ("GOAL_WITHOUT_TASK", "warning", "M-01")
+    ]
+    assert "「CI/CD」" in issues[0].message
+    _task(model)["config_files"] = [".github/workflows/ci.yml"]
+    assert validate_plan(model, _sources()) == []
+
+
 # --- 作業単位の安定キー ---
 
 

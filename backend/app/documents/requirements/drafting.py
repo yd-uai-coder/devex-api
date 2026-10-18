@@ -18,7 +18,13 @@ from app.documents.requirements.assemble import (
     UserSceneDraft,
 )
 from app.documents.requirements.model import RequirementsModel
-from app.documents.revision import NONE_TEXT, REVISION_RULE, UNCHANGED_DESCRIPTION
+from app.documents.revision import (
+    NONE_TEXT,
+    UNCHANGED_DESCRIPTION,
+    RevisionInputs,
+    instruction_text,
+    revision_rule,
+)
 from app.hearing import POINT_DEFS, SCALE_LABEL, STATUS_LABEL, PointState, Scale
 
 _SOURCE_DESCRIPTION = (
@@ -70,6 +76,19 @@ class RequirementsGenerationOutput(BaseModel):
     )
 
 
+# 再生成のプロンプトの節の分け方(前の版・きっかけ)。節を足したら、ここにも分ける。観点の表の
+# 状態・規模の変化もきっかけ(聞き直し・対象外への変更の後の再生成)
+REVISION = RevisionInputs(
+    previous=("前の版の要件",),
+    triggers={
+        "観点の表": "決めたこと・状態・規模が前の版の要件と食い違う(値・方式が具体になった・"
+        "変わった、対象外になった・戻った)。その観点を points に持つ要件を書き直し、決めたことの"
+        "値・方式をそのまま書く。対象外になった観点の要件は書かない",
+        "修正指示": "設計レビューの採用した指摘。指示が指す要件を書き直す",
+        "会話": "前の版の後の新しい依頼。関係する要件を書き直す・足す",
+    },
+)
+
 SYSTEM_PROMPT = (
     "あなたは優秀なITコンサルタント・システムアナリストです。【会話】と【観点の表】をもとに、"
     "システム開発の要件定義書の中身を、要件の行として書きます。\n"
@@ -93,7 +112,7 @@ SYSTEM_PROMPT = (
     "ログイン)の機能要件を Must で書く。方法を利用者が言っていなければ、その要件は assumed\n"
     "- 要件ID は書かない(システムが振る)。【前の版の要件】に同じ要件があれば、"
     "その ID を prev_id に書く。中身を言い直しただけの要件も同じ要件として扱う\n"
-    f"{REVISION_RULE}(【前の版】は【前の版の要件】)"
+    f"{revision_rule(REVISION)}"
 )
 
 
@@ -120,10 +139,12 @@ def build_requirements_messages(
     states: Mapping[str, PointState],
     scale: Scale | None,
     previous: RequirementsModel | None,
+    instruction: str = "",
 ) -> list[BaseMessage]:
     human = (
         f"## 観点の表\nkey|名前|状態|決めたこと\n{points_table(states, scale)}\n\n"
         f"## 前の版の要件\n{previous_rows_text(previous)}\n\n"
+        f"## 修正指示\n{instruction_text(instruction)}\n\n"
         f"## 会話\n{transcript}"
     )
     return [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=human)]

@@ -4,7 +4,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-DocType = Literal["requirements", "external_design", "internal_design", "implementation_plan"]
+DocType = Literal[
+    "requirements", "external_design", "internal_design", "implementation_plan", "test_spec"
+]
 
 
 class DocumentIssueRead(BaseModel):
@@ -62,3 +64,35 @@ class GeneratedDocumentRead(BaseModel):
     # 内部設計書・実装計画書で model を持つ版だけ(ほかは None)。ルートが document_read で入れる
     internal_design: DocumentSummaryRead | None = None
     implementation_plan: DocumentSummaryRead | None = None
+
+
+class TestSpecRead(BaseModel):
+    """テスト仕様書の今の版と、テストの件数(integration / system)・検証の指摘・古いか。
+    `outdated`は、生成した時点の入力(文書の版・段階の承認した版)が今と違うとき true。
+    `design_gaps`は「設計に無い」と印を付けたテストの件数。"""
+
+    __test__ = False  # pytest に集めさせない(名前が Test で始まるため)
+
+    document: GeneratedDocumentRead
+    counts: dict[str, int]
+    issues: list[DocumentIssueRead]
+    outdated: bool
+    design_gaps: int = 0
+
+
+class GenerationRequest(BaseModel):
+    """設計書の(再)生成の要求。`start_from`は起点(その文書から下流を作り直す)。省略で全部。
+    `test_spec`はテスト仕様書だけを作る(詳細設計モードは、これでだけ作る)。
+    `finding_ids`は再生成の指示に入れる、設計レビューの採用した指摘(設計・不整合)。"""
+
+    start_from: DocType | None = None
+    finding_ids: list[uuid.UUID] = []
+
+
+class GenerationProgressRead(BaseModel):
+    """生成の進み具合。`targets`は作り直す文書(上流から)、`done`はできた文書、`current`は今
+    作っている文書(無ければ null)。"""
+
+    targets: list[DocType]
+    done: list[DocType]
+    current: DocType | None

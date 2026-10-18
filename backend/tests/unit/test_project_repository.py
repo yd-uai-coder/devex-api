@@ -39,7 +39,7 @@ async def test_get_by_id_returns_none_for_other_users_project(db_session: AsyncS
     assert result is None
 
 
-async def test_list_for_user_orders_by_updated_at_desc(db_session: AsyncSession) -> None:
+async def test_search_for_user_orders_by_updated_at_desc(db_session: AsyncSession) -> None:
     # updated_atをテスト内で明示的に設定する ── SQLiteのCURRENT_TIMESTAMPは秒精度のため、
     # 連続insertではタイムスタンプが同値になり得る(順序アサーションが不安定になる)のを避けるため。
     user = await _create_user(db_session)
@@ -50,9 +50,10 @@ async def test_list_for_user_orders_by_updated_at_desc(db_session: AsyncSession)
     second.updated_at = datetime(2024, 1, 2, tzinfo=UTC)
     await db_session.flush()
 
-    result = await repo.list_for_user(user.id)
+    result, total = await repo.search_for_user(user.id)
 
     assert [p.id for p in result] == [second.id, first.id]
+    assert total == 2
 
 async def test_create_persists_template_id(db_session: AsyncSession) -> None:
     user = await _create_user(db_session)

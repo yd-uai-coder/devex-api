@@ -44,6 +44,15 @@ services:
       target: builder
     env_file:
       - .env
+    # 開発用の認証の上限(1時間あたり)。.env より優先する。統合テスト・E2E・実 LLM の確かめで
+    # 登録とログインを何度も繰り返すため、本番の既定値(app/core/config.py)より大きくする。
+    # test・e2e のオーバーレイはこのファイルに重ねるので同じ値になる。本番は
+    # docker-compose.prod.yml だけで起動する(このファイルを読まない)ので、この値は漏れない。
+    environment:
+      LOGIN_RATE_LIMIT_PER_IP_PER_HOUR: "1000"
+      LOGIN_RATE_LIMIT_PER_EMAIL_PER_HOUR: "1000"
+      REGISTER_RATE_LIMIT_PER_IP_PER_HOUR: "1000"
+      GOOGLE_RATE_LIMIT_PER_IP_PER_HOUR: "1000"
     volumes:
       - ./backend:/app
       - backend_venv:/app/.venv

@@ -17,6 +17,7 @@ from app.documents.internal_design import InternalDesignModel
 from app.documents.internal_design.drafting import InternalDesignGenerationOutput
 from app.documents.requirements import RequirementsModel
 from app.documents.requirements.drafting import RequirementsGenerationOutput
+from app.documents.test_spec.drafting import TestSpecGenerationOutput
 from app.hearing import PointState
 from app.models.chat_history import ChatHistory
 from app.models.project import Project
@@ -116,7 +117,8 @@ async def test_generate_logs_info_on_completion(db_session: AsyncSession) -> Non
     assert len(info_logs) == 1
     assert info_logs[0]["event"] == "documents_generated"
     assert info_logs[0]["project_id"] == str(project.id)
-    assert info_logs[0]["doc_count"] == len(DOC_TYPES)
+    # 4文書とテスト仕様書
+    assert info_logs[0]["doc_count"] == len(DOC_TYPES) + 1
 
 
 async def test_generate_reverts_status_and_records_failure_on_llm_error(
@@ -288,6 +290,7 @@ async def test_generate_requirements_builds_model_from_points_table(
         ExternalDesignGenerationOutput,
         InternalDesignGenerationOutput,
         ImplementationPlanGenerationOutput,
+        TestSpecGenerationOutput,
     ]
     prompt = fake_llm.structured_messages[0][-1].content
     assert "core|コア機能|ユーザーが決定|coreの決定" in prompt

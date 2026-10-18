@@ -47,21 +47,45 @@ class Settings(BaseSettings):
     # APIエラーメッセージが後継としてgemini-3.5-flash-liteを案内)。
     GEMINI_MODEL: str = "gemini-3.5-flash-lite"
 
-    # LLM呼び出しの最大待機秒数(langchain-google-genaiのChatGoogleGenerativeAI
-    # が受け取るtimeout秒。
-    # 既定はNone=無制限で、応答がハングした場合クライアントへ何も返せないまま
-    # 無限に待ち続ける恐れがある。
-    # 30.0は暫定値ではなく実測値: 実GOOGLE_API_KEY・実GEMINI_MODELに対して
-    # 800字/3000字/6000字相当の出力を要求する3パターンを実行したところ、
-    # 最大(約4750字出力)でも11.25秒だった(2.96秒/7.28秒/11.25秒)。実測最大値の
-    # 約2.7倍のマージンを見て30秒とする(旧暫定値60秒は実測に基づかない値だった)。
-    LLM_TIMEOUT_SECONDS: float = 30.0
+    # 1回の呼び出しを待つ上限はモデルごとに app/ai/llm/catalog.py に持つ(応答の速さがモデルで
+    # 大きく違うため)
 
-    # trueの場合、get_gemini_llm()は実際のGemini APIを呼ばず、
+    # 設計レビュー(生成とは別のモデルが指摘だけを返す)。キーが無いときはレビューが失敗し、
+    # 生成と同じモデルの自己診断に切り替わる(app/services/review_service.py)。
+    ANTHROPIC_API_KEY: str | None = None
+    REVIEW_MODEL: str = "claude-sonnet-5-5"
+    REVIEW_MAX_TOKENS: int = 16000
+    # 既定のキーで流すレビューの、ユーザーごとの1日の回数の上限(費用を抑えるため。
+    # 自分のキーなら数えない)
+    REVIEW_RATE_LIMIT_PER_DAY: int = 20
+    # 狭い判定(採用した指摘は直ったか)のモデル(Claude Haiku)。入力は指摘と対象の行だけで小さい
+    JUDGE_MODEL: str = "claude-haiku-5-5"
+    JUDGE_MAX_TOKENS: int = 1000
+    # 1回の生成・承認の後に判定する指摘の数と、既定のキーで流す判定のユーザーごとの1日の回数の上限
+    JUDGE_MAX_PER_RUN: int = 10
+    JUDGE_RATE_LIMIT_PER_DAY: int = 200
+
+    # ユーザーが登録する API キーを暗号化する Fernet の鍵(カンマ区切りで複数。先頭で暗号化し、
+    # すべてで復号する。鍵を回すときは新しい鍵を先頭に足し、古い鍵を後ろに残す)。
+    # 無いときはキーの登録だけが 503 になり、既定(上の環境変数)のキーでの利用は続く。
+    ENCRYPTION_KEY: str | None = None
+    # API キーの登録(保存のときの確かめ)の、ユーザーごとの1時間の上限
+    API_KEY_RATE_LIMIT_PER_HOUR: int = 10
+    # キーの確かめ(モデルの一覧の取得)の最大待機秒数
+    API_KEY_CHECK_TIMEOUT_SECONDS: float = 10.0
+
+    # trueの場合、LLM の組み立て(app/ai/llm/factory.py)は実際のAPIを呼ばず、
     # app/ai/llm/fake.pyの決定論的なE2eFakeLLMを返す
     # 既定はfalseで、次のバリデータによりENVIRONMENT=production下でtrueにすることは
     # 起動時に拒否される。
     E2E_FAKE_LLM: bool = False
+
+    # Google でのログイン。ID トークンの aud(この OAuth クライアント ID)を確かめる。無いときは
+    # Google のログインだけが 503 になり、メールとパスワードのログインは続く
+    GOOGLE_CLIENT_ID: str | None = None
+    # trueの場合、ID トークンを Google で検証せず、`fake:<sub>:<email>` の形の偽の credential を
+    # 受け付ける(E2E 専用)。E2E_FAKE_LLM と同じく、ENVIRONMENT=production では起動時に拒否される
+    E2E_FAKE_GOOGLE: bool = False
 
     # Rate limit（チャットメッセージ送信のレート制限。単位時間あたりの上限回数）
     CHAT_RATE_LIMIT_PER_HOUR: int = 20
@@ -72,6 +96,8 @@ class Settings(BaseSettings):
     LOGIN_RATE_LIMIT_PER_IP_PER_HOUR: int = 30
     LOGIN_RATE_LIMIT_PER_EMAIL_PER_HOUR: int = 20
     REGISTER_RATE_LIMIT_PER_IP_PER_HOUR: int = 10
+    # Google でのログインと連携の確かめ(新規の登録も兼ねる)
+    GOOGLE_RATE_LIMIT_PER_IP_PER_HOUR: int = 30
 
     # リクエストボディの上限(バイト)。nginx の client_max_body_size と同じ値に揃える。
     MAX_REQUEST_BODY_BYTES: int = 2_000_000
@@ -102,6 +128,10 @@ class Settings(BaseSettings):
             )
         if self.E2E_FAKE_LLM:
             problems.append("E2E_FAKE_LLM=true(E2Eテスト専用フラグ。本番では常にfalseにすること)")
+        if self.E2E_FAKE_GOOGLE:
+            problems.append(
+                "E2E_FAKE_GOOGLE=true(E2Eテスト専用フラグ。偽の credential でだれにでもなれる)"
+            )
         if problems:
             raise ValueError(
                 "本番(ENVIRONMENT=production)で許されない設定: " + " / ".join(problems)

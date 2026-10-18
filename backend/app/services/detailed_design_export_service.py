@@ -11,6 +11,9 @@ docs/internal_design.md 3.3節「4. 詳細設計モード」の「詳細設計�
 - 段階8の実装手順書は別の zip(`implementation_procedure.zip`。`index.md`・単位ごとの md・
   `ai/<単位ID>.md`・HTML 1枚)にする(組み立ては`app.detailed_design.procedure_output`)。
 
+詳細設計書の zip には、テスト仕様書(`test_spec.md`)を、今の版があり古くないときだけ入れる
+(zip は最終成果物なので、入力が変わった後の古い仕様を混ぜない。無い・古いときは入れない)。
+
 zip は、元になる段階が承認済み(古くない)になるまで断る(`DesignDocumentNotReadyError`、409)。
 詳細設計書・実装計画は段階1〜7、実装手順書は段階8。章の「未承認」の書き方は組み立ての側に残す
 (段階7の下書きの入力が、承認済みの章だけの詳細設計書の md を使うため)。
@@ -59,6 +62,7 @@ from app.repositories.data_item import DataItemRepository
 from app.repositories.uml_diagram import UmlDiagramRepository
 from app.services.design_stage_service import DesignStageService
 from app.services.errors import DesignDocumentNotReadyError, DesignStagesNotAvailableError
+from app.services.test_spec_state import current_test_spec
 from app.uml.domain import (
     STATUS_AFTER_EXPORT,
     ErSemanticModel,
@@ -75,6 +79,7 @@ DOCUMENT_MARKDOWN_NAME = "detailed_design.md"
 DOCUMENT_DIAGRAM_DIR = "diagrams"
 PLAN_HTML_NAME = "implementation_plan.html"
 PLAN_MARKDOWN_NAME = "implementation_plan.md"
+TEST_SPEC_MARKDOWN_NAME = "test_spec.md"
 PROCEDURE_FILENAME = "implementation_procedure.zip"
 PROCEDURE_INDEX_NAME = "index.md"
 PROCEDURE_HTML_NAME = "implementation_procedure.html"
@@ -118,13 +123,14 @@ class DetailedDesignExportService:
 
     async def bundle(self, project: Project) -> BundleFile:
         """詳細設計書の HTML・md、実装計画の HTML・md と、載せた図の SVG・draw.io を zip に
-        まとめる。段階1〜7のどれかが承認済みでなければ`DesignDocumentNotReadyError`(409。図も
-        描かず`exported`にしない)、簡易ドキュメントモードのプロジェクトは
-        `DesignStagesNotAvailableError`(409)。"""
+        まとめる。テスト仕様書は、今の版があり古くなければ md を入れる。段階1〜7のどれかが
+        承認済みでなければ`DesignDocumentNotReadyError`(409。図も描かず`exported`にしない)、
+        簡易ドキュメントモードのプロジェクトは`DesignStagesNotAvailableError`(409)。"""
         _ensure_detailed(project)
         await self._ensure_approved(project, DOCUMENT_STAGES)
         collected = await self.collect(project, render=True)
         source = collected.source
+        test_spec = await current_test_spec(self._session, project)
 
         buffer = BytesIO()
         with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -132,6 +138,8 @@ class DetailedDesignExportService:
             archive.writestr(DOCUMENT_MARKDOWN_NAME, to_markdown(source))
             archive.writestr(PLAN_HTML_NAME, to_plan_html(source))
             archive.writestr(PLAN_MARKDOWN_NAME, to_plan_markdown(source))
+            if test_spec is not None and not test_spec.outdated:
+                archive.writestr(TEST_SPEC_MARKDOWN_NAME, test_spec.document.content)
             for path, content in collected.files.items():
                 archive.writestr(path, content)
 

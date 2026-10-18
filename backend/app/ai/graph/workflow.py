@@ -17,7 +17,8 @@ from app.ai.graph.state import GraphState
 def build_chat_workflow() -> CompiledStateGraph:
     """チャットワークフローのノードとエッジを組み立て、コンパイル済みグラフとして返す。
 
-    処理の流れ: ユーザー -> Gemini -> Tavily -> 検索結果評価 -> Gemini -> 最終回答。
+    処理の流れ: ユーザー -> LLM -> Tavily -> 検索結果評価 -> LLM -> 最終回答。
+    LLM はチャットの用途で、実行ごとに config で渡す(app/ai/graph/nodes.py の llm_from)。
     """
     workflow = StateGraph(GraphState)
 

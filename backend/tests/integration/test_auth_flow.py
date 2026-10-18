@@ -10,7 +10,7 @@ async def test_register_login_and_access_protected_route(client: AsyncClient) ->
     ため、レスポンスボディにはaccess_tokenのみが含まれることを確認する。"""
     register_response = await client.post(
         "/api/v1/auth/register",
-        json={"email": "erin@example.com", "password": "s3cret-pass", "full_name": "Erin"},
+        json={"email": "erin@example.com", "password": "s3cret-pass", "user_name": "Erin"},
     )
     assert register_response.status_code == 201
 

@@ -9,6 +9,8 @@ IntakeFileStatus = Literal["processed", "failed"]
 # simple: 簡易ドキュメントモード(4文書の一括生成)
 # detailed: 詳細設計モード(docs/external_design.md 2.7節)
 ProjectMode = Literal["simple", "detailed"]
+# 一覧の1ページの件数(docs/external_design.md 2.12節)
+PROJECT_PAGE_SIZE = 10
 
 
 class IntakeFileRead(BaseModel):
@@ -23,6 +25,15 @@ class IntakeFileRead(BaseModel):
     error_message: str | None
 
 
+class GenerationFailureRead(BaseModel):
+    """直近の生成の失敗(理由のコード・利用者に見せる文言・作り直そうとした文書・日時)。"""
+
+    reason_code: str
+    message: str
+    targets: list[str]
+    failed_at: datetime
+
+
 class ProjectRead(BaseModel):
     """プロジェクトの概要をAPIレスポンスとして返す際のスキーマ。"""
 
@@ -32,8 +43,17 @@ class ProjectRead(BaseModel):
     title: str
     status: ProjectStatus
     mode: ProjectMode
+    # 直近の生成が失敗していれば、その記録(次の生成を受け付けると消える)
+    generation_failure: GenerationFailureRead | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class ProjectListPage(BaseModel):
+    """一覧の1ページ分と、条件に合う全件数(画面がページの数を出すため)。"""
+
+    items: list[ProjectRead]
+    total: int
 
 
 class ProjectDetail(ProjectRead):
