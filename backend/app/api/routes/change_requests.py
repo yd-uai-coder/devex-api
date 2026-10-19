@@ -12,16 +12,23 @@ from app.schemas.change_request import (
     ChangeRequestExplanationRead,
     ChangeRequestImpactRead,
     ChangeRequestRead,
+    ChangeRequestReviewLink,
     ChangeRequestSummaryRead,
+    ChangeRequestTraceRead,
     ChangeRequestUpdate,
+    ChangeRequestVerificationRead,
+    ChangeRequestVerify,
     ChangeRequestWithdraw,
+    DocumentChecksUpdate,
     ExcludedItemRead,
+    ReviewRunBriefRead,
     SummaryEdit,
 )
 from app.services.change_request_service import (
     ChangeRequestService,
     ChangeRequestView,
     ExplanationView,
+    VerificationView,
 )
 
 # 束と同じく、プロジェクト配下の独立したサブツリーとしてprefixにproject_idを含める
@@ -37,6 +44,12 @@ def _explanation(view: ExplanationView) -> ChangeRequestExplanationRead:
         output=view.output,
         summary=view.summary,
         summary_state=view.summary_state,
+    )
+
+
+def _verification(view: VerificationView) -> ChangeRequestVerificationRead:
+    return ChangeRequestVerificationRead.build(
+        view.change_request, view.verification, can_verify=view.can_verify
     )
 
 
@@ -106,6 +119,40 @@ async def get_change_request_comparison(
     view = await ChangeRequestService(session).comparison(current_project, number)
     return ChangeRequestComparisonRead.build(
         view.change_request, view.comparison, saved=view.saved
+    )
+
+
+@router.get("/{number}/trace", response_model=ChangeRequestTraceRead)
+async def get_change_request_trace(
+    number: ChangeRequestNumber, session: SessionDep, current_project: CurrentProjectDep
+) -> ChangeRequestTraceRead:
+    """CR の受付から検証までをたどる記録(時系列の行と、作った版・段階の版・結んだレビュー・
+    入れた束)。無ければ404。"""
+    view = await ChangeRequestService(session).trace(current_project, number)
+    return ChangeRequestTraceRead.build(view.change_request, view.entries)
+
+
+@router.get("/{number}/verification", response_model=ChangeRequestVerificationRead)
+async def get_change_request_verification(
+    number: ChangeRequestNumber, session: SessionDep, current_project: CurrentProjectDep
+) -> ChangeRequestVerificationRead:
+    """反映した CR の検証の確かめ(反映で付いた印の今の確認の状態と、文書の側の確認の一覧)。
+    無ければ404、まだ反映していなければ409。"""
+    return _verification(
+        await ChangeRequestService(session).verification(current_project, number)
+    )
+
+
+@router.put("/{number}/document-checks", response_model=ChangeRequestVerificationRead)
+async def check_change_request_documents(
+    number: ChangeRequestNumber,
+    payload: DocumentChecksUpdate,
+    session: SessionDep,
+    current_project: CurrentProjectDep,
+) -> ChangeRequestVerificationRead:
+    """文書の側の確認の項目を、確認済み(または未確認)にする。反映済みでなければ409。"""
+    return _verification(
+        await ChangeRequestService(session).check_documents(current_project, number, payload)
     )
 
 
@@ -245,5 +292,45 @@ async def copy_change_request(
     """却下した CR を写して、新しい番号の CR を下書きで作る。却下でなければ409。"""
     view = await ChangeRequestService(session).copy_rejected(
         current_project, number, created_by=current_user.id
+    )
+    return _read(view)
+
+
+@router.post("/{number}/verify", response_model=ChangeRequestRead)
+async def verify_change_request(
+    number: ChangeRequestNumber,
+    payload: ChangeRequestVerify,
+    session: SessionDep,
+    current_project: CurrentProjectDep,
+    current_user: CurrentUserDep,
+) -> ChangeRequestRead:
+    """反映済みの CR を検証済みにする。反映済みでない・未確認が残っていれば409。"""
+    view = await ChangeRequestService(session).verify(
+        current_project, number, payload, actor_id=current_user.id
+    )
+    return _read(view)
+
+
+@router.get("/{number}/review-candidates", response_model=list[ReviewRunBriefRead])
+async def list_change_request_review_candidates(
+    number: ChangeRequestNumber, session: SessionDep, current_project: CurrentProjectDep
+) -> list[ReviewRunBriefRead]:
+    """CR に結べる設計レビューの回(反映の後に流して成功し、まだ結んでいないもの。新しい順)。
+    反映済みでなければ空。無ければ404。"""
+    runs = await ChangeRequestService(session).review_candidates(current_project, number)
+    return [ReviewRunBriefRead.from_run(run) for run in runs]
+
+
+@router.post("/{number}/reviews", response_model=ChangeRequestRead)
+async def link_change_request_review(
+    number: ChangeRequestNumber,
+    payload: ChangeRequestReviewLink,
+    session: SessionDep,
+    current_project: CurrentProjectDep,
+    current_user: CurrentUserDep,
+) -> ChangeRequestRead:
+    """CR に設計レビューの回を結ぶ(時系列に1行)。回が無ければ404、結べなければ409。"""
+    view = await ChangeRequestService(session).link_review(
+        current_project, number, payload.review_run_id, actor_id=current_user.id
     )
     return _read(view)

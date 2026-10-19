@@ -1,5 +1,5 @@
 from app.models.baseline import Baseline, BaselineItem
-from app.models.change_request import ChangeRequest, ChangeRequestEvent
+from app.models.change_request import ChangeRequest, ChangeRequestEvent, ChangeRequestReview
 from app.models.change_request_summary import ChangeRequestSummary
 from app.models.chat_history import ChatHistory
 from app.models.data_item import DataItem
@@ -22,6 +22,7 @@ __all__ = [
     "BaselineItem",
     "ChangeRequest",
     "ChangeRequestEvent",
+    "ChangeRequestReview",
     "ChangeRequestSummary",
     "ChatHistory",
     "DataItem",

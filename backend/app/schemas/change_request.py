@@ -15,6 +15,7 @@ from app.change_requests import (
     BACKGROUND_SOURCE_LABEL,
     COMPARISON_STATUS_LABEL,
     COMPARISON_STATUSES,
+    MARK_CONFIRMATION_LABEL,
     PREDICTED_ONLY_REASON_LABEL,
     STATUS_LABEL,
     SUMMARY_MAX,
@@ -26,12 +27,15 @@ from app.change_requests import (
     Comparison,
     ComparisonStatus,
     Explanation,
+    MarkConfirmation,
     Overlap,
     PredictedOnlyReason,
     Prediction,
     SummaryState,
     Target,
     TargetKind,
+    TraceEntry,
+    Verification,
     check_summary,
     explanation_filename,
     normalize_targets,
@@ -40,8 +44,9 @@ from app.change_requests import (
 from app.schemas.agreement import MEMO_MAX, REASON_MAX, AgreementNotes
 
 if TYPE_CHECKING:
-    from app.models.change_request import ChangeRequest
+    from app.models.change_request import ChangeRequest, ChangeRequestReview
     from app.models.change_request_summary import ChangeRequestSummary
+    from app.models.review import ReviewRun
 
 # CR の文の上限(タイトルは一覧の1行、内容は変更の申し出の本文)
 TITLE_MAX = 200
@@ -142,7 +147,8 @@ class ChangeRequestWithdraw(BaseModel):
 
 class ChangeRequestEventRead(BaseModel):
     """CR の時系列の1行。`from_status`は作成・写しで null。`refs`は行が指すもの(反映: 作った文書の
-    版とモデル名、段階の反映: 段階・版・モデル名)。指すものの無い行は null。"""
+    版とモデル名、段階の反映: 段階・版・モデル名、レビューを結ぶ: 回・区切り・モデル名、検証:
+    確かめた数と結んだレビュー、束に入れる: 束の番号)。指すものの無い行は null。"""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -153,6 +159,46 @@ class ChangeRequestEventRead(BaseModel):
     actor_id: uuid.UUID | None
     note: str
     refs: dict[str, Any] | None = None
+
+
+class ReviewRunBriefRead(BaseModel):
+    """CR に結ぶ(結んだ)設計レビューの回の要点。`findings`は指摘の数、`adopted`は採用した数。"""
+
+    review_run_id: uuid.UUID
+    gate: str
+    model: str
+    status: str
+    started_at: datetime
+    finished_at: datetime | None
+    findings: int
+    adopted: int
+
+    @classmethod
+    def from_run(cls, run: "ReviewRun") -> "ReviewRunBriefRead":
+        return cls.model_validate(review_run_fields(run))
+
+
+class LinkedReviewRead(ReviewRunBriefRead):
+    """CR に結んだ設計レビューの回(結んだ日時と開発者つき)。"""
+
+    linked_at: datetime
+    linked_by: uuid.UUID | None
+
+    @classmethod
+    def from_link(cls, link: "ChangeRequestReview") -> "LinkedReviewRead":
+        return cls.model_validate(
+            {
+                **review_run_fields(link.review_run),
+                "linked_at": link.linked_at,
+                "linked_by": link.linked_by,
+            }
+        )
+
+
+class ChangeRequestReviewLink(BaseModel):
+    """CR に設計レビューの回を結ぶ。"""
+
+    review_run_id: uuid.UUID
 
 
 class ChangeRequestDecisionRead(BaseModel):
@@ -221,12 +267,15 @@ class ChangeRequestSummaryRead(BaseModel):
 
 
 class ChangeRequestRead(ChangeRequestSummaryRead):
-    """CR 1つ(詳細)。中身・合意の記録・時系列・重なり・写しの元と先・今できる操作。"""
+    """CR 1つ(詳細)。中身・合意の記録・時系列・結んだレビュー・入れた束(検証済みの後)・重なり・
+    写しの元と先・今できる操作。"""
 
     content: str
     background_memo: str
     decision: ChangeRequestDecisionRead | None
     events: list[ChangeRequestEventRead]
+    reviews: list[LinkedReviewRead]
+    included_baseline_number: int | None
     overlapping: list[ChangeRequestOverlapRead]
     derived_from_number: int | None
     derived_numbers: list[int]
@@ -261,6 +310,12 @@ class ChangeRequestRead(ChangeRequestSummaryRead):
                     ChangeRequestEventRead.model_validate(event)
                     for event in change_request.events
                 ],
+                "reviews": [LinkedReviewRead.from_link(r) for r in change_request.reviews],
+                "included_baseline_number": (
+                    change_request.included_baseline.number
+                    if change_request.included_baseline is not None
+                    else None
+                ),
                 "overlapping": [
                     ChangeRequestOverlapRead(
                         number=o.number,
@@ -297,7 +352,8 @@ class PredictedItemRead(BaseModel):
 class ComparedItemRead(BaseModel):
     """予測と実際の印の比較の要素1つ。`status`は一致 / 予測だけ / 実際だけ、
     `predicted_only_reason`は予測だけのときの理由(文書の側・承認していない段階・差分が届かな
-    かった)。`reviewed`は反映のときの印の確認の状態(印が無ければ null)。"""
+    かった)。`reviewed`は印の今の確認の状態(承認で消えた印は確認済み。文書の側は確認の一覧の
+    状態。印が無く、文書の側でもなければ null)。"""
 
     key: str
     label: str
@@ -353,6 +409,190 @@ class ChangeRequestComparisonRead(BaseModel):
                 )
                 for i in comparison.items
             ],
+        )
+
+
+class MarkStateRead(BaseModel):
+    """反映で付いた印1つと、今の確認の状態(未確認 / 確認済み / 承認で済んだ)。"""
+
+    key: str
+    label: str
+    stage: int
+    reason: str
+    confirmation: MarkConfirmation
+    confirmation_label: str
+
+
+class DocumentItemRead(BaseModel):
+    """文書の側の確認の項目1つ(保存した予測の画面・API)。"""
+
+    key: str
+    label: str
+    reason: str
+    reviewed: bool
+
+
+class ChangeRequestVerificationRead(BaseModel):
+    """CR の検証の確かめ。`can_verify`は今、検証済みにできるか(反映済みで、印と文書の側に未確認が
+    無い)。`open_marks`・`open_documents`は未確認の数。"""
+
+    number: int
+    label: str
+    status: ChangeRequestStatus
+    can_verify: bool
+    open_marks: int
+    open_documents: int
+    marks: list[MarkStateRead]
+    documents: list[DocumentItemRead]
+
+    @classmethod
+    def build(
+        cls, change_request: "ChangeRequest", verification: Verification, *, can_verify: bool
+    ) -> "ChangeRequestVerificationRead":
+        return cls(
+            number=change_request.number,
+            label=change_request_label(change_request.number),
+            status=change_request.status,  # type: ignore[arg-type]
+            can_verify=can_verify,
+            open_marks=verification.open_marks,
+            open_documents=verification.open_documents,
+            marks=[
+                MarkStateRead(
+                    key=m.key,
+                    label=m.label,
+                    stage=m.stage,
+                    reason=m.reason,
+                    confirmation=m.confirmation,
+                    confirmation_label=MARK_CONFIRMATION_LABEL[m.confirmation],
+                )
+                for m in verification.marks
+            ],
+            documents=[
+                DocumentItemRead(key=d.key, label=d.label, reason=d.reason, reviewed=d.reviewed)
+                for d in verification.documents
+            ],
+        )
+
+
+class DocumentChecksUpdate(BaseModel):
+    """文書の側の確認の項目を、確認済み(または未確認)にする。予測に無いキーは無視する。"""
+
+    keys: list[str] = Field(min_length=1, max_length=500)
+    reviewed: bool = True
+
+
+class ChangeRequestVerify(BaseModel):
+    """CR を検証済みにする。`note`は任意の補足(時系列に残す)。"""
+
+    note: str = Field(default="", max_length=REASON_MAX)
+
+
+class TraceDocumentRead(BaseModel):
+    """反映で作った文書の版1つ。`available`は今もその版が残っているか(直近の数版だけ残すため)。"""
+
+    doc_type: str
+    label: str
+    version: int
+    available: bool
+
+
+class TraceStageRead(BaseModel):
+    """反映で作り直した段階の下書きの版。"""
+
+    stage: int
+    version: int
+
+
+class TraceReviewRead(BaseModel):
+    """たどる記録の行が指す、結んだレビューの回の要点。"""
+
+    review_run_id: str
+    gate: str
+    model: str
+    status: str
+    findings: int
+    adopted: int
+
+
+class TraceEntryRead(BaseModel):
+    """たどる記録の1行。時系列の行と、指す先(作った文書の版・段階の版・モデル名・結んだ
+    レビュー・入れた束)を読み解いたもの。"""
+
+    position: int
+    action: str
+    action_label: str
+    from_status: str | None
+    to_status: str
+    occurred_at: datetime
+    actor_id: uuid.UUID | None
+    note: str
+    model: str | None
+    documents: list[TraceDocumentRead]
+    stage: TraceStageRead | None
+    reviews: list[TraceReviewRead]
+    baseline_number: int | None
+
+    @classmethod
+    def from_entry(cls, entry: TraceEntry) -> "TraceEntryRead":
+        return cls(
+            position=entry.position,
+            action=entry.action,
+            action_label=entry.action_label,
+            from_status=entry.from_status,
+            to_status=entry.to_status,
+            occurred_at=entry.occurred_at,
+            actor_id=entry.actor_id,
+            note=entry.note,
+            model=entry.model,
+            documents=[
+                TraceDocumentRead(
+                    doc_type=d.doc_type, label=d.label, version=d.version, available=d.available
+                )
+                for d in entry.documents
+            ],
+            stage=(
+                TraceStageRead(stage=entry.stage.stage, version=entry.stage.version)
+                if entry.stage is not None
+                else None
+            ),
+            reviews=[
+                TraceReviewRead(
+                    review_run_id=r.review_run_id,
+                    gate=r.gate,
+                    model=r.model,
+                    status=r.status,
+                    findings=r.findings,
+                    adopted=r.adopted,
+                )
+                for r in entry.reviews
+            ],
+            baseline_number=entry.baseline_number,
+        )
+
+
+class ChangeRequestTraceRead(BaseModel):
+    """CR の、受付から検証までをたどる記録。基準の束(`baseline_number`)と、検証済みの後に入れた束
+    (`included_baseline_number`。まだなら null)と、起きた順の行。"""
+
+    number: int
+    label: str
+    status: ChangeRequestStatus
+    baseline_number: int
+    included_baseline_number: int | None
+    entries: list[TraceEntryRead]
+
+    @classmethod
+    def build(
+        cls, change_request: "ChangeRequest", entries: list[TraceEntry]
+    ) -> "ChangeRequestTraceRead":
+        included = change_request.included_baseline
+        return cls(
+            number=change_request.number,
+            label=change_request_label(change_request.number),
+            status=change_request.status,  # type: ignore[arg-type]
+            baseline_number=change_request.baseline.number,
+            included_baseline_number=included.number if included is not None else None,
+            entries=[TraceEntryRead.from_entry(e) for e in entries],
         )
 
 
@@ -543,4 +783,18 @@ def summary_fields(change_request: "ChangeRequest") -> dict[str, Any]:
         "created_by": change_request.created_by,
         "created_at": change_request.created_at,
         "updated_at": change_request.updated_at,
+    }
+
+
+def review_run_fields(run: "ReviewRun") -> dict[str, Any]:
+    """レビューの回の要点の項目(指摘は読み込み済みであること)。"""
+    return {
+        "review_run_id": run.id,
+        "gate": run.gate,
+        "model": run.model,
+        "status": run.status,
+        "started_at": run.started_at,
+        "finished_at": run.finished_at,
+        "findings": len(run.findings),
+        "adopted": sum(1 for f in run.findings if f.decision == "adopted"),
     }

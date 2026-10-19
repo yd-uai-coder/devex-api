@@ -6,18 +6,27 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
-from app.models.change_request import ChangeRequest, ChangeRequestEvent
+from app.models.change_request import ChangeRequest, ChangeRequestEvent, ChangeRequestReview
+from app.models.review import ReviewRun
 from app.repositories.base import CRUDRepository
 
 
 class ChangeRequestRepository(CRUDRepository[ChangeRequest]):
-    """変更要求(CR)と時系列の永続化。時系列と基準の束は CR と一緒に読む(selectinload)。
+    """変更要求(CR)と時系列・結んだレビューの永続化。時系列・基準の束・入れた束・結んだレビュー
+    (回と指摘)は CR と一緒に読む(selectinload)。
     状態を変えるのはサービスで、ここは行の作成・時系列の追記・読み出しを持つ。"""
 
     model = ChangeRequest
 
     def _default_options(self) -> tuple[Any, ...]:
-        return (selectinload(ChangeRequest.events), selectinload(ChangeRequest.baseline))
+        return (
+            selectinload(ChangeRequest.events),
+            selectinload(ChangeRequest.baseline),
+            selectinload(ChangeRequest.included_baseline),
+            selectinload(ChangeRequest.reviews)
+            .selectinload(ChangeRequestReview.review_run)
+            .selectinload(ReviewRun.findings),
+        )
 
     async def next_number(self, project_id: uuid.UUID) -> int:
         """プロジェクトの次の番号(最初は1)。"""
@@ -65,6 +74,8 @@ class ChangeRequestRepository(CRUDRepository[ChangeRequest]):
             created_by=created_by,
             created_at=now,
             updated_at=now,
+            reviews=[],
+            included_baseline=None,
             events=[
                 ChangeRequestEvent(
                     position=0,
@@ -110,6 +121,20 @@ class ChangeRequestRepository(CRUDRepository[ChangeRequest]):
         change_request.updated_at = now
         await self._session.flush()
         return event
+
+    async def link_review(
+        self, change_request: ChangeRequest, run: ReviewRun, *, linked_by: uuid.UUID | None
+    ) -> ChangeRequestReview:
+        """CR にレビューの回を結ぶ。結んだレビューは読み込み済みであること。flushまで行う。"""
+        link = ChangeRequestReview(
+            review_run_id=run.id,
+            review_run=run,
+            linked_by=linked_by,
+            linked_at=datetime.now(UTC),
+        )
+        change_request.reviews.append(link)
+        await self._session.flush()
+        return link
 
     async def list_for_project(self, project_id: uuid.UUID) -> list[ChangeRequest]:
         """プロジェクトの CR を新しい順に返す(時系列付き)。"""

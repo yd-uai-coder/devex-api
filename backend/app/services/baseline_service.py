@@ -4,12 +4,15 @@ from collections.abc import Mapping
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.change_requests import INCLUDABLE_STATUSES
 from app.detailed_design import StageView, stage_key
 from app.models.baseline import Baseline
+from app.models.change_request import ChangeRequest
 from app.models.design_stage import DesignStage
 from app.models.generated_document import GeneratedDocument
 from app.models.project import Project
 from app.repositories.baseline import BaselineRepository, ItemSnapshot
+from app.repositories.change_request import ChangeRequestRepository
 from app.repositories.generated_document import (
     DOC_TYPES_BY_MODE,
     TEST_SPEC,
@@ -20,6 +23,8 @@ from app.services.design_stage_service import DesignStageService
 from app.services.errors import (
     BaselineDocumentsMissingError,
     BaselineNotFoundError,
+    ChangeRequestNotFoundError,
+    ChangeRequestNotIncludableError,
     DesignStageGenerationInProgressError,
     DesignStagesNotAvailableError,
     DocGenerationInProgressError,
@@ -38,18 +43,23 @@ class BaselineService:
 
     束は、作った時点の文書(要件定義書・外部設計書・テスト仕様書の表示中の版)と、段階1〜8 の
     承認の写しを写して凍結する。承認の写しが無い段階・無い文書も「入っていない」として行を作り、
-    そのときの状態を残す。作った後は直さず消さない。詳細設計モードだけ。"""
+    そのときの状態を残す。作った後は直さず消さない。検証済みの CR を渡すと、束と CR を結ぶ
+    (CR のサービスはこのサービスを使うので、循環を避けて CR はリポジトリで読む)。
+    詳細設計モードだけ。"""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
         self._baselines = BaselineRepository(session)
         self._documents = GeneratedDocumentRepository(session)
+        self._change_requests = ChangeRequestRepository(session)
 
     async def create(
         self, project: Project, payload: BaselineCreate, *, recorded_by: uuid.UUID | None
     ) -> Baseline:
         """束を作る。条件(この順に確かめる): 詳細設計モード / 文書・段階の生成中でない /
-        要件定義書・外部設計書の表示中の版がある。未承認・古い段階があっても作れる。"""
+        要件定義書・外部設計書の表示中の版がある / 渡した CR がどれもあり(無ければ
+        ChangeRequestNotFoundError)、検証済みで、まだ束に入っていない(違えば
+        ChangeRequestNotIncludableError)。未承認・古い段階があっても作れる。"""
         if project.mode != "detailed":
             raise DesignStagesNotAvailableError(
                 f"Baselines are not available for project {project.id} (mode={project.mode})"
@@ -70,6 +80,7 @@ class BaselineService:
         missing = [doc_type for doc_type in REQUIRED_DOCUMENTS if documents[doc_type] is None]
         if missing:
             raise BaselineDocumentsMissingError(f"Documents missing: {', '.join(missing)}")
+        change_requests = await self._includable(project, payload.change_request_numbers)
 
         baseline = await self._baselines.create(
             project_id=project.id,
@@ -81,9 +92,38 @@ class BaselineService:
             recorded_by=recorded_by,
             items=[*document_snapshots(documents), *stage_snapshots(rows, views)],
         )
+        for change_request in change_requests:
+            change_request.included_baseline = baseline
+            await self._change_requests.add_event(
+                change_request,
+                action="baseline",
+                to_status=change_request.status,
+                actor_id=recorded_by,
+                note=f"合意済みの版 B-{baseline.number} に入れた",
+                refs={"baseline_number": baseline.number},
+            )
         await self._session.commit()
         logger.info("baseline_created", project_id=str(project.id), number=baseline.number)
         return baseline
+
+    async def _includable(self, project: Project, numbers: list[int]) -> list[ChangeRequest]:
+        found: list[ChangeRequest] = []
+        for number in numbers:
+            change_request = await self._change_requests.get_by_number(
+                project_id=project.id, number=number
+            )
+            if change_request is None:
+                raise ChangeRequestNotFoundError(f"Change request CR-{number} not found")
+            if change_request.status not in INCLUDABLE_STATUSES:
+                raise ChangeRequestNotIncludableError(
+                    f"CR-{number} は検証済みでないので、合意済みの版に入れられません。"
+                )
+            if change_request.included_baseline_id is not None:
+                raise ChangeRequestNotIncludableError(
+                    f"CR-{number} はもう別の合意済みの版に入っています。"
+                )
+            found.append(change_request)
+        return found
 
     async def list_for_project(self, project: Project) -> list[Baseline]:
         """プロジェクトの束を新しい順に返す。"""

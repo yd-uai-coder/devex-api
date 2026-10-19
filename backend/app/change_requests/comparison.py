@@ -11,6 +11,9 @@ docs/external_design.md 2.14節「反映」。判断の時点で保存した予�
   - `not_changed`: 印を付けられる段階なのに、反映の差分が届かなかった(予測の外れ、または
     書き直しが要らなかった)。
 - 実際だけ(`actual_only`): 予測に無いのに印が付いた(見落とし、または CR の範囲の外の書き換え)。
+
+確認の状態(`reviewed`)は、呼び出し元が渡した印の値(今の確認の状態。verification.py)と、文書の側の
+確認済みのキー(`document_checks`)から出す。
 """
 
 from collections.abc import Collection, Mapping, Sequence
@@ -50,8 +53,8 @@ class AppliedMark:
 @dataclass(frozen=True)
 class ComparedItem:
     """要素1つの比較。`predicted_reason`・`actual_reason`はそれぞれの道の理由(無い側は空)。
-    `requirement_ids`は予測で届いた対象の要件(実際だけの要素は空)。`reviewed`は反映のときの印の
-    確認の状態(印が無ければ None)。"""
+    `requirement_ids`は予測で届いた対象の要件(実際だけの要素は空)。`reviewed`は印の確認の状態
+    (文書の側は確認の一覧の状態。印が無く、文書の側でもなければ None)。"""
 
     key: str
     label: str
@@ -97,8 +100,10 @@ def compare(
     prediction: Prediction,
     applied: Sequence[AppliedMark],
     marked_stages: Collection[int],
+    document_checks: Collection[str] | None = None,
 ) -> Comparison:
-    """予測と反映で付いた印を突き合わせる。`marked_stages`は印を付ける段階(一度でも承認した段階)。"""
+    """予測と反映で付いた印を突き合わせる。`marked_stages`は印を付ける段階(一度でも承認した段階)、
+    `document_checks`は文書の側の確認済みのキー(None なら文書の側の確認の状態を出さない)。"""
     actual = {mark.key: mark for mark in applied}
     items: list[ComparedItem] = []
     for predicted in prediction.items:
@@ -109,6 +114,9 @@ def compare(
         else:
             status = "predicted_only"
             reason = _predicted_only_reason(predicted.stage, marked_stages)
+        reviewed = mark.reviewed if mark is not None else None
+        if reason == "document_side" and document_checks is not None:
+            reviewed = predicted.key in document_checks
         items.append(
             ComparedItem(
                 key=predicted.key,
@@ -119,7 +127,7 @@ def compare(
                 predicted_reason=predicted.reason,
                 actual_reason=mark.reason if mark is not None else "",
                 requirement_ids=predicted.requirement_ids,
-                reviewed=mark.reviewed if mark is not None else None,
+                reviewed=reviewed,
             )
         )
     for mark in actual.values():

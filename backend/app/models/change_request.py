@@ -23,6 +23,7 @@ from app.core.database import Base, PortableJSON
 if TYPE_CHECKING:
     from app.models.baseline import Baseline
     from app.models.project import Project
+    from app.models.review import ReviewRun
 
 
 class ChangeRequest(Base):
@@ -39,6 +40,9 @@ class ChangeRequest(Base):
     判断の前と取り下げは NULL で、求めるたびに基準の束から作る)。`applied_impact`は反映(CR を
     渡した文書の再生成)のときに付いた印の写し(app/detailed_design/impact/marks.py の Mark の形の
     一覧。やり直しはキーで重ねる。反映の前は NULL)。予測との比較に使う(段階の印は承認で消えるため)。
+    `document_checks`は文書の側の確認の一覧(保存した予測の画面・API)のうち、確認済みにしたキー
+    (NULL は未確認だけ。app/change_requests/verification.py)。`included_baseline_id`は検証済みの後に
+    入れた新しい合意済みの版(束)。結んだ設計レビューは ChangeRequestReview に持つ。
     状態の遷移は時系列(ChangeRequestEvent)に1行ずつ残す。
     """
 
@@ -76,6 +80,10 @@ class ChangeRequest(Base):
     )
     predicted_impact: Mapped[dict | None] = mapped_column(PortableJSON, nullable=True)
     applied_impact: Mapped[list[dict] | None] = mapped_column(PortableJSON, nullable=True)
+    document_checks: Mapped[list[str] | None] = mapped_column(PortableJSON, nullable=True)
+    included_baseline_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("baselines.id", ondelete="SET NULL"), nullable=True
+    )
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -87,7 +95,16 @@ class ChangeRequest(Base):
     )
 
     project: Mapped["Project"] = relationship(back_populates="change_requests")
-    baseline: Mapped["Baseline"] = relationship()
+    # 束への外部キーが2つ(基準・入れた束)あるので、どちらを使うかを示す
+    baseline: Mapped["Baseline"] = relationship(foreign_keys=[baseline_id])
+    included_baseline: Mapped["Baseline | None"] = relationship(
+        foreign_keys=[included_baseline_id]
+    )
+    reviews: Mapped[list["ChangeRequestReview"]] = relationship(
+        back_populates="change_request",
+        cascade="all, delete-orphan",
+        order_by="ChangeRequestReview.linked_at",
+    )
     events: Mapped[list["ChangeRequestEvent"]] = relationship(
         back_populates="change_request",
         cascade="all, delete-orphan",
@@ -102,7 +119,10 @@ class ChangeRequestEvent(Base):
     (create / copy / edit / explain / agree / reject / withdraw …。states.py の操作)。
     `note`は取り下げの理由や「CR-2 から写した」などの補足。`actor_id`は操作した開発者。
     `refs`は行が指すもの(反映: 作った文書の版 `{"documents": [{doc_type, version}], "model"}`、
-    段階の反映: `{"stage", "version", "model"}`)。指すものの無い行は NULL。
+    段階の反映: `{"stage", "version", "model"}`、
+    レビューを結ぶ: `{"review_run_id", "gate", "model"}`、検証:
+    `{"mark_count", "document_count", "review_run_ids"}`、束に入れる: `{"baseline_number"}`)。
+    指すものの無い行は NULL。
     """
 
     __tablename__ = "change_request_events"
@@ -127,3 +147,29 @@ class ChangeRequestEvent(Base):
     refs: Mapped[dict | None] = mapped_column(PortableJSON, nullable=True)
 
     change_request: Mapped[ChangeRequest] = relationship(back_populates="events")
+
+
+class ChangeRequestReview(Base):
+    """CR に結んだ設計レビューの回(docs/internal_design.md 3.2節⑲)。
+
+    反映済みの間に、反映の後に流した回から開発者が選んで結ぶ(複数可。外す操作は無い)。
+    `linked_by`は結んだ開発者。CR・回のどちらが消えても一緒に消える。
+    """
+
+    __tablename__ = "change_request_reviews"
+
+    change_request_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("change_requests.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    review_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("review_runs.id", ondelete="CASCADE"), primary_key=True
+    )
+    linked_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    linked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    change_request: Mapped[ChangeRequest] = relationship(back_populates="reviews")
+    review_run: Mapped["ReviewRun"] = relationship()

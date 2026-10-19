@@ -561,3 +561,31 @@ class ChangeRequestNotAppliedError(ConflictError):
     送出する(比べる実際の印が無いため)。"""
 
     code: ClassVar[str | None] = "CR_NOT_APPLIED"
+
+
+class ChangeRequestNotVerifiableError(ConflictError):
+    """反映で付いた印か文書の側の確認の項目に、未確認が残っている CR を検証済みにしようとした場合に
+    送出する。"""
+
+    code: ClassVar[str | None] = "CR_NOT_VERIFIABLE"
+
+
+class ReviewRunNotFoundError(NotFoundError):
+    """プロジェクトに無い(別のプロジェクトの・存在しない)設計レビューの回を CR に結ぼうとした場合に
+    送出する。"""
+
+    code: ClassVar[str | None] = "REVIEW_RUN_NOT_FOUND"
+
+
+class ChangeRequestReviewNotLinkableError(ConflictError):
+    """CR に結べない設計レビューの回(CR が反映済みでない・回が成功していない・反映の前に流した・
+    もう結んである)を結ぼうとした場合に送出する。"""
+
+    code: ClassVar[str | None] = "CR_REVIEW_NOT_LINKABLE"
+
+
+class ChangeRequestNotIncludableError(ConflictError):
+    """合意済みの版(束)に入れられない CR(検証済みでない・もう別の束に入っている)を、束の作成に
+    渡した場合に送出する。"""
+
+    code: ClassVar[str | None] = "CR_NOT_INCLUDABLE"

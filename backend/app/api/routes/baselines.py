@@ -20,7 +20,8 @@ async def create_baseline(
     current_user: CurrentUserDep,
 ) -> BaselineRead:
     """合意済みの版(束)を作る。今の文書・段階の承認の写しを写して凍結し、合意の記録を残す。
-    簡易ドキュメントモード・生成中・要件定義書か外部設計書が無いは409。"""
+    渡した検証済みの CR を束に結ぶ。簡易ドキュメントモード・生成中・要件定義書か外部設計書が無い・
+    検証済みでないかもう束に入っている CR は409、無い CR は404。"""
     baseline = await BaselineService(session).create(
         current_project, payload, recorded_by=current_user.id
     )

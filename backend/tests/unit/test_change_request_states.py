@@ -12,7 +12,9 @@ from app.change_requests import (
     ACTIVE_STATUSES,
     BACKGROUND_SOURCE_LABEL,
     BACKGROUND_SOURCES,
+    CHECKABLE_STATUSES,
     DOCUMENT_REFLECTABLE_STATUSES,
+    INCLUDABLE_STATUSES,
     STAGE_REFLECTABLE_STATUSES,
     STATUS_LABEL,
     STATUSES,
@@ -74,6 +76,15 @@ def test_reflectable_statuses() -> None:
     # 段階は、文書へ反映した後(反映済み)だけ
     assert set(DOCUMENT_REFLECTABLE_STATUSES) == {"agreed", "applied"}
     assert set(STAGE_REFLECTABLE_STATUSES) == {"applied"}
+
+
+def test_after_reflection_statuses() -> None:
+    # 文書の側の確認・レビューを結ぶのは反映済みの間、束に入れるのは検証済みだけ
+    assert set(CHECKABLE_STATUSES) == {"applied"}
+    assert set(INCLUDABLE_STATUSES) == {"verified"}
+    # 記録だけの行は遷移の表に無い(状態を変えない)
+    assert "link_review" not in TRANSITIONS
+    assert "baseline" not in TRANSITIONS
 
 
 def test_tables_cover_every_status_and_source() -> None:

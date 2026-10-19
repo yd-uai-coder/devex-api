@@ -2,16 +2,25 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, computed_field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, computed_field, field_validator
 
 from app.schemas.agreement import AgreementNotes
 
 
 class BaselineCreate(AgreementNotes):
     """合意済みの版(束)を作るときの合意の記録。相手・メモ・理由は AgreementNotes。合意の日時は
-    記録する日時と別に、タイムゾーン付きで受け取る。"""
+    記録する日時と別に、タイムゾーン付きで受け取る。`change_request_numbers`は、この束に入れる
+    検証済みの CR の番号(任意。束と CR を結び、CR の時系列に1行残す)。"""
 
     agreed_at: AwareDatetime
+    change_request_numbers: list[int] = Field(default_factory=list, max_length=100)
+
+    @field_validator("change_request_numbers")
+    @classmethod
+    def _unique_numbers(cls, value: list[int]) -> list[int]:
+        if any(number < 1 for number in value):
+            raise ValueError("CR の番号は1以上です")
+        return list(dict.fromkeys(value))
 
 
 class BaselineItemSummaryRead(BaseModel):

@@ -11,6 +11,7 @@ from app.ai.llm.catalog import Purpose
 from app.ai.llm.content import extract_text_content
 from app.change_requests import (
     ACTIVE_STATUSES,
+    CHECKABLE_STATUSES,
     COPYABLE_STATUSES,
     DECISION_ACTIONS,
     DOCUMENT_REFLECTABLE_STATUSES,
@@ -20,42 +21,58 @@ from app.change_requests import (
     ChangeRequestFacts,
     ChangeRequestStatus,
     Comparison,
+    EventFacts,
     Explanation,
     Overlap,
     Prediction,
+    ReviewFacts,
     SummaryState,
     Target,
+    TraceEntry,
+    Verification,
     allowed_actions,
     applied_marks_from_json,
     build_cr_instruction,
     build_explanation,
     build_summary_messages,
+    checked_documents,
     clip_summary,
     compare,
+    document_items,
+    first_applied_at,
     next_status,
     overlaps,
     predict_from_snapshots,
+    review_link_problem,
     summary_state,
     target_ids,
     targets_from_json,
     targets_to_json,
+    trace_entries,
+    verification_of,
+    with_confirmations,
     with_summary,
 )
 from app.change_requests.explanation import DOCUMENT_LABEL
-from app.detailed_design.impact import Mark
+from app.detailed_design.impact import Mark, StageImpact
 from app.models.baseline import Baseline
 from app.models.change_request import ChangeRequest
 from app.models.change_request_summary import ChangeRequestSummary
 from app.models.project import Project
+from app.models.review import ReviewRun
 from app.repositories.baseline import BaselineRepository
 from app.repositories.change_request import ChangeRequestRepository
 from app.repositories.change_request_summary import ChangeRequestSummaryRepository
 from app.repositories.design_stage import DesignStageRepository
+from app.repositories.generated_document import GeneratedDocumentRepository
+from app.repositories.review import ReviewRunRepository
 from app.schemas.change_request import (
     ChangeRequestCreate,
     ChangeRequestDecision,
     ChangeRequestUpdate,
+    ChangeRequestVerify,
     ChangeRequestWithdraw,
+    DocumentChecksUpdate,
     change_request_label,
 )
 from app.services.baseline_service import BaselineService
@@ -65,9 +82,12 @@ from app.services.errors import (
     ChangeRequestNotAppliedError,
     ChangeRequestNotFoundError,
     ChangeRequestNotReflectableError,
+    ChangeRequestNotVerifiableError,
+    ChangeRequestReviewNotLinkableError,
     ChangeRequestSummaryNotFoundError,
     ChangeRequestTargetUnknownError,
     DesignStagesNotAvailableError,
+    ReviewRunNotFoundError,
 )
 from app.services.llm_resolver import LlmResolver, ResolvedLlm, injected_llm
 from app.services.llm_retry import invoke_with_retry
@@ -127,6 +147,29 @@ class ComparisonView:
 
 
 @dataclass(frozen=True)
+class VerificationView:
+    """CR 1つの検証の確かめ。`can_verify`は今、検証済みにできるか(反映済みで、未確認が無い)。"""
+
+    change_request: ChangeRequest
+    verification: Verification
+
+    @property
+    def can_verify(self) -> bool:
+        return (
+            next_status(self.change_request.status, "verify") is not None
+            and self.verification.complete
+        )
+
+
+@dataclass(frozen=True)
+class TraceView:
+    """CR 1つの、受付から検証までをたどる記録。"""
+
+    change_request: ChangeRequest
+    entries: list[TraceEntry]
+
+
+@dataclass(frozen=True)
 class ExplanationView:
     """CR 1つの説明書(5節)と、任意の要約(無ければ None)。"""
 
@@ -158,8 +201,9 @@ class ChangeRequestService:
     足す印。遷移の可否は app/change_requests/states.py の表で決め、遷移ごとに時系列へ1行残す。
     同じ要件を対象にする進行中の CR は止めず、詳細に重なりとして示す。影響の予測は基準の束の写しから
     求め(app/change_requests/prediction.py)、判断(合意・却下)の時点で CR に保存する。説明書は
-    CR・束の写し・予測から決定的に組み立てる(app/change_requests/explanation.py)。
-    詳細設計モードだけ。"""
+    CR・束の写し・予測から決定的に組み立てる(app/change_requests/explanation.py)。反映の後は、
+    反映で付いた印の今の確認の状態と文書の側の確認の一覧から、検証済みにできるかを決める
+    (app/change_requests/verification.py)。詳細設計モードだけ。"""
 
     def __init__(self, session: AsyncSession, *, llm: Any = None) -> None:
         # llm: テストが差し替える要約の LLM(None なら利用者の生成の用途で解決する)
@@ -436,19 +480,154 @@ class ChangeRequestService:
 
     async def comparison(self, project: Project, number: int) -> ComparisonView:
         """反映した CR の、影響の予測(判断の時点で保存したもの)と反映で付いた印の比較。反映の前は
-        ChangeRequestNotAppliedError。印を付ける段階は、今、一度でも承認した段階。"""
-        change_request = await self._load(project, number)
-        if change_request.status not in APPLIED_STATUSES:
-            raise ChangeRequestNotAppliedError(
-                f"{change_request_label(number)} はまだ反映していません。"
-            )
-        _, view = await self._impact_with_baseline(change_request)
-        rows = await DesignStageRepository(self._session).list_for_project(project.id)
-        marked = {row.stage for row in rows if row.approved_version is not None}
+        ChangeRequestNotAppliedError。印を付ける段階は、今、一度でも承認した段階。印の確認の状態は
+        今の状態(承認で消えた印は確認済み)、文書の側は確認の一覧の状態。"""
+        change_request = self._require_applied(await self._load(project, number))
+        view, verification, marked = await self._verification(project, change_request)
+        applied = with_confirmations(
+            applied_marks_from_json(change_request.applied_impact), verification.marks
+        )
         comparison = compare(
-            view.prediction, applied_marks_from_json(change_request.applied_impact), marked
+            view.prediction, applied, marked, change_request.document_checks or []
         )
         return ComparisonView(change_request, comparison, saved=view.saved)
+
+    async def verification(self, project: Project, number: int) -> VerificationView:
+        """反映した CR の検証の確かめ(印の今の確認の状態と文書の側の確認の一覧)。反映の前は
+        ChangeRequestNotAppliedError。"""
+        change_request = self._require_applied(await self._load(project, number))
+        _, verification, _ = await self._verification(project, change_request)
+        return VerificationView(change_request, verification)
+
+    async def check_documents(
+        self, project: Project, number: int, payload: DocumentChecksUpdate
+    ) -> VerificationView:
+        """文書の側の確認の項目を、確認済み(または未確認)にする。反映済みの間だけ(ほかは
+        ChangeRequestInvalidTransitionError)。予測に無いキーは無視する。"""
+        change_request = await self._load(project, number)
+        if change_request.status not in CHECKABLE_STATUSES:
+            raise ChangeRequestInvalidTransitionError(
+                f"CR-{number} cannot check documents (status={change_request.status})"
+            )
+        _, view = await self._impact_with_baseline(change_request)
+        known = [item.key for item in document_items(view.prediction, [])]
+        change_request.document_checks = checked_documents(
+            change_request.document_checks, payload.keys, payload.reviewed, known
+        )
+        change_request.updated_at = datetime.now(UTC)
+        await self._session.commit()
+        return await self.verification(project, number)
+
+    async def verify(
+        self,
+        project: Project,
+        number: int,
+        payload: ChangeRequestVerify,
+        *,
+        actor_id: uuid.UUID | None,
+    ) -> ChangeRequestView:
+        """反映済みの CR を検証済みにする。反映で付いた印と文書の側の確認に未確認が残っていれば
+        ChangeRequestNotVerifiableError。時系列に確かめた数を残す。"""
+        change_request = await self._load(project, number)
+        to_status = self._next(change_request, "verify")
+        _, verification, _ = await self._verification(project, change_request)
+        if not verification.complete:
+            raise ChangeRequestNotVerifiableError(
+                f"{change_request_label(number)} に未確認が残っています(印 "
+                f"{verification.open_marks} 件・文書の側 {verification.open_documents} 件)。"
+            )
+        await self._change_requests.add_event(
+            change_request,
+            action="verify",
+            to_status=to_status,
+            actor_id=actor_id,
+            note=payload.note.strip(),
+            refs={
+                "mark_count": len(verification.marks),
+                "document_count": len(verification.documents),
+                "review_run_ids": [str(r.review_run_id) for r in change_request.reviews],
+            },
+        )
+        await self._session.commit()
+        logger.info("change_request_verified", project_id=str(project.id), number=number)
+        return await self._view(change_request)
+
+    async def review_candidates(self, project: Project, number: int) -> list[ReviewRun]:
+        """CR に結べるレビューの回(反映の後に流して成功し、まだ結んでいないもの。新しい順)。
+        反映済みでなければ空。"""
+        change_request = await self._load(project, number)
+        runs = await ReviewRunRepository(self._session).list_for_project(project.id)
+        return [run for run in runs if self._link_problem(change_request, run) is None]
+
+    async def link_review(
+        self,
+        project: Project,
+        number: int,
+        review_run_id: uuid.UUID,
+        *,
+        actor_id: uuid.UUID | None,
+    ) -> ChangeRequestView:
+        """CR にレビューの回を結び、時系列に1行(状態は変えない)残す。回がプロジェクトに無ければ
+        ReviewRunNotFoundError、結べなければ ChangeRequestReviewNotLinkableError。"""
+        change_request = await self._load(project, number)
+        run = await ReviewRunRepository(self._session).find_one(
+            id=review_run_id, project_id=project.id
+        )
+        if run is None:
+            raise ReviewRunNotFoundError(f"Review run {review_run_id} not found")
+        problem = self._link_problem(change_request, run)
+        if problem is not None:
+            raise ChangeRequestReviewNotLinkableError(problem)
+        await self._change_requests.link_review(change_request, run, linked_by=actor_id)
+        await self._change_requests.add_event(
+            change_request,
+            action="link_review",
+            to_status=change_request.status,
+            actor_id=actor_id,
+            note=f"設計レビュー({run.gate}・{run.model})を結んだ",
+            refs={"review_run_id": str(run.id), "gate": run.gate, "model": run.model},
+        )
+        await self._session.commit()
+        return await self._view(change_request)
+
+    def _link_problem(self, change_request: ChangeRequest, run: ReviewRun) -> str | None:
+        return review_link_problem(
+            change_request.status,
+            first_applied_at((e.action, e.occurred_at) for e in change_request.events),
+            run.status,
+            run.started_at,
+            already_linked=any(r.review_run_id == run.id for r in change_request.reviews),
+        )
+
+    async def trace(self, project: Project, number: int) -> TraceView:
+        """CR の時系列を、指す先(作った文書の版が今も残っているか・段階の版・結んだレビュー・
+        入れた束)と一緒に返す。"""
+        change_request = await self._load(project, number)
+        documents = GeneratedDocumentRepository(self._session)
+        doc_types = {
+            str(item["doc_type"])
+            for event in change_request.events
+            for item in (event.refs or {}).get("documents") or []
+            if isinstance(item, dict) and "doc_type" in item
+        }
+        available = {
+            doc_type: {
+                d.version
+                for d in await documents.list_versions(project_id=project.id, doc_type=doc_type)
+            }
+            for doc_type in doc_types
+        }
+        reviews = {
+            str(link.review_run_id): review_facts(link.review_run)
+            for link in change_request.reviews
+        }
+        events = [
+            EventFacts(
+                e.action, e.from_status, e.to_status, e.occurred_at, e.actor_id, e.note, e.refs
+            )
+            for e in change_request.events
+        ]
+        return TraceView(change_request, trace_entries(events, available, reviews))
 
     async def reflectable(
         self, project: Project, number: int, *, stage: bool = False
@@ -528,6 +707,30 @@ class ChangeRequestService:
             note=f"段階{stage}の下書きを作り直した",
             refs={"stage": stage, "version": version, "model": model},
         )
+
+    def _require_applied(self, change_request: ChangeRequest) -> ChangeRequest:
+        if change_request.status not in APPLIED_STATUSES:
+            raise ChangeRequestNotAppliedError(
+                f"{change_request_label(change_request.number)} はまだ反映していません。"
+            )
+        return change_request
+
+    async def _verification(
+        self, project: Project, change_request: ChangeRequest
+    ) -> tuple[ImpactView, Verification, set[int]]:
+        """予測(保存したもの)・検証の確かめと、印を付ける段階(一度でも承認した段階)。"""
+        _, view = await self._impact_with_baseline(change_request)
+        rows = await DesignStageRepository(self._session).list_for_project(project.id)
+        current = {row.stage: StageImpact.from_dict(row.impact) for row in rows}
+        verification = verification_of(
+            applied_marks_from_json(change_request.applied_impact),
+            current,
+            change_request.number,
+            view.prediction,
+            change_request.document_checks or [],
+        )
+        marked = {row.stage for row in rows if row.approved_version is not None}
+        return view, verification, marked
 
     async def _explanation_view(self, change_request: ChangeRequest) -> ExplanationView:
         return ExplanationView(
@@ -646,6 +849,18 @@ def merge_applied_marks(
     for mark in marks:
         by_key[mark.key] = asdict(mark)
     return sorted(by_key.values(), key=lambda m: (int(m["stage"]), str(m["key"])))
+
+
+def review_facts(run: ReviewRun) -> ReviewFacts:
+    """結んだレビューの回の要点(指摘は読み込み済みであること)。"""
+    return ReviewFacts(
+        review_run_id=str(run.id),
+        gate=run.gate,
+        model=run.model,
+        status=run.status,
+        findings=len(run.findings),
+        adopted=sum(1 for f in run.findings if f.decision == "adopted"),
+    )
 
 
 def predict_for(change_request: ChangeRequest, baseline: Baseline) -> Prediction:

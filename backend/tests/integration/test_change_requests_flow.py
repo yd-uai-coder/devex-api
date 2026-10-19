@@ -5,9 +5,12 @@ SUT: POST・GET /api/v1/projects/{id}/change-requests、GET・PATCH .../{number}
      POST .../{number}/explain・decision・withdraw・copy、GET .../{number}/impact、
      GET .../{number}/explanation・explanation/download、POST・PATCH .../explanation/summary、
      POST .../explanation/summary/confirm、CR を渡した POST /api/v1/projects/{id}/generate と
-     GET .../{number}/comparison(ルート → ChangeRequestService・DocGeneratorService →
-     ChangeRequestRepository・ChangeRequestSummaryRepository・GeneratedDocumentRepository)と、
-     プロジェクトの削除での CR・時系列・要約の CASCADE
+     GET .../{number}/comparison、GET .../{number}/verification・PUT .../document-checks・
+     POST .../verify、GET .../review-candidates・POST .../reviews、束の作成の
+     change_request_numbers、GET .../{number}/trace(ルート → ChangeRequestService・
+     DocGeneratorService・BaselineService → ChangeRequestRepository・
+     ChangeRequestSummaryRepository・GeneratedDocumentRepository・ReviewRunRepository)と、
+     プロジェクトの削除での CR・時系列・要約・結んだレビューの CASCADE
 ドライバ: httpx の AsyncClient(ASGITransport)
 スタブ: 要約と文書の生成の LLM だけ、解決(LlmResolver.resolve)を固定の文・構造化出力の見本を
 返すフェイクに差し替える(stub_llm_resolver)。ほかは LLM を呼ばない。利用者・プロジェクト・
@@ -28,12 +31,14 @@ from tests.fixtures.requirements import requirements_output
 
 from app.core.database import AsyncSessionLocal
 from app.core.security import create_access_token
-from app.models.change_request import ChangeRequest, ChangeRequestEvent
+from app.models.change_request import ChangeRequest, ChangeRequestEvent, ChangeRequestReview
 from app.models.change_request_summary import ChangeRequestSummary
 from app.models.generated_document import GeneratedDocument
 from app.models.project import Project
+from app.models.review import ReviewRun
 from app.models.user import User
 from app.repositories.generated_document import GeneratedDocumentRepository
+from app.repositories.review import ReviewRunRepository
 
 pytestmark = pytest.mark.integration
 
@@ -337,3 +342,109 @@ async def test_reflection_records_versions_and_comparison(
 
     await client.delete(f"/api/v1/projects/{project_id}", headers=headers)
     assert await _rows(project_id) == (0, 0)
+
+
+async def _review_run(project_id: uuid.UUID) -> uuid.UUID:
+    """成功したレビューの回(LLM を呼ばずに直接作る)。"""
+    async with AsyncSessionLocal() as session:
+        run = await ReviewRunRepository(session).create_run(
+            project_id=project_id,
+            gate="documents",
+            targets={},
+            trigger="manual",
+            model="m",
+            status="succeeded",
+        )
+        await session.commit()
+        return run.id
+
+
+async def _links(project_id: uuid.UUID) -> int:
+    async with AsyncSessionLocal() as session:
+        count = await session.scalar(
+            select(func.count())
+            .select_from(ChangeRequestReview)
+            .join(ReviewRun, ChangeRequestReview.review_run_id == ReviewRun.id)
+            .where(ReviewRun.project_id == project_id)
+        )
+        return count or 0
+
+
+async def test_verify_review_baseline_and_trace(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stub_llm_resolver(
+        monkeypatch,
+        FakeLLM(
+            content_sequence=["## 自己診断\n最重要: 特になし"],
+            structured_by_schema=upstream_outputs(
+                requirements_output(prev_id="FR-001", text="予約を登録し、確認メールを送る")
+            ),
+        ),
+    )
+    headers, user_id = await _login("cr-verify@example.com")
+    project_id = await _project(user_id)
+    base = f"/api/v1/projects/{project_id}/change-requests"
+    await client.post(f"/api/v1/projects/{project_id}/baselines", json=_BASELINE, headers=headers)
+    await client.post(base, json=_CR, headers=headers)
+    await client.post(f"{base}/1/explain", headers=headers)
+    await client.post(
+        f"{base}/1/decision", json={**_DECISION, "decision": "agreed"}, headers=headers
+    )
+    await client.post(
+        f"/api/v1/projects/{project_id}/generate",
+        json={"start_from": "requirements", "cr_number": 1},
+        headers=headers,
+    )
+
+    # 段階を承認していないので印は無く、文書の側の確認だけが残る
+    verification = (await client.get(f"{base}/1/verification", headers=headers)).json()
+    assert (verification["marks"], verification["can_verify"]) == ([], False)
+    keys = [d["key"] for d in verification["documents"]]
+    assert keys
+    early = await client.post(f"{base}/1/verify", json={}, headers=headers)
+    assert (early.status_code, early.json()["code"]) == (409, "CR_NOT_VERIFIABLE")
+
+    run_id = await _review_run(project_id)
+    candidates = (await client.get(f"{base}/1/review-candidates", headers=headers)).json()
+    assert [c["review_run_id"] for c in candidates] == [str(run_id)]
+    linked = await client.post(
+        f"{base}/1/reviews", json={"review_run_id": str(run_id)}, headers=headers
+    )
+    assert linked.status_code == 200
+    again = await client.post(
+        f"{base}/1/reviews", json={"review_run_id": str(run_id)}, headers=headers
+    )
+    assert (again.status_code, again.json()["code"]) == (409, "CR_REVIEW_NOT_LINKABLE")
+
+    checked = await client.put(
+        f"{base}/1/document-checks", json={"keys": keys}, headers=headers
+    )
+    assert checked.json()["can_verify"] is True
+    verified = await client.post(f"{base}/1/verify", json={"note": "確かめた"}, headers=headers)
+    assert verified.json()["status"] == "verified"
+
+    created = await client.post(
+        f"/api/v1/projects/{project_id}/baselines",
+        json={**_BASELINE, "change_request_numbers": [1]},
+        headers=headers,
+    )
+    assert (created.status_code, created.json()["number"]) == (201, 2)
+    trace = (await client.get(f"{base}/1/trace", headers=headers)).json()
+    assert (trace["baseline_number"], trace["included_baseline_number"]) == (1, 2)
+    assert [e["action"] for e in trace["entries"]] == [
+        "create",
+        "explain",
+        "agree",
+        "apply",
+        "link_review",
+        "verify",
+        "baseline",
+    ]
+    assert all(d["available"] for d in trace["entries"][3]["documents"])
+    assert trace["entries"][5]["reviews"][0]["review_run_id"] == str(run_id)
+    assert await _links(project_id) == 1
+
+    await client.delete(f"/api/v1/projects/{project_id}", headers=headers)
+    assert await _rows(project_id) == (0, 0)
+    assert await _links(project_id) == 0
