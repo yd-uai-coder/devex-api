@@ -16,7 +16,7 @@ T = TypeVar("T")
 logger = structlog.get_logger(__name__)
 
 # LLM呼び出しの一時的な失敗に対する最大リトライ回数・リトライ間隔(秒)。
-# 汎用チャット(app/services/chat.py)も含め、全てのLLM呼び出しがこの値を使う。
+# 全てのLLM呼び出しがこの値を使う。
 MAX_GENERATION_ATTEMPTS = 3
 RETRY_DELAY_SECONDS = 1.0
 # 混雑(Gemini の 503・504、Anthropic の 529・503)のときの、試行の間の待ち(1回目の失敗の後、
@@ -132,8 +132,8 @@ def _is_overloaded_error(exc: Exception) -> bool:
 
 
 def _is_quota_error(exc: Exception) -> bool:
-    """例外が外部APIのクォータ超過を示すものかどうかを判定する。Gemini APIの429と、Tavily(検索)の
-    利用上限超過(Tavilyは汎用チャットのワークフローが使う)と、Anthropic APIの429(設計レビュー)。"""
+    """例外が外部APIのクォータ超過を示すものかどうかを判定する。Gemini APIの429と、
+    Anthropic APIの429(設計レビュー)。"""
     try:
         from anthropic import RateLimitError as AnthropicRateLimitError
     except ImportError:
@@ -145,20 +145,11 @@ def _is_quota_error(exc: Exception) -> bool:
     except ImportError:
         # google-genaiが未インストールの環境向けフォールバック
         GoogleAPIError = None
-    try:
-        from tavily import UsageLimitExceededError as TavilyUsageLimitExceededError
-    except ImportError:
-        # tavily-pythonが未インストールの環境向けフォールバック
-        TavilyUsageLimitExceededError = None
 
-    if (
+    return (
         GoogleAPIError is not None
         and isinstance(exc, GoogleAPIError)
         and getattr(exc, "code", None) == 429
-    ):
-        return True
-    return TavilyUsageLimitExceededError is not None and isinstance(
-        exc, TavilyUsageLimitExceededError
     )
 
 

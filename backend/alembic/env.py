@@ -12,11 +12,9 @@ from app.core.database import Base
 # noqa: F401 — モデルをmetadataに登録するためだけに必要なimport
 from app.models import (  # noqa: F401
     ChatHistory,
-    Conversation,
     DataItem,
     GeneratedDocument,
     IntakeFile,
-    Message,
     Project,
     PromptTemplate,
     UmlDiagram,

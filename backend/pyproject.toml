@@ -1,7 +1,7 @@
 [project]
 name = "backend"
 version = "0.1.0"
-description = "FastAPI + LangChain + LangGraph backend"
+description = "Devex backend (FastAPI + LangChain)"
 requires-python = ">=3.13"
 dependencies = [
     "alembic>=1.19.1",
@@ -14,8 +14,6 @@ dependencies = [
     "langchain>=1.3.15",
     "langchain-anthropic>=1.7.6",
     "langchain-google-genai>=4.3.3",
-    "langchain-tavily>=0.2.18",
-    "langgraph>=1.2.11",
     "pwdlib[argon2]>=0.3.1",
     "pydantic[email]>=2.13.4",
     "pydantic-settings>=2.15.0",
@@ -25,7 +23,6 @@ dependencies = [
     "sentry-sdk>=2.67.1",
     "sqlalchemy[asyncio]>=2.0",
     "structlog>=25.1.0",
-    "tavily-python>=0.7.27",
     "uvicorn[standard]>=0.52.1",
 ]
 
@@ -89,18 +86,12 @@ pythonVersion = "3.13"
 typeCheckingMode = "standard"
 
 # 既知の型債務。新規コードは standard で厳格に保ちつつ、下記は当面診断を抑制する。
-#   - app/ai/graph/nodes.py            : LangGraph の GraphState を部分辞書で構築する箇所
-#   - tests/unit/test_ai_graph_nodes.py: 同上(ノードをテストから直接呼ぶため部分辞書を渡す)
-#   - app/repositories/conversation.py : owner スコープの get_by_id override(設計上の割り切り)
-#   - app/repositories/project.py      : 同上
+#   - app/repositories/project.py      : owner スコープの get_by_id override(設計上の割り切り)
 #   - app/repositories/data_item.py    : 同上
 #   - app/repositories/uml_diagram.py  : 同上
 #   - app/repositories/uml_generation_run.py : 同上
 #   - tests/unit/test_auth_service.py  : テスト用 FakeRedis の型付け未整備
 ignore = [
-    "app/ai/graph/nodes.py",
-    "tests/unit/test_ai_graph_nodes.py",
-    "app/repositories/conversation.py",
     "app/repositories/project.py",
     "app/repositories/data_item.py",
     "app/repositories/uml_diagram.py",

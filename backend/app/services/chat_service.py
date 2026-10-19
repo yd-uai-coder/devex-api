@@ -239,9 +239,9 @@ _OPENING_TURN_PROMPT = (
 class ChatService:
     """プロジェクトのヒアリングチャット(対話生成・完了判定)を担当するサービス。
 
-    既存の汎用デモ(app/ai/graph/)とは異なりLangGraphを使わない: ヒアリングフローは
-    「毎回LLM応答生成→完了判定」という一本道の処理であり、真の分岐を持つLangGraphの
-    StateGraphを導入するのは過剰なため、素のLangChainメッセージで組み立てる。
+    LangGraphを使わない: ヒアリングフローは「毎回LLM応答生成→完了判定」という一本道の
+    処理であり、真の分岐を持つLangGraphのStateGraphを導入するのは過剰なため、素の
+    LangChainメッセージで組み立てる。
     """
 
     def __init__(self, session: AsyncSession) -> None:

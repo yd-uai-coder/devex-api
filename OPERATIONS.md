@@ -691,7 +691,7 @@ GitHubリポジトリの Settings → Secrets and variables → Actions → New 
    # → どちらも 0 であることを確かめる
    ```
 
-- **パスワードが null の行が1件でもあると、downgrade は`c4f8a2e6d1b9`で失敗する**(`NotNullViolationError`)。失敗しても DB は元の head のまま(マイグレーションはトランザクションの中で流れる)。行があるときは、downgrade をやめてコードだけ戻すか、その利用者(とプロジェクト。`users`を消すと`projects`・`conversations`・用途ごとのモデル・API キーも消える)を消してよいかを決める。
+- **パスワードが null の行が1件でもあると、downgrade は`c4f8a2e6d1b9`で失敗する**(`NotNullViolationError`)。失敗しても DB は元の head のまま(マイグレーションはトランザクションの中で流れる)。行があるときは、downgrade をやめてコードだけ戻すか、その利用者(とプロジェクト。`users`を消すと`projects`・用途ごとのモデル・API キーも消える)を消してよいかを決める。
 - **downgrade は Google の連携をすべて消す**(`google_sub`の列が消える)。もう一度更新しても戻らない。パスワードのある利用者は、次に Google でログインするときに連携の確かめ(パスワード)からやり直す。
 - 削除の印・モデル・API キーについては 10.6節のロールバックのとおり。
 - 開発環境の DB の複製(利用者 155・うちパスワードが null 13・Google と連携済み 25・プロジェクト 137)で確かめた。null の行があるまま`downgrade 7c3e9ab5f4d6`を流すと`c4f8a2e6d1b9`で失敗し、head は`c4f8a2e6d1b9`のまま、行の数も変わらなかった。null の13件を消してから、6本の downgrade → upgrade を2往復した。どちらの往復でも、利用者 142・プロジェクト 137 は変わらず、upgrade の後の`google_sub`は 0 件(連携は戻らない)。

@@ -7,7 +7,7 @@ def extract_text_content(content: str | list) -> str:
     ことがあり、同じく`text`フィールドを持つ。素の`str()`はPythonのrepr(波括弧・
     引用符・エスケープされた改行)をそのまま出力してしまうため、`text`フィールドだけを
     取り出して連結する。chat_service.py(ヒアリング応答)・intake_file_processor.py(PDF
-    テキスト化)・doc_generator_service.py(4文書生成+自己診断)・汎用チャットのグラフが
+    テキスト化)・doc_generator_service.py(4文書生成+自己診断)が
     応答をテキスト化する際に共通で使う。
     """
     if isinstance(content, str):

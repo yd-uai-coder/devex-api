@@ -1,20 +1,22 @@
 # CLAUDE.md
 
-このファイルは、このリポジトリで作業する人間・AIエージェント双方に向けた、アーキテクチャの全体像と設計判断の「なぜ」を記録したドキュメントです。テンプレートとして新しいプロジェクトの土台に使う際、まずここを読めば構造の意図が分かるようにしています。
+このファイルは、このリポジトリ([Devex](https://github.com/yd-uai-coder/devex-project#readme) のバックエンド)で作業する人間・AIエージェント双方に向けた、アーキテクチャの全体像と設計判断の「なぜ」を記録したドキュメントです。機能一覧・起動手順は`README.md`、デプロイ・運用は`OPERATIONS.md`にあります。自作の FastAPI のテンプレートから作り始めたため、層の構成・エラー処理・レート制限・テストの分離はテンプレートに由来します(テンプレートの汎用チャット・LangGraph のデモは削除済み)。
 
 ## レイヤー構成
 
 ```
 routes (app/api/routes) → services (app/services) → repositories (app/repositories) → models (app/models)
-                                        ↓
-                                  ai (app/ai)  ※ LangChain/LangGraphによるLLM連携
+                                 │
+                                 ├→ ドメイン(純粋関数): app/hearing・documents・detailed_design・uml・review
+                                 └→ ai (app/ai/llm)  ※ LangChainによるLLMクライアント
 ```
 
 - **routes**：リクエスト/レスポンスの変換のみを担当し、ビジネスロジックを持たない。ルートは基本的に「サービスを呼ぶ→スキーマに詰めて返す」だけで、例外処理も原則書かない（後述）。
 - **services**：ユースケース単位のロジックとトランザクション境界を持つ。DBの`commit()`はサービス層でのみ行う。
 - **repositories**：永続化のみを担当し、`flush()`はしても`commit()`はしない（トランザクションの単位はサービス層が握るため）。
 - **models**：SQLAlchemyのORM定義のみ。
-- **ai**：LLM/検索ツールのクライアントとLangGraphのワークフローをまとめた独立パッケージ。servicesから呼び出される。
+- **ai**：LLMクライアントの組み立て(`app/ai/llm/`)。servicesから呼び出される。
+- **ドメインのパッケージ**(`app/hearing`・`app/documents`・`app/detailed_design`・`app/uml`・`app/review`)：構造化出力のスキーマ、意味モデル、検証の規則、Markdown の組み立てなど、DB にも LLM にも触らない純粋関数。サービスがここを呼び、結果を保存する。**なぜ分けるか**：生成の規則・検証・文書の組み立てを、DB や LLM のスタブ無しで素のテストにできるため(テストの大半はここを直接呼ぶ)。
 
 ## エラーハンドリングの設計
 
@@ -26,7 +28,7 @@ routes (app/api/routes) → services (app/services) → repositories (app/reposi
 ## リポジトリ層
 
 - `app/repositories/base.py`の`CRUDRepository[ModelType]`が、`get_by_id` / `find_one` / `list_all` / `get_or_create` / `count` / `delete`という共通CRUD操作を提供する（PEP 695のジェネリクス構文を使用）。
-- 各リポジトリは`model`属性にORMモデルを指定して継承し、Eagerロードが必要な場合は`_default_options()`を上書きする（例：`ConversationRepository`は`Message`を常に`selectinload`する）。
+- 各リポジトリは`model`属性にORMモデルを指定して継承し、Eagerロードが必要な場合は`_default_options()`を上書きする（例：`ReviewRunRepository`は`ReviewRun.findings`を常に`selectinload`する）。
 - 新しいエンティティを追加する際は、まずこの基底クラスを継承し、固有のクエリだけを追加メソッドとして書くのが基本パターン。
 
 ## レート制限
@@ -41,12 +43,16 @@ routes (app/api/routes) → services (app/services) → repositories (app/reposi
 - `app/api/middleware.py`の`BodySizeLimitMiddleware`は、`Settings.MAX_REQUEST_BODY_BYTES`を超えるリクエストボディを413で拒否するASGIミドルウェア。**なぜアプリ側にも上限を置くか**：nginxの`client_max_body_size`は、アプリを直接公開した開発環境やnginxを通らない経路（docker内部ネットワーク）では効かないため。
 - `app/core/config.py`の`Settings`は、`ENVIRONMENT=production`起動時に危険な設定（弱い`JWT_SECRET_KEY`・`DEBUG=true`）を`model_validator`で拒否する。**なぜ実行時でなく起動時に落とすか**：設定ミスは「動くが危険」な状態になりやすく、気づかれないまま本番運用され続けるリスクが高いため。
 
-## LLM/LangGraph連携
+## LLM連携
 
-- `app/ai/llm/gemini.py`・`app/ai/tools/tavily.py`は、LLM/検索ツールのクライアントを`lru_cache`でプロセス内キャッシュしている。**理由**：クライアント生成コストを避けつつ、単一プロセス・単一APIキー構成のテンプレートとしてはこれで十分なため。マルチテナントで複数APIキーを使い分ける場合はこのキャッシュ戦略を見直す必要がある。
-- `app/ai/graph/`にLangGraphの`StateGraph`ワークフローを定義。ノード（`nodes.py`）・状態（`state.py`）・組み立て（`workflow.py`）を分離している。
-- `app/services/llm_retry.py`の`invoke_with_retry`は、LLM呼び出しをラップし「クォータ超過（Geminiの429・Tavilyの利用上限）は即座に諦める」「それ以外の一時的エラーは規定回数リトライする」を切り分けている。クォータ超過をリトライしても無駄にAPIコールを消費するだけなので、ここは明確に区別する設計にしている。汎用チャット（`app/services/chat.py`）を含め、全てのLLM呼び出しがこの1か所を通る。
-- `generate_final_answer`ノードは`with_structured_output`でPydanticスキーマ（`app/schemas/generation.py`の`FinalAnswer`）を使った構造化出力を行う。生文字列のパースに頼らず、LLM出力の型を保証するための最小限のデモ実装。
+- `app/ai/llm/catalog.py`が、AIの提供元(`Provider`: Gemini / Claude)・用途(`Purpose`: チャット・生成・レビュー・判定)・使えるモデルと、モデルごとのタイムアウト・用途ごとの出力の上限を持つ。
+- `app/services/llm_resolver.py`の`LlmResolver`が「ユーザーと用途 → (provider, モデル, キー)」を決める。モデルはユーザーの選択(無ければ既定値)、キーは自分のキー(`user_api_keys`、Fernetで暗号化。`app/core/crypto.py`)、無ければ環境変数の既定のキー。**解決はLLMを呼ぶ各サービスが自分のセッションで行う**。PDFの取り込みは、PDFをそのまま渡せるGeminiで固定する。
+- `app/ai/llm/factory.py`の`build_llm`がクライアントを作る。実クライアントは`lru_cache`で (provider, モデル, キー, 用途, 温度) ごとに1つ。`timeout`を必ず付け、SDKの中の再試行は止めて`app/services/llm_retry.py`の`invoke_with_retry`に任せる(二重に重ねると1回の呼び出しがタイムアウトを大きく超えるため)。
+- `invoke_with_retry`は「クォータ超過(429相当)は即座に諦める」「混雑(503・529など)は間を伸ばして再試行」「それ以外の一時的エラーは規定回数リトライ」を切り分ける。クォータ超過をリトライしても無駄にAPIコールを消費するだけなので、明確に区別する。
+- 設計レビューは生成とは別のモデル(既定はClaude Sonnet、直ったかの判定はHaiku)で流す(`app/review/`、`app/services/review_service.py`)。使えるのは superuser か、レビューの用途の自分のキーを持つ利用者だけ(`app/review/policy.py`)。既定のキーで流す回は、ユーザーごとの1日の上限で数える。
+- 構造化出力は`with_structured_output`でPydanticスキーマを使い、生文字列のパースに頼らない。両 provider で`json_schema`の方式に揃える。
+- 登録されるAPIキーは、費用のかからない呼び出し(モデルの一覧)で確かめてから保存する(`app/ai/llm/key_check.py`。キーはURLに載せずヘッダーで渡す)。
+- `E2E_FAKE_LLM=true`のときは決定論的な偽のLLM(`app/ai/llm/fake.py`)を返す。`ENVIRONMENT=production`ではこのフラグ自体を起動時に拒否する。
 
 ## テストの分離
 
@@ -64,9 +70,9 @@ routes (app/api/routes) → services (app/services) → repositories (app/reposi
 ## 開発用ツール
 
 - `backend/scripts/seed.py`（`uv run python -m scripts.seed`）は、ログインを試すための固定テストユーザーを2人(一般ユーザー `example-user@example.com` と superuser `example-super-user@example.com`)冪等に作成する。本番の superuser は、登録したアカウントを手で昇格させる。**dev専用**（本番DBでは実行しない）。
-- `backend/pyproject.toml`の`[tool.pyright]`は、エディタ（VSCode/Pylance）とCLI（`uvx pyright`）の解析ルートを`backend/`に固定する。ワークスペースをどのフォルダで開いても`app`パッケージがfirst-partyとして解決される。`ignore`には現時点の既知の型債務（`app/ai/graph/nodes.py`のLangGraph `GraphState`部分構築など）を列挙している。
+- `backend/pyproject.toml`の`[tool.pyright]`は、エディタ（VSCode/Pylance）とCLI（`uvx pyright`）の解析ルートを`backend/`に固定する。ワークスペースをどのフォルダで開いても`app`パッケージがfirst-partyとして解決される。`ignore`には現時点の既知の型債務（所有者スコープでの`get_by_id`の上書きなど）を列挙している。
 
 ## Docker構成
 
 - `backend/Dockerfile`は`base → builder → runtime`の3段構成。開発時は`builder`ステージ（`--reload`付き）をソースのbindマウントと組み合わせて使い、本番は`runtime`ステージ（非rootユーザー、`--reload`無し）を使う。
-- `nginx/nginx.conf`（開発用、平文HTTP）と`nginx/nginx.prod.conf`（本番用、HTTP→HTTPSリダイレクト＋certbot対応＋TLS終端）を分離している。
+- `nginx/nginx.conf`は開発用(平文HTTP、`docker-compose.yml`だけで使う)。本番のTLS終端・HTTP→HTTPSのリダイレクト・証明書の取得と更新は、VPSで複数のプロジェクトが共有するTraefikが担う(`docker-compose.prod.yml`、`OPERATIONS.md`)。

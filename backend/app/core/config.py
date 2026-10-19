@@ -42,7 +42,6 @@ class Settings(BaseSettings):
 
     # AI
     GOOGLE_API_KEY: str | None = None
-    TAVILY_API_KEY: str | None = None
     # gemini-2.5-flash-liteは新規利用不可(404 NOT_FOUND、
     # APIエラーメッセージが後継としてgemini-3.5-flash-liteを案内)。
     GEMINI_MODEL: str = "gemini-3.5-flash-lite"

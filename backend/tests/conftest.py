@@ -10,7 +10,6 @@ os.environ.setdefault(
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/1")
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-at-least-32-bytes-long")
 os.environ.setdefault("GOOGLE_API_KEY", "test-google-api-key")
-os.environ.setdefault("TAVILY_API_KEY", "test-tavily-api-key")
 os.environ.setdefault("ENVIRONMENT", "test")
 
 from collections.abc import AsyncGenerator, Generator  # noqa: E402

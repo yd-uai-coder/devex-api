@@ -1,16 +1,84 @@
 # devex-api
 
-[Devex](../README.md)(AIとの対話でヒアリングを行い、要件定義書・外部設計書・内部設計書・実装計画書の4種Markdownドキュメントを自動生成するシステム)のバックエンドです。FastAPI + LangChain + PostgreSQL + Redisで構築しています。
+[Devex](https://github.com/yd-uai-coder/devex-project#readme)(AIとの対話で要件を引き出し、要件定義から設計・実装手順・テストまでを、IDでつながった設計情報として組み立てるシステム)のバックエンドです。FastAPI + LangChain(Gemini / Claude)+ PostgreSQL + Redis で構築しています。フロントエンドは [devex-ui](https://github.com/yd-uai-coder/devex-ui#readme) です。
 
-## Devexとしての主な機能--
+本番: <https://devex.uandi-tech.com/>(API は ConoHa VPS 上の Docker Compose。共有の Traefik の下)
 
-- **認証**(`app/api/routes/auth.py`) — JWT(アクセストークン+リフレッシュトークン)によるユーザー登録・ログイン・トークン更新
-- **プロジェクト管理**(`app/api/routes/projects.py`、`projects`テーブル) — プロジェクトの作成(ヒアリング用の初期情報入力+任意の資料添付、`intake_files`テーブル)・一覧・詳細取得
-- **チャットヒアリング**(`chat_histories`テーブル) — プロジェクトごとにAI(Gemini)と対話形式でヒアリングを行い、SSEで応答をストリーミングする(`ChatService`、`app/services/chat_service.py`)
-- **ドキュメント生成**(`generated_documents`テーブル) — ヒアリング内容から4種のドキュメントを順に生成する(`DocGeneratorService`、`app/services/doc_generator_service.py`)。文書ごとにバージョン管理(直近3件保持)し、Markdown形式でダウンロード可能
+## 主な機能
 
-設計判断の背景（なぜエラーを1箇所に集約しているか、なぜリポジトリ層は`flush`のみか等）は [`CLAUDE.md`](./CLAUDE.md) にまとめています。デプロイ・運用手順は [`OPERATIONS.md`](./OPERATIONS.md) を参照してください。
+ルートは `/api/v1` の下にあります(`app/api/routes/`)。
 
+| ルート | 機能 |
+|---|---|
+| `auth.py` | JWT(アクセストークン + httpOnly Cookie のリフレッシュトークン)による登録・ログイン・更新・ログアウト。Google の ID トークンでのログインと登録・連携 |
+| `users.py` | メールアドレス・パスワードの変更、Google の連携と解除、用途(チャット・生成・レビュー・判定)ごとのモデルの選択、API キー(Gemini / Claude)の登録と削除 |
+| `projects.py` | プロジェクトの作成(参考資料の添付)・一覧(検索・絞り込み・ページ送り)・削除。ヒアリング(SSE)、観点ごとの状態、4文書の一括生成(バックグラウンド)と進み具合、版の履歴と復元、テスト仕様書 |
+| `design_stages.py` | 詳細設計モード: 機能一覧から実装手順書までの段階ごとの生成・編集・承認、陳腐化の検知、変更の影響の分析、詳細設計書・実装手順書の出力 |
+| `uml.py` | UML 設計図の意味モデルの取得・更新・検証・自動レイアウト・承認、draw.io / SVG の出力、データ辞書 |
+| `reviews.py` | 生成とは別のモデルによる設計レビュー、指摘の採否、レビュー結果からの再ヒアリング |
+| `llm.py`・`prompt_templates.py` | 使えるモデルの一覧、プロンプトテンプレートの一覧 |
+
+## アーキテクチャ
+
+```mermaid
+flowchart TB
+    routes["routes<br/>app/api/routes<br/>要求と応答の変換だけ"]
+    services["services<br/>app/services<br/>ユースケース・トランザクションの境界"]
+    repos["repositories<br/>app/repositories<br/>永続化(flush のみ)"]
+    models["models<br/>app/models<br/>SQLAlchemy ORM"]
+    domain["ドメイン(純粋関数)<br/>hearing / documents / detailed_design / uml / review"]
+    llm["app/ai/llm<br/>モデルの一覧・クライアントの組み立て"]
+
+    routes --> services
+    services --> repos --> models
+    services --> domain
+    services --> llm
+```
+
+| パッケージ | 責務 |
+|---|---|
+| `app/hearing/` | ヒアリングの観点と選択肢カードの規則 |
+| `app/documents/` | 要件定義書・外部設計書・内部設計書・実装計画書・テスト仕様書の意味モデル、ID の採番、検証、Markdown の組み立て |
+| `app/detailed_design/` | 詳細設計モードの各段階(機能一覧・データフロー・データモデル・ソフトウェア構造・手順・処理ロジック・実装計画)の生成の指示・検証・組み立て、変更の影響のたどり方、実装手順書 |
+| `app/uml/` | 図の意味モデル(DFD・ER・コンポーネント)、生成、検証、自動レイアウト、draw.io / SVG の出力 |
+| `app/review/` | 設計レビューの入力・出力・採否・直ったかの判定・使えるかの方針 |
+| `app/ai/llm/` | provider・用途・モデルのカタログ、クライアントの組み立てとキャッシュ、キーの確かめ、E2E 用の偽の LLM |
+
+ドメインのパッケージは DB にも LLM にも触りません。サービスがここを呼び、結果を保存します。
+
+## 設計の要点
+
+詳しい「なぜ」は [`CLAUDE.md`](./CLAUDE.md) にあります。
+
+- **例外は1か所に集める** ── ドメイン例外を依存の無い末端のモジュール(`app/services/errors.py`)に集め、循環 import を構造的に避けます。ルートでは `try/except` を書かず、`register_error_handlers` がまとめて JSON の応答(`{detail, code}`)に変えます。認証の境界だけは、失敗の理由を外に漏らさないために、意図して素の `HTTPException` にしています。
+- **`commit` はサービスだけ** ── リポジトリは `flush` までにし、トランザクションの単位はサービスが握ります。
+- **純粋な規則と副作用を分ける** ── 生成の指示・構造化出力のスキーマ・検証・文書の組み立てはドメインのパッケージの純粋関数にし、DB や LLM のスタブ無しでテストします。
+- **LLM の解決** ── `LlmResolver` が「ユーザーと用途 → (provider, モデル, キー)」を決めます。モデルは利用者の選択(無ければ既定値)、キーは利用者のキー(無ければ環境変数の既定のキー)です。利用者のキーは Fernet で暗号化して保存し(`MultiFernet` で鍵を入れ替えられる)、登録の前に費用のかからない呼び出しで有効かを確かめます。
+- **生成とレビューを別のモデルにする** ── 生成は Gemini、レビューは Claude Sonnet、直ったかの判定は Claude Haiku が既定です。同じモデルの自己診断では見落としが残るため分けています。既定のキーで流すレビュー・判定は、利用者ごとに1日の回数の上限があります。
+- **再試行の切り分け** ── `invoke_with_retry` が、クォータ超過は即座に諦め、混雑(503・529 など)は間を伸ばして再試行し、その他の一時的な失敗は規定回数だけ再試行します。SDK の中の再試行は止め、二重に重ならないようにしています。
+- **レート制限** ── Redis のカウンタで、複数の時間の枠(1時間・1日)をまとめて数えます(`INCR` と `EXPIRE NX` を1往復のパイプラインで送り、TTL の無いキーを残しません)。チャット・ログイン(IP とメール)・登録・Google・キーの登録に掛けています。
+- **危険な設定は起動時に落とす** ── `ENVIRONMENT=production` で、弱い `JWT_SECRET_KEY`・`DEBUG=true`・E2E 用の偽の LLM / 偽の Google のフラグがあれば、起動を拒否します。本番では Swagger UI・OpenAPI も閉じます。
+- **リクエストの保護** ── ボディの上限(413)をアプリ側にも置きます(nginx を通らない経路でも効くように)。
+
+## テスト
+
+| 種類 | 中身 | 件数 |
+|---|---|---|
+| 単体(`tests/unit/`) | インメモリの SQLite。ドメインの純粋関数は素で、LLM・Redis はフェイクで差し替える | 167ファイル・約1,500ケース |
+| 結合(`tests/integration/`) | FastAPI → 実 PostgreSQL → 実 Redis。開発用とは別の**テスト専用の DB** に向ける | 9ファイル |
+| E2E | devex-ui の Playwright から、`E2E_FAKE_LLM=true` の偽の LLM で起動する(`docker-compose.e2e.yml`) | devex-ui 側 |
+
+結合テストはテストのたびにテーブルを作り直すので、開発用の DB に向けると開発中のデータが消えます。必ず次のように専用の DB で流してください(理由は `CLAUDE.md`「テストの分離」)。
+
+```bash
+cd backend
+uv run pytest                        # 単体(既定で integration を除く)
+uv run pytest --cov=app --cov-report=term-missing
+
+cd ..
+docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --no-deps backend \
+  uv run pytest -m integration tests/integration
+```
 
 ## 技術スタック
 
@@ -18,174 +86,118 @@
 | --- | --- |
 | 言語 / ランタイム | Python 3.13 |
 | Web Framework | FastAPI, Uvicorn |
-| AI | LangChain, LangGraph, Gemini (`langchain-google-genai`)|
-| DB | PostgreSQL, SQLAlchemy 2.x (async), Alembic |
-| Cache / State | Redis |
-| 認証 | PyJWT, pwdlib (Argon2) |
+| AI | LangChain, Gemini (`langchain-google-genai`, `google-genai`), Claude (`langchain-anthropic`) |
+| DB | PostgreSQL 17, SQLAlchemy 2.x (async, asyncpg), Alembic |
+| Cache / State | Redis(レート制限・リフレッシュトークン) |
+| 認証 | PyJWT, pwdlib (Argon2), google-auth(Google の ID トークンの検証) |
+| 暗号化 | cryptography(Fernet。利用者の API キーの保存) |
 | バリデーション | Pydantic v2, pydantic-settings |
+| ログ・監視 | structlog(構造化ログ), Sentry(任意) |
 | パッケージ管理 | uv |
 | テスト | pytest, pytest-asyncio, pytest-mock, pytest-cov, HTTPX |
-| Lint / Format | Ruff |
-| インフラ | Docker, Docker Compose, Nginx |
+| Lint | Ruff(`ruff check`) |
+| インフラ | Docker, Docker Compose, Traefik(本番), Nginx(開発) |
 
-## ディレクトリ構造
+## ディレクトリ構成
 
 ```text
-project-root/
-├── CLAUDE.md                       # アーキテクチャ全体像・設計判断の記録
-├── OPERATIONS.md                   # デプロイ・運用手順(ConoHa VPS + Vercel)
-├── .github/workflows/deploy.yml    # CI(lint/test) + CD(mainへのpush時にVPSへ自動デプロイ)
+devex-api/
+├── CLAUDE.md                       # アーキテクチャ・設計判断の記録
+├── OPERATIONS.md                   # デプロイ・運用手順(ConoHa VPS + Traefik + Vercel)
+├── .github/workflows/deploy.yml    # CI(lint・単体テスト) + CD(main への push で VPS へ自動デプロイ)
 ├── backend/
 │   ├── app/
-│   │   ├── main.py                # FastAPIエントリーポイント
-│   │   ├── api/                   # ルーティング + DI + エラーハンドラ登録
-│   │   ├── core/                  # 設定 / セキュリティ / DB接続 / 共通例外(AppError)
-│   │   ├── models/                # SQLAlchemy ORM
-│   │   ├── schemas/                # Pydantic Schema（LLM構造化出力スキーマ含む）
-│   │   ├── services/               # ユースケース層 / ドメイン例外 / レート制限
-│   │   ├── repositories/           # データアクセス層（汎用CRUD基底クラス）
-│   │   ├── ai/                     # LangChain / LangGraph / Gemini / Tavily
-│   │   └── infrastructure/         # Redis / HTTPクライアント
-│   ├── alembic/                    # DBマイグレーション
+│   │   ├── main.py                 # FastAPI のエントリーポイント
+│   │   ├── api/                    # ルーティング・DI・エラーハンドラ・ミドルウェア・Cookie
+│   │   ├── core/                   # 設定・セキュリティ・暗号・DB 接続・共通例外・ログ
+│   │   ├── models/                 # SQLAlchemy ORM
+│   │   ├── schemas/                # Pydantic のスキーマ(要求・応答)
+│   │   ├── repositories/           # データアクセス(汎用 CRUD の基底クラス)
+│   │   ├── services/               # ユースケース・ドメイン例外・レート制限・LLM の解決と再試行
+│   │   ├── hearing/ documents/ detailed_design/ uml/ review/   # ドメイン(純粋関数)
+│   │   ├── ai/llm/                 # LLM のカタログ・クライアント・偽の LLM
+│   │   └── infrastructure/         # Redis・HTTP クライアント
+│   ├── alembic/                    # DB マイグレーション
 │   ├── tests/{unit,integration,fixtures}/
+│   ├── scripts/seed.py             # 開発用のテストユーザーの作成
 │   ├── pyproject.toml / uv.lock
-│   └── Dockerfile
-├── nginx/nginx.conf                # 開発用（平文HTTP、docker-compose.ymlのみで使用）
-├── docker-compose.yml              # 開発環境
-├── docker-compose.prod.yml         # 本番環境(TLS終端はVPS共有のTraefikが担当。OPERATIONS.md参照)
-├── .env.example                    # docker-compose用
-└── backend/.env.example            # ホスト上で直接起動する場合用
+│   └── Dockerfile                  # base → builder(開発)→ runtime(本番、非 root)
+├── nginx/nginx.conf                # 開発用(平文 HTTP)
+├── postgres-init/                  # テスト専用 DB の作成
+├── docker-compose.yml              # 開発
+├── docker-compose.test.yml         # 結合テスト用の上書き
+├── docker-compose.e2e.yml          # E2E 用の上書き(偽の LLM・偽の Google)
+└── docker-compose.prod.yml         # 本番(Traefik の下に置く)
 ```
-
-## 必要な環境
-
-- Python 3.13（`uv`が自動で用意するため手動インストールは不要）
-- [uv](https://docs.astral.sh/uv/)
-- Docker / Docker Compose（コンテナで動かす場合）
-
-## uvのセットアップ
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-cd backend
-uv sync   # pyproject.toml / uv.lock から依存関係を再現
-```
-
-## 環境変数
-
-- ルートの `.env.example` … `docker-compose` で使用（Postgres/Redis の認証情報 + バックエンドへ渡す設定）
-- `backend/.env.example` … `backend/` 直下で `uv run uvicorn ...` のようにホスト上で直接起動する場合用
-
-いずれも `.env` にコピーして値を埋めてください（`.env` はコミットしないでください）。
-
-| 変数 | 説明 |
-| --- | --- |
-| `ENVIRONMENT` | `development` / `production` など。`production`時はSwagger UI・ReDoc・OpenAPIスキーマを自動的に非公開にします |
-| `DATABASE_URL` | 例: `postgresql+asyncpg://user:pass@host:5432/app` |
-| `REDIS_URL` | 例: `redis://host:6379/0` |
-| `JWT_SECRET_KEY` | JWT署名用シークレット（32byte以上推奨） |
-| `JWT_ALGORITHM` | 既定 `HS256` |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | Access Token有効期限（分） |
-| `REFRESH_TOKEN_EXPIRE_DAYS` | Refresh Token有効期限（日）。RedisにJTI単位で保存されます |
-| `GOOGLE_API_KEY` | Gemini用APIキー |
-| `TAVILY_API_KEY` | Tavily検索用APIキー |
-| `GEMINI_MODEL` | 既定 `gemini-3.5-flash-lite`(`gemini-2.5-flash-lite`は新規利用不可のため移行済み、[`OPERATIONS.md`](./OPERATIONS.md)参照) |
-| `CHAT_RATE_LIMIT_PER_HOUR` | チャットメッセージ送信のレート制限（1時間あたり、既定 `20`）。超過時は429を返します |
-| `CHAT_RATE_LIMIT_PER_DAY` | チャットメッセージ送信のレート制限（1日あたり、既定 `100`） |
-| `LOGIN_RATE_LIMIT_PER_IP_PER_HOUR` | ログインのレート制限（IPあたり・1時間、既定 `30`）。総当たり対策 |
-| `LOGIN_RATE_LIMIT_PER_EMAIL_PER_HOUR` | ログインのレート制限（メールアドレスあたり・1時間、既定 `20`） |
-| `REGISTER_RATE_LIMIT_PER_IP_PER_HOUR` | ユーザー登録のレート制限（IPあたり・1時間、既定 `10`）。大量登録対策 |
-| `MAX_REQUEST_BODY_BYTES` | リクエストボディの上限バイト数（既定 `2000000`）。超過時は413を返します |
-| `DEBUG` | 本番では必ず `false` |
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | ルートの`.env.example`のみ。docker-composeが起動するPostgresコンテナの認証情報・DB名 |
-| `BACKEND_PORT` / `NGINX_PORT` | ルートの`.env.example`のみ。開発時にホストへ公開するポート（`docker-compose.prod.yml`では`BACKEND_PORT`は使用しません） |
 
 ## 開発環境
 
-### Docker Composeで起動
+必要なもの: [uv](https://docs.astral.sh/uv/)(Python 3.13 は uv が用意する)、Docker / Docker Compose。
 
 ```bash
-cp .env.example .env   # 値を編集してから
-
-docker compose up --build
-```
-
-- API: http://localhost:8000
-- Swagger UI: http://localhost:8000/docs
-- Nginx経由のヘルスチェック: http://localhost/health
-
-backendコンテナは `backend/` をバインドマウントし、`--reload` 付きUvicornで起動するため、コード変更が即座に反映されます（`.venv` は名前付きボリュームで分離しているためホストの仮想環境と衝突しません）。
-
-### Dockerを使わずホストで直接起動
-
-```bash
-cd backend
-cp .env.example .env   # localhostのPostgres/Redisを指す値に編集
-uv run uvicorn app.main:app --reload
-```
-
-## DB Migration
-
-```bash
-cd backend
-uv run alembic upgrade head          # マイグレーション適用
-uv run alembic revision --autogenerate -m "message"   # 新規マイグレーション作成
-```
-
-Docker Compose経由で実行する場合:
-
-```bash
+cp .env.example .env          # 値を編集する
+docker compose up --build     # API: http://localhost:8000 / Swagger UI: http://localhost:8000/docs
 docker compose exec backend uv run alembic upgrade head
+docker compose exec backend uv run python -m scripts.seed   # 一般ユーザーと superuser の試用アカウント(開発専用)
 ```
 
-## テスト実行方法
+backend コンテナは `backend/` をバインドマウントし、`--reload` 付きで起動するので、コードの変更がすぐ反映されます。Docker を使わずに起動する場合は、`backend/.env.example` を `backend/.env` にコピーし、`cd backend && uv sync && uv run uvicorn app.main:app --reload` を実行します。
+
+### 環境変数
+
+ルートの `.env.example` は docker compose 用、`backend/.env.example` はホストで直接起動する場合用です(`.env` はコミットしない)。既定値は `backend/app/core/config.py` にあります。
+
+| 分類 | 変数 | 説明 |
+| --- | --- | --- |
+| アプリ | `ENVIRONMENT` / `DEBUG` | `production` のとき Swagger UI・OpenAPI を閉じ、危険な設定を起動時に拒否する。本番では `DEBUG=false` |
+| | `CORS_ORIGINS` | 画面のオリジン(本番は Vercel の URL とカスタムドメイン) |
+| | `PROJECT_NAME` / `API_V1_PREFIX` | OpenAPI の表示名と、ルートの接頭辞(既定 `/api/v1`) |
+| DB・Redis | `DATABASE_URL` / `REDIS_URL` | 例: `postgresql+asyncpg://user:pass@host:5432/app`、`redis://host:6379/0` |
+| | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` / `POSTGRES_TEST_DB` | ルートの `.env` のみ。Postgres コンテナの認証情報・開発用 DB・結合テスト用 DB |
+| 認証 | `JWT_SECRET_KEY` / `JWT_ALGORITHM` | 署名の鍵(本番は32文字以上)とアルゴリズム(既定 `HS256`) |
+| | `ACCESS_TOKEN_EXPIRE_MINUTES` / `REFRESH_TOKEN_EXPIRE_DAYS` | 既定30分・14日。リフレッシュトークンは Redis に JTI ごとに保存する |
+| | `GOOGLE_CLIENT_ID` | Google でのログインの OAuth クライアント ID。無ければ Google のログインだけが 503 になる |
+| AI(既定のキー) | `GOOGLE_API_KEY` / `GEMINI_MODEL` | Gemini のキーと既定のモデル(既定 `gemini-3.5-flash-lite`) |
+| | `ANTHROPIC_API_KEY` / `REVIEW_MODEL` / `JUDGE_MODEL` | 設計レビュー(既定 `claude-sonnet-5-5`)と、直ったかの判定(既定 `claude-haiku-5-5`) |
+| | `REVIEW_RATE_LIMIT_PER_DAY` / `JUDGE_RATE_LIMIT_PER_DAY` | 既定のキーで流すレビュー・判定の、利用者ごとの1日の上限 |
+| | `REVIEW_MAX_TOKENS` / `JUDGE_MAX_TOKENS` / `JUDGE_MAX_PER_RUN` | レビュー・判定の出力の上限と、1回の生成・承認の後に判定する指摘の数 |
+| 利用者のキー | `ENCRYPTION_KEY` | Fernet の鍵(カンマ区切りで複数。先頭で暗号化し、すべてで復号する)。無ければキーの登録だけが 503 になる |
+| | `API_KEY_RATE_LIMIT_PER_HOUR` / `API_KEY_CHECK_TIMEOUT_SECONDS` | キーの登録の1時間の上限と、キーを確かめる呼び出しの待ち時間 |
+| レート制限 | `CHAT_RATE_LIMIT_PER_HOUR` / `CHAT_RATE_LIMIT_PER_DAY` | チャットの送信(既定 20回/時・100回/日) |
+| | `LOGIN_RATE_LIMIT_PER_IP_PER_HOUR` / `LOGIN_RATE_LIMIT_PER_EMAIL_PER_HOUR` / `REGISTER_RATE_LIMIT_PER_IP_PER_HOUR` / `GOOGLE_RATE_LIMIT_PER_IP_PER_HOUR` | 総当たり・大量登録の対策 |
+| | `MAX_REQUEST_BODY_BYTES` | ボディの上限(既定 2MB。超えたら 413) |
+| 監視 | `SENTRY_DSN` | 設定したときだけ Sentry を初期化する |
+| E2E 専用 | `E2E_FAKE_LLM` / `E2E_FAKE_GOOGLE` | 偽の LLM・偽の Google の credential。本番では起動時に拒否する |
+| ポート | `BACKEND_PORT` / `NGINX_PORT` / `POSTGRES_PORT` / `REDIS_PORT` | ルートの `.env` のみ。開発時にホストへ公開するポート |
+
+### マイグレーション
 
 ```bash
 cd backend
-uv run pytest                        # unit tests（既定でintegrationは除外）
-uv run pytest -m integration         # PostgreSQL/Redisが起動している状態で結合テスト
-uv run pytest --cov=app --cov-report=term-missing   # カバレッジ付き
+uv run alembic upgrade head
+uv run alembic revision --autogenerate -m "message"
+uv run alembic heads           # head が1つであることを確かめる
 ```
 
-結合テスト (`tests/integration/`) はFastAPI → 実PostgreSQL → 実Redisを実際に使用するため、`docker compose up postgres redis` などで両方を起動した状態で実行してください。Gemini/TavilyはUnit Testでは全てMockに置き換えています（`tests/unit/test_ai_graph_nodes.py`）。
-
-## Ruff実行方法
+### Lint
 
 ```bash
 cd backend
-uv run ruff check .      # Lint
-uv run ruff format .     # Format
+uv run ruff check .
 ```
 
-## 本番環境
+`ruff format` は使っていません(既存のファイルの整形が大きく変わるため)。
 
-実際にConoHa VPS等へデプロイする際の手順（TLS証明書の取得・CORS設定・バックアップ・ロールバック・Vercel側のdevex-uiデプロイ含む）は [`OPERATIONS.md`](./OPERATIONS.md) を参照してください。以下はローカルでの本番相当環境の起動のみを示します。
+## 本番・CI/CD
 
-```bash
-cp .env.example .env     # 本番用の値（強固なパスワード・シークレット）を設定
-docker compose -f docker-compose.prod.yml up -d --build
-docker compose -f docker-compose.prod.yml exec backend uv run alembic upgrade head
-```
+- **CI/CD**: `.github/workflows/deploy.yml` が push と PR のたびに lint と単体テストを流し、`main` への push では VPS へ SSH して `git pull`・コンテナの再ビルド・`alembic upgrade head` を行います。
+- **本番の構成**: `docker-compose.prod.yml` で、`--reload` 無しの Uvicorn(Dockerfile の `runtime` ステージ、非 root)を動かします。backend はホストにポートを公開せず、VPS で複数のプロジェクトが共有する **Traefik**(TLS の終端・HTTPS へのリダイレクト・証明書の自動更新)の下からだけ届きます。PostgreSQL・Redis は Docker の内部ネットワークだけに置きます。
+- 手順(初回の構築・Secrets・バックアップ・ロールバック・Vercel 側の設定・Google の OAuth の設定)は [`OPERATIONS.md`](./OPERATIONS.md) にあります。
 
-`docker-compose.prod.yml` では以下を行っています。
+## 既知の制約
 
-- `--reload`を使用しない本番用Uvicorn起動
-- backendコンテナは自身ではポートをホストに公開せず、VPS共有の**Traefik**（devex-apiのリポジトリ外、複数プロジェクトで共有するリバースプロキシ）経由でのみ外部到達可能にします（`edge`という外部Dockerネットワーク+Traefik用labelで実現。詳細は[`OPERATIONS.md`](./OPERATIONS.md)「全体構成」参照）
-- PostgreSQL/RedisはDocker内部ネットワークのみに限定し、ポートを公開しない
-- PostgreSQLデータは名前付きVolumeで永続化
-- `ENVIRONMENT=production`が設定されるため、Swagger UI・ReDoc・OpenAPIスキーマは自動的に非公開になります
-- backend/Dockerfileの`HEALTHCHECK`を使い、コンテナ単体でも`docker compose ps`から健全性を確認できます
-- TLS終端・HTTP→HTTPSリダイレクト・証明書の自動取得/更新はすべてTraefik側が担うため、devex-api自身はnginx/certbotを持ちません。手順は[`OPERATIONS.md`](./OPERATIONS.md)「4. 新規プロジェクトをTraefik配下に追加する手順」参照
+- パスワードのリセットとメールアドレスの確認は未実装です。
 
-## CI/CD
+## 出自
 
-`.github/workflows/deploy.yml`が、push/PR時のlint・unit test実行と、`main`ブランチへのpush時のConoHa VPSへの自動デプロイ(SSH経由で`git pull`+コンテナ再ビルド)を行います。必要なGitHub Secretsの設定手順は[`OPERATIONS.md`](./OPERATIONS.md)「GitHub Actionsによる自動デプロイ」参照。
-
-## 未実装・今後対応が必要な事項
-
-- 認証API（登録・ログイン・リフレッシュ・ログアウト）の基盤は実装済みですが、パスワードリセットやメール確認などの拡張は未実装です
-- LangGraphのワークフローは検索要否判定が簡易的なダミー実装です。実運用では`draft_response`内の判定ロジックを強化してください
-- `prompt_templates`テーブルはモデル・マイグレーションのみ存在し、repository/service/route/UIいずれも未実装のまま放置されています(プロンプトテンプレート選択機能を実装するか、テーブル自体を削除するかは未定)
-- テンプレート由来の汎用チャット機能(`conversations`/`messages`テーブル、`app/services/chat.py`、`POST /chat`)が、Devex本来のヒアリングチャット(`chat_histories`、`ChatService`)と並存したまま残っています
-- ドキュメント生成(`DocGeneratorService`)は`app/ai/graph/`のLangGraph `StateGraph`を使わず、手続き的な`llm.ainvoke()`の逐次呼び出しで実装されています。LangGraphワークフロー自体はDevexの実機能からは現状未使用です
+自作の FastAPI + LangChain のテンプレートから作り始めました。層の構成・エラー処理・レート制限・テストの分離はテンプレートから引き継いだものです。テンプレートの汎用チャット(`POST /chat`・LangGraph・Tavily)は Devex で使わないため削除しました。
