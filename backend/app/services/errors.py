@@ -541,3 +541,9 @@ class ChangeRequestInvalidTransitionError(ConflictError):
     送出する(画面が古いまま押したときに起きうる)。"""
 
     code: ClassVar[str | None] = "CR_INVALID_TRANSITION"
+
+
+class ChangeRequestSummaryNotFoundError(NotFoundError):
+    """説明書の要約をまだ作っていない CR で、要約を直す・確かめる操作をした場合に送出する。"""
+
+    code: ClassVar[str | None] = "CR_SUMMARY_NOT_FOUND"

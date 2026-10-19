@@ -1,13 +1,17 @@
 """変更要求(CR)の API を実際の PostgreSQL で確かめる(JSONB の対象と予測・時系列・自己参照・
-CASCADE)。
+説明書と要約・CASCADE)。
 
 SUT: POST・GET /api/v1/projects/{id}/change-requests、GET・PATCH .../{number}、
-     POST .../{number}/explain・decision・withdraw・copy、GET .../{number}/impact(ルート →
-     ChangeRequestService → ChangeRequestRepository)と、プロジェクトの削除での CR と時系列の
-     CASCADE
+     POST .../{number}/explain・decision・withdraw・copy、GET .../{number}/impact、
+     GET .../{number}/explanation・explanation/download、POST・PATCH .../explanation/summary、
+     POST .../explanation/summary/confirm(ルート → ChangeRequestService →
+     ChangeRequestRepository・ChangeRequestSummaryRepository)と、プロジェクトの削除での CR・
+     時系列・要約の CASCADE
 ドライバ: httpx の AsyncClient(ASGITransport)
-スタブ不要 ── LLM を呼ばない。利用者・プロジェクト・文書はセッションで直接作り、アクセストークンも
-直接発行する(API で登録すると、スイート全体で登録・ログインの IP ごとの上限に当たるため)
+スタブ: 要約の LLM だけ、解決(LlmResolver.resolve)を固定の文を返すフェイクに差し替える
+(stub_llm_resolver)。ほかは LLM を呼ばない。利用者・プロジェクト・文書はセッションで直接作り、
+アクセストークンも直接発行する(API で登録すると、スイート全体で登録・ログインの IP ごとの上限に
+当たるため)
 """
 
 import uuid
@@ -16,10 +20,13 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select
 from tests.fixtures.change_impact import impact_documents
+from tests.fixtures.fake_llm import FakeLLM
+from tests.fixtures.llm_resolver import stub_llm_resolver
 
 from app.core.database import AsyncSessionLocal
 from app.core.security import create_access_token
 from app.models.change_request import ChangeRequest, ChangeRequestEvent
+from app.models.change_request_summary import ChangeRequestSummary
 from app.models.project import Project
 from app.models.user import User
 from app.repositories.generated_document import GeneratedDocumentRepository
@@ -187,3 +194,78 @@ async def test_errors_overlap_and_ownership(client: AsyncClient) -> None:
     assert second.json()["overlapping"] == [
         {"number": 1, "label": "CR-1", "requirement_ids": ["FR-001"]}
     ]
+
+
+async def _request_ids(project_id: uuid.UUID) -> list[uuid.UUID]:
+    async with AsyncSessionLocal() as session:
+        rows = await session.scalars(
+            select(ChangeRequest.id).where(ChangeRequest.project_id == project_id)
+        )
+        return list(rows)
+
+
+async def _summaries(request_ids: list[uuid.UUID]) -> int:
+    """CR の要約の行の数(CR が消えた後も数えられるよう、CR の id で数える)。"""
+    async with AsyncSessionLocal() as session:
+        count = await session.scalar(
+            select(func.count())
+            .select_from(ChangeRequestSummary)
+            .where(ChangeRequestSummary.change_request_id.in_(request_ids))
+        )
+        return count or 0
+
+
+async def test_explanation_summary_and_cascade(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stub_llm_resolver(monkeypatch, FakeLLM(content="FR-001 の参考のファイルを5つまでにします。"))
+    headers, user_id = await _login("cr-explain@example.com")
+    project_id = await _project(user_id)
+    base = f"/api/v1/projects/{project_id}/change-requests"
+    await client.post(f"/api/v1/projects/{project_id}/baselines", json=_BASELINE, headers=headers)
+    await client.post(
+        base,
+        json={
+            **_CR,
+            "targets": [
+                {"requirement_id": "FR-001", "proposed_text": "参考のファイルを5つまで登録できる"},
+                {"requirement_id": "FR-002", "kind": "delete"},
+            ],
+        },
+        headers=headers,
+    )
+
+    preview = (await client.get(f"{base}/1/explanation", headers=headers)).json()
+    assert preview["filename"] == "cr-1-explanation.md"
+    assert "| FR-001 | 内容の変更 | 予約を登録できる | 参考のファイルを5つまで登録できる |" in (
+        preview["markdown"]
+    )
+    assert "| FR-002 | 削除 | 予約の一覧を見られる | (削除) |" in preview["markdown"]
+    assert preview["summary"] is None
+
+    generated = await client.post(f"{base}/1/explanation/summary", headers=headers)
+    assert generated.status_code == 200
+    assert generated.json()["summary"]["state"] == "unconfirmed"
+    assert generated.json()["summary"]["unknown_numbers"] == []
+    edited = await client.patch(
+        f"{base}/1/explanation/summary", json={"text": " "}, headers=headers
+    )
+    assert edited.status_code == 422
+    confirmed = await client.post(f"{base}/1/explanation/summary/confirm", headers=headers)
+    assert confirmed.json()["summary"]["state"] == "confirmed"
+
+    download = await client.get(f"{base}/1/explanation/download", headers=headers)
+    assert download.headers["content-type"].startswith("text/markdown")
+    assert "cr-1-explanation.md" in download.headers["content-disposition"]
+    assert "## 要約\n\nFR-001 の参考のファイルを5つまでにします。" in download.text
+
+    # CR を直すと要約は古くなり、ダウンロードから外れる
+    await client.patch(f"{base}/1", json={"content": "3つから6つへ"}, headers=headers)
+    stale = (await client.get(f"{base}/1/explanation", headers=headers)).json()
+    assert stale["summary"]["state"] == "stale"
+    assert "## 要約" not in stale["output"]
+
+    request_ids = await _request_ids(project_id)
+    assert await _summaries(request_ids) == 1
+    await client.delete(f"/api/v1/projects/{project_id}", headers=headers)
+    assert await _summaries(request_ids) == 0

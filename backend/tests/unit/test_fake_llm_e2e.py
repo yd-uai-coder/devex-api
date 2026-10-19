@@ -3,6 +3,7 @@ from tests.fixtures.external_design import e2e_fake_external_design_md
 from tests.fixtures.simple_documents import e2e_fake_simple_documents
 
 from app.ai.llm.fake import E2eFakeLLM
+from app.change_requests import build_summary_messages
 from app.detailed_design.plan import unit_ids
 from app.detailed_design.simple_procedure import parse_internal_design, parse_wbs
 from app.documents.requirements import build_model, render_requirements
@@ -96,6 +97,15 @@ async def test_self_diagnosis_prompt_produces_diagnosis_reply() -> None:
     result = await llm.ainvoke(messages)
 
     assert "自己診断" in result.content
+
+
+async def test_change_request_summary_prompt_produces_summary_reply() -> None:
+    """変更の説明書の要約(本物のプロンプト)には、要件 ID・数字の無い固定の要約を返す。"""
+    reply = await E2eFakeLLM().ainvoke(build_summary_messages("# 変更の説明書 CR-1"))
+
+    assert "[E2E Fake]" in str(reply.content) and "説明書" in str(reply.content)
+    body = str(reply.content).removeprefix("[E2E Fake]")
+    assert not any(ch.isdigit() for ch in body)  # 照合で印が付かない
 
 
 async def test_hearing_reply_is_returned_for_ordinary_chat_turn() -> None:

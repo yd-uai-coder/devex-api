@@ -1,9 +1,20 @@
-"""変更要求(CR)の状態・遷移・重なりの判定と、対象(要件 ID と変更の種類)の扱い・影響の予測
-(純粋関数)。
+"""変更要求(CR)の状態・遷移・重なりの判定と、対象(要件 ID・変更の種類・変更後の案)の扱い・
+影響の予測・説明書の組み立てと、任意の要約の入力・照合・状態(純粋関数)。
 
 docs/internal_design.md 3.3節「11. 合意と変更の一巡」。
 """
 
+from app.change_requests.explanation import (
+    AffectedUnits,
+    ChangeRequestFacts,
+    Explanation,
+    SummaryCheck,
+    affected_units,
+    build_explanation,
+    check_summary,
+    explanation_filename,
+    with_summary,
+)
 from app.change_requests.prediction import (
     PredictedItem,
     PredictedTarget,
@@ -31,6 +42,15 @@ from app.change_requests.states import (
     next_status,
     overlaps,
 )
+from app.change_requests.summary import (
+    SUMMARY_MAX,
+    SUMMARY_STATE_LABEL,
+    SummaryState,
+    SummaryStatus,
+    build_summary_messages,
+    clip_summary,
+    summary_state,
+)
 from app.change_requests.targets import (
     TARGET_KIND_LABEL,
     TARGET_KINDS,
@@ -51,27 +71,43 @@ __all__ = [
     "INITIAL_STATUS",
     "STATUSES",
     "STATUS_LABEL",
+    "SUMMARY_MAX",
+    "SUMMARY_STATE_LABEL",
     "TARGET_KINDS",
     "TARGET_KIND_LABEL",
     "TRANSITIONS",
+    "AffectedUnits",
     "BackgroundSource",
     "ChangeRequestAction",
+    "ChangeRequestFacts",
     "ChangeRequestStatus",
+    "Explanation",
     "Overlap",
     "PredictedItem",
     "PredictedTarget",
     "Prediction",
+    "SummaryCheck",
+    "SummaryState",
+    "SummaryStatus",
     "Target",
     "TargetKind",
+    "affected_units",
     "allowed_actions",
     "baseline_models",
+    "build_explanation",
+    "build_summary_messages",
+    "check_summary",
+    "clip_summary",
+    "explanation_filename",
     "next_status",
     "normalize_targets",
     "overlaps",
     "predict",
     "predict_from_snapshots",
     "requirement_texts",
+    "summary_state",
     "target_ids",
     "targets_from_json",
     "targets_to_json",
+    "with_summary",
 ]

@@ -1,24 +1,42 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Path, status
+from fastapi import APIRouter, Path, Response, status
 
 from app.api.deps import CurrentProjectDep, CurrentUserDep, SessionDep
+from app.api.responses import content_disposition
+from app.change_requests import explanation_filename
 from app.schemas.change_request import (
     ChangeRequestCreate,
     ChangeRequestDecision,
+    ChangeRequestExplanationRead,
     ChangeRequestImpactRead,
     ChangeRequestRead,
     ChangeRequestSummaryRead,
     ChangeRequestUpdate,
     ChangeRequestWithdraw,
     ExcludedItemRead,
+    SummaryEdit,
 )
-from app.services.change_request_service import ChangeRequestService, ChangeRequestView
+from app.services.change_request_service import (
+    ChangeRequestService,
+    ChangeRequestView,
+    ExplanationView,
+)
 
 # 束と同じく、プロジェクト配下の独立したサブツリーとしてprefixにproject_idを含める
 router = APIRouter(prefix="/projects/{project_id}/change-requests", tags=["change-requests"])
 
 ChangeRequestNumber = Annotated[int, Path(ge=1, description="CR の番号(CR-1 なら 1)")]
+
+
+def _explanation(view: ExplanationView) -> ChangeRequestExplanationRead:
+    return ChangeRequestExplanationRead.build(
+        view.change_request,
+        view.explanation,
+        output=view.output,
+        summary=view.summary,
+        summary_state=view.summary_state,
+    )
 
 
 def _read(view: ChangeRequestView) -> ChangeRequestRead:
@@ -76,6 +94,71 @@ async def get_change_request_impact(
         saved=view.saved,
         excluded=[ExcludedItemRead(key=e.key, state=e.state) for e in view.excluded],
     )
+
+
+@router.get("/{number}/explanation", response_model=ChangeRequestExplanationRead)
+async def get_change_request_explanation(
+    number: ChangeRequestNumber, session: SessionDep, current_project: CurrentProjectDep
+) -> ChangeRequestExplanationRead:
+    """CR の説明書のプレビュー(5節の md・出力する md・作業単位とテストの内訳・要約と照合)。
+    無ければ404。"""
+    return _explanation(await ChangeRequestService(session).explanation(current_project, number))
+
+
+@router.get("/{number}/explanation/download")
+async def download_change_request_explanation(
+    number: ChangeRequestNumber, session: SessionDep, current_project: CurrentProjectDep
+) -> Response:
+    """CR の説明書を md でダウンロードする(`cr-<番号>-explanation.md`。確認済みで古くない要約が
+    あれば載せる)。無ければ404。"""
+    view = await ChangeRequestService(session).explanation(current_project, number)
+    return Response(
+        content=view.output,
+        media_type="text/markdown",
+        headers={"Content-Disposition": content_disposition(explanation_filename(number))},
+    )
+
+
+@router.post("/{number}/explanation/summary", response_model=ChangeRequestExplanationRead)
+async def generate_change_request_summary(
+    number: ChangeRequestNumber,
+    session: SessionDep,
+    current_project: CurrentProjectDep,
+    current_user: CurrentUserDep,
+) -> ChangeRequestExplanationRead:
+    """説明書の5節から、LLM でクライアント向けの要約を作る(未確認。前の要約は上書き)。"""
+    view = await ChangeRequestService(session).generate_summary(
+        current_project, number, user_id=current_user.id
+    )
+    return _explanation(view)
+
+
+@router.patch("/{number}/explanation/summary", response_model=ChangeRequestExplanationRead)
+async def edit_change_request_summary(
+    number: ChangeRequestNumber,
+    payload: SummaryEdit,
+    session: SessionDep,
+    current_project: CurrentProjectDep,
+) -> ChangeRequestExplanationRead:
+    """要約の文を直す(未確認に戻る)。要約が無ければ404 `CR_SUMMARY_NOT_FOUND`。"""
+    view = await ChangeRequestService(session).edit_summary(current_project, number, payload.text)
+    return _explanation(view)
+
+
+@router.post(
+    "/{number}/explanation/summary/confirm", response_model=ChangeRequestExplanationRead
+)
+async def confirm_change_request_summary(
+    number: ChangeRequestNumber,
+    session: SessionDep,
+    current_project: CurrentProjectDep,
+    current_user: CurrentUserDep,
+) -> ChangeRequestExplanationRead:
+    """要約を確かめた(誰が・いつ)と記録し、出力に載せる。要約が無ければ404。"""
+    view = await ChangeRequestService(session).confirm_summary(
+        current_project, number, actor_id=current_user.id
+    )
+    return _explanation(view)
 
 
 @router.patch("/{number}", response_model=ChangeRequestRead)

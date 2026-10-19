@@ -643,6 +643,8 @@ _FIX_CHECK_OUTPUT = FixCheckOut(verdict="fixed", reason="[E2E Fake] 指摘の対
 
 _HEARING_REPLY = "[E2E Fake] 承知しました。次に、想定している主なユーザー層を教えてください。"
 _SELF_DIAGNOSIS_REPLY = "[E2E Fake] 自己診断: 特に致命的な不足点はありません。"
+# 変更の説明書の要約(要件 ID・数字を書かず、照合で印が付かない文)
+_CR_SUMMARY_REPLY = "[E2E Fake] 今回の変更の内容と、見直しが要る設計の範囲を説明書にまとめました。"
 
 
 class _FakeChunk:
@@ -821,6 +823,8 @@ class E2eFakeLLM:
         )
         if "レビュアー" in system_text:
             return _SELF_DIAGNOSIS_REPLY
+        if "変更の説明書" in system_text:
+            return _CR_SUMMARY_REPLY
         # ヒアリング対話(_HEARING_SYSTEM_PROMPT、_OPENING_TURN_PROMPT共通)への応答。
         # 内容の質はE2Eの検証対象ではない(UI遷移・状態遷移を検証する)ため、
         # 固定文言で十分とする。

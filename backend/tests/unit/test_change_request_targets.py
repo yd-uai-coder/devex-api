@@ -1,4 +1,4 @@
-"""変更要求(CR)の対象(要件 ID と変更の種類)のテスト。
+"""変更要求(CR)の対象(要件 ID・変更の種類・変更後の案)のテスト。
 
 SUT: app.change_requests の normalize_targets / target_ids / targets_to_json /
      targets_from_json と、種類の表(TARGET_KINDS・TARGET_KIND_LABEL)
@@ -42,17 +42,44 @@ def test_normalize_targets_rejects_conflicting_kinds() -> None:
         normalize_targets([Target("FR-001"), Target("FR-001 ", "delete")])
 
 
+def test_normalize_targets_keeps_written_proposal() -> None:
+    targets = [
+        Target("FR-001", "content", ""),
+        Target("FR-001", "content", " 5件まで添付できる "),
+        Target("FR-001", "content", "5件まで添付できる"),
+        Target("FR-001"),
+    ]
+
+    assert normalize_targets(targets) == [Target("FR-001", "content", "5件まで添付できる")]
+
+
+def test_normalize_targets_rejects_conflicting_proposals() -> None:
+    with pytest.raises(ValueError, match="違う変更後の案"):
+        normalize_targets([Target("FR-001", "content", "A"), Target("FR-001", "content", "B")])
+
+
+def test_normalize_targets_rejects_proposal_on_delete() -> None:
+    with pytest.raises(ValueError, match="削除の対象"):
+        normalize_targets([Target("FR-001", "delete", "案")])
+    # 空白だけの案は案が無いとみなす
+    assert normalize_targets([Target("FR-001", "delete", "  ")]) == [Target("FR-001", "delete")]
+
+
 def test_ids_and_json_round_trip() -> None:
-    targets = [Target("FR-001"), Target("FR-002", "delete")]
+    targets = [Target("FR-001", "content", "新しい文"), Target("FR-002", "delete")]
 
     stored = targets_to_json(targets)
 
     assert stored == [
-        {"requirement_id": "FR-001", "kind": "content"},
-        {"requirement_id": "FR-002", "kind": "delete"},
+        {"requirement_id": "FR-001", "kind": "content", "proposed_text": "新しい文"},
+        {"requirement_id": "FR-002", "kind": "delete", "proposed_text": ""},
     ]
     assert targets_from_json(stored) == targets
     assert target_ids(targets) == ["FR-001", "FR-002"]
     assert targets_from_json(None) == []
     # 知らない種類は内容の変更とみなす
     assert targets_from_json([{"requirement_id": "FR-003", "kind": "x"}]) == [Target("FR-003")]
+    # 案の無い行(案を持つ前の形)は空の案として読む
+    assert targets_from_json([{"requirement_id": "FR-004", "kind": "content"}]) == [
+        Target("FR-004")
+    ]
