@@ -39,10 +39,12 @@ class GeneratedDocumentRepository(CRUDRepository[GeneratedDocument]):
         content: str,
         model: dict | None = None,
         generated_model: str | None = None,
+        change_request_id: uuid.UUID | None = None,
     ) -> GeneratedDocument:
         """新バージョンを追加する(既存行は上書きしない)。`model`は意味モデルを持つ文書だけ。
-        `generated_model`は生成したモデル名。追加後に保管数がMAX_VERSIONS_PER_DOC_TYPEを
-        超える場合は、最も古いバージョンから順に削除して上限を維持する。"""
+        `generated_model`は生成したモデル名、`change_request_id`は反映した CR(渡したときだけ)。
+        追加後に保管数がMAX_VERSIONS_PER_DOC_TYPEを超える場合は、最も古いバージョンから順に
+        削除して上限を維持する。"""
         existing = await self.list_all(
             order_by=GeneratedDocument.version.desc(), project_id=project_id, doc_type=doc_type
         )
@@ -57,6 +59,7 @@ class GeneratedDocumentRepository(CRUDRepository[GeneratedDocument]):
             content=content,
             model=model,
             generated_model=generated_model,
+            change_request_id=change_request_id,
             version=next_version,
             is_current=True,
         )

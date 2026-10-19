@@ -57,6 +57,10 @@ class GeneratedDocument(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     # 生成したモデル名(例: gemini-3-flash-preview)。この列を足す前の版は NULL
     generated_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # 反映した変更要求(CR を渡した再生成で作った版だけ。CR が消えたら NULL)
+    change_request_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("change_requests.id", ondelete="SET NULL"), nullable=True
+    )
     # is_current：復元用
     is_current: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=false()

@@ -89,9 +89,11 @@ class ChangeRequestRepository(CRUDRepository[ChangeRequest]):
         to_status: str,
         actor_id: uuid.UUID | None = None,
         note: str = "",
+        refs: dict | None = None,
     ) -> ChangeRequestEvent:
-        """時系列に1行足し、CR の状態と更新日時をそろえる。時系列は読み込み済みであること
-        (このリポジトリで読んだ CR は常に読み込み済み)。flushまで行う。"""
+        """時系列に1行足し、CR の状態と更新日時をそろえる。`refs`は行が指すもの(作った版など)。
+        時系列は読み込み済みであること(このリポジトリで読んだ CR は常に読み込み済み)。flushまで
+        行う。"""
         now = datetime.now(UTC)
         event = ChangeRequestEvent(
             position=len(change_request.events),
@@ -101,6 +103,7 @@ class ChangeRequestRepository(CRUDRepository[ChangeRequest]):
             occurred_at=now,
             actor_id=actor_id,
             note=note,
+            refs=refs,
         )
         change_request.events.append(event)
         change_request.status = to_status

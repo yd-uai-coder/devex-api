@@ -36,7 +36,9 @@ class ChangeRequest(Base):
     印(`adds_requirement`)。`derived_from_id`は、却下した CR を写して作ったときの元の CR。
     `decision_*`は合意・却下の記録(合意済みの版と同じ項目。判断の前は NULL)。
     `predicted_impact`は判断の時点の影響の予測(app/change_requests/prediction.py の保存の形。
-    判断の前と取り下げは NULL で、求めるたびに基準の束から作る)。
+    判断の前と取り下げは NULL で、求めるたびに基準の束から作る)。`applied_impact`は反映(CR を
+    渡した文書の再生成)のときに付いた印の写し(app/detailed_design/impact/marks.py の Mark の形の
+    一覧。やり直しはキーで重ねる。反映の前は NULL)。予測との比較に使う(段階の印は承認で消えるため)。
     状態の遷移は時系列(ChangeRequestEvent)に1行ずつ残す。
     """
 
@@ -73,6 +75,7 @@ class ChangeRequest(Base):
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     predicted_impact: Mapped[dict | None] = mapped_column(PortableJSON, nullable=True)
+    applied_impact: Mapped[list[dict] | None] = mapped_column(PortableJSON, nullable=True)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -98,6 +101,8 @@ class ChangeRequestEvent(Base):
     `from_status`は前の状態(作成は None)、`to_status`は後の状態。`action`は操作
     (create / copy / edit / explain / agree / reject / withdraw …。states.py の操作)。
     `note`は取り下げの理由や「CR-2 から写した」などの補足。`actor_id`は操作した開発者。
+    `refs`は行が指すもの(反映: 作った文書の版 `{"documents": [{doc_type, version}], "model"}`、
+    段階の反映: `{"stage", "version", "model"}`)。指すものの無い行は NULL。
     """
 
     __tablename__ = "change_request_events"
@@ -119,5 +124,6 @@ class ChangeRequestEvent(Base):
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    refs: Mapped[dict | None] = mapped_column(PortableJSON, nullable=True)
 
     change_request: Mapped[ChangeRequest] = relationship(back_populates="events")

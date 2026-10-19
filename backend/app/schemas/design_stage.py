@@ -45,6 +45,14 @@ class GenerationFindingRead(BaseModel):
     problem: str
 
 
+class GenerationChangeRequestRead(BaseModel):
+    """段階の直近の生成の修正指示に入れた変更要求(CR)の要約。`label`は画面に出す名前(CR-1…)。"""
+
+    number: int
+    label: str
+    title: str
+
+
 class DesignStageRead(BaseModel):
     """段階1つ分の状態。未着手の段階も含めて、モードの全段階を常に返す(詳細設計モードは段階1〜8、
     簡易モードは段階8だけ。行が無ければversion等はNone)。`mode`はプロジェクトのモード。
@@ -61,7 +69,9 @@ class DesignStageRead(BaseModel):
     (詳細設計モードは単位の処理の段階1の要件、簡易モードは WBS の「要件」欄)。`impact_open`・
     `impact_reviewed`は、この段階に記録した変更の影響の印のうち、未確認・確認済みの件数(印の中身は
     変更の影響の取得`DesignImpactRead`で読む)。`generation_findings`は、直近の生成の修正指示に
-    入れた指摘(差し戻しの作り直しのとき。消えた指摘は入らない。指摘の順は渡した順)。"""
+    入れた指摘(差し戻しの作り直しのとき。消えた指摘は入らない。指摘の順は渡した順)。
+    `generation_change_request`は、直近の生成の修正指示に入れた変更要求(反映の作り直しのとき。
+    CR が消えたら None)。`generated_model`は直近の下書きを生成したモデル名。"""
 
     stage: int
     mode: Literal["simple", "detailed"] = "detailed"
@@ -81,6 +91,8 @@ class DesignStageRead(BaseModel):
     impact_open: int = 0
     impact_reviewed: int = 0
     generation_findings: list[GenerationFindingRead] = Field(default_factory=list)
+    generation_change_request: GenerationChangeRequestRead | None = None
+    generated_model: str | None = None
 
 
 class DesignStageSave(BaseModel):
@@ -108,12 +120,14 @@ class DesignStageGenerate(BaseModel):
     作る処理の処理ID(省略すると、選んだ処理のうちまだ手順の無いもの)。`logics`は段階6
     だけが使う、下書きを作る関数(省略すると、選んだ関数のうちまだ詳細の無いもの)。`unit_ids`は
     段階8だけが使う、手順書を作る作業単位の ID(省略すると、作業単位のうち手順書の無いもの)。
-    `finding_ids`は修正指示に入れる、設計レビューの採用した指摘(設計・不整合)。"""
+    `finding_ids`は修正指示に入れる、設計レビューの採用した指摘(設計・不整合)。`cr_number`は
+    修正指示に入れる変更要求(CR)の番号(文書へ反映した後の、反映済みの CR)。"""
 
     function_ids: list[str] | None = None
     logics: list[LogicTarget] | None = None
     unit_ids: list[str] | None = None
     finding_ids: list[uuid.UUID] = []
+    cr_number: int | None = Field(default=None, ge=1)
 
 
 class SequenceIssueRead(BaseModel):

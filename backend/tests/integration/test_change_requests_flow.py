@@ -4,14 +4,15 @@
 SUT: POST・GET /api/v1/projects/{id}/change-requests、GET・PATCH .../{number}、
      POST .../{number}/explain・decision・withdraw・copy、GET .../{number}/impact、
      GET .../{number}/explanation・explanation/download、POST・PATCH .../explanation/summary、
-     POST .../explanation/summary/confirm(ルート → ChangeRequestService →
-     ChangeRequestRepository・ChangeRequestSummaryRepository)と、プロジェクトの削除での CR・
-     時系列・要約の CASCADE
+     POST .../explanation/summary/confirm、CR を渡した POST /api/v1/projects/{id}/generate と
+     GET .../{number}/comparison(ルート → ChangeRequestService・DocGeneratorService →
+     ChangeRequestRepository・ChangeRequestSummaryRepository・GeneratedDocumentRepository)と、
+     プロジェクトの削除での CR・時系列・要約の CASCADE
 ドライバ: httpx の AsyncClient(ASGITransport)
-スタブ: 要約の LLM だけ、解決(LlmResolver.resolve)を固定の文を返すフェイクに差し替える
-(stub_llm_resolver)。ほかは LLM を呼ばない。利用者・プロジェクト・文書はセッションで直接作り、
-アクセストークンも直接発行する(API で登録すると、スイート全体で登録・ログインの IP ごとの上限に
-当たるため)
+スタブ: 要約と文書の生成の LLM だけ、解決(LlmResolver.resolve)を固定の文・構造化出力の見本を
+返すフェイクに差し替える(stub_llm_resolver)。ほかは LLM を呼ばない。利用者・プロジェクト・
+文書はセッションで直接作り、アクセストークンも直接発行する(API で登録すると、スイート全体で
+登録・ログインの IP ごとの上限に当たるため)
 """
 
 import uuid
@@ -20,13 +21,16 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select
 from tests.fixtures.change_impact import impact_documents
+from tests.fixtures.external_design import upstream_outputs
 from tests.fixtures.fake_llm import FakeLLM
 from tests.fixtures.llm_resolver import stub_llm_resolver
+from tests.fixtures.requirements import requirements_output
 
 from app.core.database import AsyncSessionLocal
 from app.core.security import create_access_token
 from app.models.change_request import ChangeRequest, ChangeRequestEvent
 from app.models.change_request_summary import ChangeRequestSummary
+from app.models.generated_document import GeneratedDocument
 from app.models.project import Project
 from app.models.user import User
 from app.repositories.generated_document import GeneratedDocumentRepository
@@ -269,3 +273,67 @@ async def test_explanation_summary_and_cascade(
     assert await _summaries(request_ids) == 1
     await client.delete(f"/api/v1/projects/{project_id}", headers=headers)
     assert await _summaries(request_ids) == 0
+
+
+async def test_reflection_records_versions_and_comparison(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stub_llm_resolver(
+        monkeypatch,
+        FakeLLM(
+            content_sequence=["## 自己診断\n最重要: 特になし"],
+            structured_by_schema=upstream_outputs(
+                requirements_output(prev_id="FR-001", text="予約を登録し、確認メールを送る")
+            ),
+        ),
+    )
+    headers, user_id = await _login("cr-apply@example.com")
+    project_id = await _project(user_id)
+    base = f"/api/v1/projects/{project_id}/change-requests"
+    await client.post(f"/api/v1/projects/{project_id}/baselines", json=_BASELINE, headers=headers)
+    await client.post(base, json=_CR, headers=headers)
+    generate = f"/api/v1/projects/{project_id}/generate"
+
+    draft = await client.post(
+        generate, json={"start_from": "requirements", "cr_number": 1}, headers=headers
+    )
+    assert (draft.status_code, draft.json()["code"]) == (409, "CR_NOT_REFLECTABLE")
+    early = await client.get(f"{base}/1/comparison", headers=headers)
+    assert (early.status_code, early.json()["code"]) == (409, "CR_NOT_APPLIED")
+    await client.post(f"{base}/1/explain", headers=headers)
+    await client.post(
+        f"{base}/1/decision", json={**_DECISION, "decision": "agreed"}, headers=headers
+    )
+
+    accepted = await client.post(
+        generate, json={"start_from": "requirements", "cr_number": 1}, headers=headers
+    )
+    assert accepted.status_code == 202
+
+    detail = (await client.get(f"{base}/1", headers=headers)).json()
+    assert detail["status"] == "applied"
+    apply = detail["events"][-1]
+    assert apply["action"] == "apply"
+    assert [d["doc_type"] for d in apply["refs"]["documents"]] == [
+        "requirements",
+        "external_design",
+    ]
+    async with AsyncSessionLocal() as session:
+        linked = await session.scalar(
+            select(func.count())
+            .select_from(GeneratedDocument)
+            .join(ChangeRequest, GeneratedDocument.change_request_id == ChangeRequest.id)
+            .where(ChangeRequest.project_id == project_id)
+        )
+    assert linked == 2
+    # 段階を承認していないので印は付かず、予測はすべて「予測だけ」
+    comparison = (await client.get(f"{base}/1/comparison", headers=headers)).json()
+    assert comparison["counts"]["matched"] == 0
+    assert comparison["counts"]["predicted_only"] == len(comparison["items"]) > 0
+    assert {i["predicted_only_reason"] for i in comparison["items"]} <= {
+        "document_side",
+        "unmarked_stage",
+    }
+
+    await client.delete(f"/api/v1/projects/{project_id}", headers=headers)
+    assert await _rows(project_id) == (0, 0)

@@ -547,3 +547,17 @@ class ChangeRequestSummaryNotFoundError(NotFoundError):
     """説明書の要約をまだ作っていない CR で、要約を直す・確かめる操作をした場合に送出する。"""
 
     code: ClassVar[str | None] = "CR_SUMMARY_NOT_FOUND"
+
+
+class ChangeRequestNotReflectableError(ConflictError):
+    """再生成に渡せない状態の CR を渡した場合に送出する。文書は合意・反映済みの CR、段階は文書へ
+    反映した後(反映済み)の CR だけを渡せる。"""
+
+    code: ClassVar[str | None] = "CR_NOT_REFLECTABLE"
+
+
+class ChangeRequestNotAppliedError(ConflictError):
+    """まだ反映していない CR(反映済み・検証済みでない)で、予測と実際の印の比較を求めた場合に
+    送出する(比べる実際の印が無いため)。"""
+
+    code: ClassVar[str | None] = "CR_NOT_APPLIED"

@@ -1,6 +1,6 @@
 import uuid
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -13,19 +13,25 @@ from app.change_requests import (
     ACTIVE_STATUSES,
     COPYABLE_STATUSES,
     DECISION_ACTIONS,
+    DOCUMENT_REFLECTABLE_STATUSES,
     INITIAL_STATUS,
+    STAGE_REFLECTABLE_STATUSES,
     ChangeRequestAction,
     ChangeRequestFacts,
     ChangeRequestStatus,
+    Comparison,
     Explanation,
     Overlap,
     Prediction,
     SummaryState,
     Target,
     allowed_actions,
+    applied_marks_from_json,
+    build_cr_instruction,
     build_explanation,
     build_summary_messages,
     clip_summary,
+    compare,
     next_status,
     overlaps,
     predict_from_snapshots,
@@ -35,6 +41,8 @@ from app.change_requests import (
     targets_to_json,
     with_summary,
 )
+from app.change_requests.explanation import DOCUMENT_LABEL
+from app.detailed_design.impact import Mark
 from app.models.baseline import Baseline
 from app.models.change_request import ChangeRequest
 from app.models.change_request_summary import ChangeRequestSummary
@@ -42,6 +50,7 @@ from app.models.project import Project
 from app.repositories.baseline import BaselineRepository
 from app.repositories.change_request import ChangeRequestRepository
 from app.repositories.change_request_summary import ChangeRequestSummaryRepository
+from app.repositories.design_stage import DesignStageRepository
 from app.schemas.change_request import (
     ChangeRequestCreate,
     ChangeRequestDecision,
@@ -53,7 +62,9 @@ from app.services.baseline_service import BaselineService
 from app.services.errors import (
     ChangeRequestBaselineMissingError,
     ChangeRequestInvalidTransitionError,
+    ChangeRequestNotAppliedError,
     ChangeRequestNotFoundError,
+    ChangeRequestNotReflectableError,
     ChangeRequestSummaryNotFoundError,
     ChangeRequestTargetUnknownError,
     DesignStagesNotAvailableError,
@@ -65,6 +76,8 @@ logger = structlog.get_logger(__name__)
 
 # 対象の要件を読む、束の写しの key
 REQUIREMENTS_KEY = "requirements"
+# 反映した後の状態(予測と実際の印を比べられる)
+APPLIED_STATUSES = frozenset({"applied", "verified"})
 
 
 @dataclass(frozen=True)
@@ -76,6 +89,14 @@ class ChangeRequestView:
     derived_from_number: int | None
     derived_numbers: list[int]
     allowed_actions: list[ChangeRequestAction]
+
+
+@dataclass(frozen=True)
+class Reflection:
+    """再生成に渡す CR と、修正の指示の文(app/change_requests/instruction.py)。"""
+
+    change_request: ChangeRequest
+    instruction: str
 
 
 @dataclass(frozen=True)
@@ -94,6 +115,15 @@ class ImpactView:
     prediction: Prediction
     saved: bool
     excluded: list[ExcludedItem]
+
+
+@dataclass(frozen=True)
+class ComparisonView:
+    """CR 1つの、影響の予測と反映で付いた印の比較。`saved`は予測が判断の時点で保存したものか。"""
+
+    change_request: ChangeRequest
+    comparison: Comparison
+    saved: bool
 
 
 @dataclass(frozen=True)
@@ -404,6 +434,101 @@ class ChangeRequestService:
         await self._session.commit()
         return ExplanationView(change_request, explanation, summary)
 
+    async def comparison(self, project: Project, number: int) -> ComparisonView:
+        """反映した CR の、影響の予測(判断の時点で保存したもの)と反映で付いた印の比較。反映の前は
+        ChangeRequestNotAppliedError。印を付ける段階は、今、一度でも承認した段階。"""
+        change_request = await self._load(project, number)
+        if change_request.status not in APPLIED_STATUSES:
+            raise ChangeRequestNotAppliedError(
+                f"{change_request_label(number)} はまだ反映していません。"
+            )
+        _, view = await self._impact_with_baseline(change_request)
+        rows = await DesignStageRepository(self._session).list_for_project(project.id)
+        marked = {row.stage for row in rows if row.approved_version is not None}
+        comparison = compare(
+            view.prediction, applied_marks_from_json(change_request.applied_impact), marked
+        )
+        return ComparisonView(change_request, comparison, saved=view.saved)
+
+    async def reflectable(
+        self, project: Project, number: int, *, stage: bool = False
+    ) -> ChangeRequest:
+        """再生成に渡せる CR(受け付けのときの確かめ)。無ければ ChangeRequestNotFoundError、文書は
+        合意・反映済み、段階(`stage`)は反映済みでなければ ChangeRequestNotReflectableError。"""
+        change_request = await self._load(project, number)
+        statuses = STAGE_REFLECTABLE_STATUSES if stage else DOCUMENT_REFLECTABLE_STATUSES
+        if change_request.status not in statuses:
+            where = "文書へ反映した後(反映済み)" if stage else "合意した後"
+            raise ChangeRequestNotReflectableError(
+                f"{change_request_label(number)} は今の状態では反映できません。{where}の CR を"
+                "渡してください。"
+            )
+        return change_request
+
+    async def reflection(
+        self, project_id: uuid.UUID, number: int | None, *, stage: bool = False
+    ) -> Reflection | None:
+        """バックグラウンドの生成に渡す CR と指示。受け付けの後に消えた・反映できない状態に
+        なった CR は渡さない(None。指摘と同じく、生成は CR なしで続ける)。"""
+        if number is None:
+            return None
+        change_request = await self._change_requests.get_by_number(
+            project_id=project_id, number=number
+        )
+        statuses = STAGE_REFLECTABLE_STATUSES if stage else DOCUMENT_REFLECTABLE_STATUSES
+        if change_request is None or change_request.status not in statuses:
+            return None
+        facts = facts_of(change_request, change_request.baseline.number)
+        return Reflection(change_request, build_cr_instruction(facts))
+
+    async def record_document_apply(
+        self,
+        change_request: ChangeRequest,
+        *,
+        documents: Sequence[tuple[str, int]],
+        model: str | None,
+        marks: Sequence[Mark],
+        actor_id: uuid.UUID | None,
+    ) -> None:
+        """CR を渡した文書の再生成が終わったことを記録する。反映済みにし(やり直しは反映済みのまま)、
+        時系列に作った版(`documents`=(文書の種類, 版))とモデル名を残し、付いた印を写しに重ねる。
+        生成と同じトランザクションで使うため、commitしない。"""
+        change_request.applied_impact = merge_applied_marks(
+            change_request.applied_impact, marks
+        )
+        versions = "・".join(f"{DOCUMENT_LABEL.get(t, t)} v{v}" for t, v in documents)
+        await self._change_requests.add_event(
+            change_request,
+            action="apply",
+            to_status=self._next(change_request, "apply"),
+            actor_id=actor_id,
+            note=f"{versions} を作り直した",
+            refs={
+                "documents": [{"doc_type": t, "version": v} for t, v in documents],
+                "model": model,
+            },
+        )
+
+    async def record_stage_apply(
+        self,
+        change_request: ChangeRequest,
+        *,
+        stage: int,
+        version: int,
+        model: str | None,
+        actor_id: uuid.UUID | None,
+    ) -> None:
+        """CR を渡した段階の生成が終わったことを、時系列に1行(反映済みのまま。段階・版・モデル名)
+        残す。生成と同じトランザクションで使うため、commitしない。"""
+        await self._change_requests.add_event(
+            change_request,
+            action="apply",
+            to_status=self._next(change_request, "apply"),
+            actor_id=actor_id,
+            note=f"段階{stage}の下書きを作り直した",
+            refs={"stage": stage, "version": version, "model": model},
+        )
+
     async def _explanation_view(self, change_request: ChangeRequest) -> ExplanationView:
         return ExplanationView(
             change_request=change_request,
@@ -511,6 +636,16 @@ class ChangeRequestService:
             derived_numbers=[c.number for c in derived],
             allowed_actions=allowed_actions(status),
         )
+
+
+def merge_applied_marks(
+    existing: Sequence[Mapping[str, Any]] | None, marks: Sequence[Mark]
+) -> list[dict[str, Any]]:
+    """反映で付いた印の写しに、新しい印を重ねる(同じ要素は新しい印にする。置き場とキーの順)。"""
+    by_key = {str(item["key"]): dict(item) for item in existing or []}
+    for mark in marks:
+        by_key[mark.key] = asdict(mark)
+    return sorted(by_key.values(), key=lambda m: (int(m["stage"]), str(m["key"])))
 
 
 def predict_for(change_request: ChangeRequest, baseline: Baseline) -> Prediction:

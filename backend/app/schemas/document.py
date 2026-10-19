@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 DocType = Literal[
     "requirements", "external_design", "internal_design", "implementation_plan", "test_spec"
@@ -85,10 +85,12 @@ class TestSpecRead(BaseModel):
 class GenerationRequest(BaseModel):
     """設計書の(再)生成の要求。`start_from`は起点(その文書から下流を作り直す)。省略で全部。
     `test_spec`はテスト仕様書だけを作る(詳細設計モードは、これでだけ作る)。
-    `finding_ids`は再生成の指示に入れる、設計レビューの採用した指摘(設計・不整合)。"""
+    `finding_ids`は再生成の指示に入れる、設計レビューの採用した指摘(設計・不整合)。
+    `cr_number`は反映する合意した変更要求(CR)の番号(詳細設計モード。省略で渡さない)。"""
 
     start_from: DocType | None = None
     finding_ids: list[uuid.UUID] = []
+    cr_number: int | None = Field(default=None, ge=1)
 
 
 class GenerationProgressRead(BaseModel):

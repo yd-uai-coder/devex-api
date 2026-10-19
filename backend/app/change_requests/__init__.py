@@ -1,9 +1,22 @@
 """変更要求(CR)の状態・遷移・重なりの判定と、対象(要件 ID・変更の種類・変更後の案)の扱い・
-影響の予測・説明書の組み立てと、任意の要約の入力・照合・状態(純粋関数)。
+影響の予測・説明書の組み立てと、任意の要約の入力・照合・状態・反映の指示・予測と実際の比較
+(純粋関数)。
 
 docs/internal_design.md 3.3節「11. 合意と変更の一巡」。
 """
 
+from app.change_requests.comparison import (
+    COMPARISON_STATUS_LABEL,
+    COMPARISON_STATUSES,
+    PREDICTED_ONLY_REASON_LABEL,
+    AppliedMark,
+    ComparedItem,
+    Comparison,
+    ComparisonStatus,
+    PredictedOnlyReason,
+    applied_marks_from_json,
+    compare,
+)
 from app.change_requests.explanation import (
     AffectedUnits,
     ChangeRequestFacts,
@@ -15,6 +28,7 @@ from app.change_requests.explanation import (
     explanation_filename,
     with_summary,
 )
+from app.change_requests.instruction import build_cr_instruction, join_instructions
 from app.change_requests.prediction import (
     PredictedItem,
     PredictedTarget,
@@ -30,7 +44,9 @@ from app.change_requests.states import (
     BACKGROUND_SOURCES,
     COPYABLE_STATUSES,
     DECISION_ACTIONS,
+    DOCUMENT_REFLECTABLE_STATUSES,
     INITIAL_STATUS,
+    STAGE_REFLECTABLE_STATUSES,
     STATUS_LABEL,
     STATUSES,
     TRANSITIONS,
@@ -64,11 +80,16 @@ from app.change_requests.targets import (
 
 __all__ = [
     "ACTIVE_STATUSES",
+    "COMPARISON_STATUSES",
+    "COMPARISON_STATUS_LABEL",
+    "PREDICTED_ONLY_REASON_LABEL",
     "BACKGROUND_SOURCES",
     "BACKGROUND_SOURCE_LABEL",
     "COPYABLE_STATUSES",
     "DECISION_ACTIONS",
+    "DOCUMENT_REFLECTABLE_STATUSES",
     "INITIAL_STATUS",
+    "STAGE_REFLECTABLE_STATUSES",
     "STATUSES",
     "STATUS_LABEL",
     "SUMMARY_MAX",
@@ -77,12 +98,17 @@ __all__ = [
     "TARGET_KIND_LABEL",
     "TRANSITIONS",
     "AffectedUnits",
+    "AppliedMark",
     "BackgroundSource",
     "ChangeRequestAction",
     "ChangeRequestFacts",
     "ChangeRequestStatus",
+    "ComparedItem",
+    "Comparison",
+    "ComparisonStatus",
     "Explanation",
     "Overlap",
+    "PredictedOnlyReason",
     "PredictedItem",
     "PredictedTarget",
     "Prediction",
@@ -93,12 +119,16 @@ __all__ = [
     "TargetKind",
     "affected_units",
     "allowed_actions",
+    "applied_marks_from_json",
     "baseline_models",
+    "build_cr_instruction",
     "build_explanation",
     "build_summary_messages",
     "check_summary",
     "clip_summary",
+    "compare",
     "explanation_filename",
+    "join_instructions",
     "next_status",
     "normalize_targets",
     "overlaps",

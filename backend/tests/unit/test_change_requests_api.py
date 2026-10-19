@@ -215,3 +215,4 @@ def test_router_is_registered() -> None:
     assert "/projects/{project_id}/change-requests/{number}/explanation/download" in paths
     assert "/projects/{project_id}/change-requests/{number}/explanation/summary" in paths
     assert "/projects/{project_id}/change-requests/{number}/explanation/summary/confirm" in paths
+    assert "/projects/{project_id}/change-requests/{number}/comparison" in paths

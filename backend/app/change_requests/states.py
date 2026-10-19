@@ -3,7 +3,8 @@
 状態: 下書き → 説明済み → 合意 / 却下 → 反映済み → 検証済み。合意の前(下書き・説明済み)なら
 取り下げ。説明済みで中身を直すと下書きに戻る(説明した中身と変わるため)。却下は終わりの状態で、
 出し直すときは写して新しい CR(下書き)を作る(元の CR は却下と理由のまま残す)。
-反映(apply)・検証(verify)の操作は表にだけ持ち、API は反映・再検証の Phase で足す。
+反映(apply)は、CR を渡した再生成が終わったときに記録する(反映済みの間もやり直せ、そのたびに
+時系列に1行足す)。検証(verify)の操作は表にだけ持ち、API は再検証の Phase で足す。
 """
 
 from collections.abc import Iterable, Sequence
@@ -47,7 +48,7 @@ TRANSITIONS: dict[ChangeRequestAction, dict[ChangeRequestStatus, ChangeRequestSt
     "agree": {"explained": "agreed"},
     "reject": {"explained": "rejected"},
     "withdraw": {"draft": "withdrawn", "explained": "withdrawn"},
-    "apply": {"agreed": "applied"},
+    "apply": {"agreed": "applied", "applied": "applied"},
     "verify": {"applied": "verified"},
 }
 
@@ -57,6 +58,9 @@ COPYABLE_STATUSES: frozenset[ChangeRequestStatus] = frozenset({"rejected"})
 ACTIVE_STATUSES: frozenset[ChangeRequestStatus] = frozenset(
     {"draft", "explained", "agreed", "applied"}
 )
+# 再生成に渡せる状態(文書は合意・反映済み、段階は文書へ反映した後の反映済みだけ)
+DOCUMENT_REFLECTABLE_STATUSES: frozenset[ChangeRequestStatus] = frozenset({"agreed", "applied"})
+STAGE_REFLECTABLE_STATUSES: frozenset[ChangeRequestStatus] = frozenset({"applied"})
 # 判断(合意・却下)の操作
 DECISION_ACTIONS: dict[str, ChangeRequestAction] = {"agreed": "agree", "rejected": "reject"}
 
