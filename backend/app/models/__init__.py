@@ -1,3 +1,4 @@
+from app.models.baseline import Baseline, BaselineItem
 from app.models.chat_history import ChatHistory
 from app.models.data_item import DataItem
 from app.models.design_stage import DesignStage
@@ -15,6 +16,8 @@ from app.models.user_model_setting import UserModelSetting
 
 # alembicにimportさせるモデル
 __all__ = [
+    "Baseline",
+    "BaselineItem",
     "ChatHistory",
     "DataItem",
     "DesignStage",

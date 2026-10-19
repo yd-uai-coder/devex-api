@@ -183,6 +183,14 @@ class DesignStageService:
             if (version := approved.get(stage)) is not None
         }
 
+    async def stage_rows(
+        self, project: Project
+    ) -> tuple[dict[int, DesignStage], dict[int, StageView]]:
+        """モードの段階の行(未着手の段階は入らない)と、全段階の状態を返す(合意済みの版の写しが
+        使う)。"""
+        rows, views, _ = await self._load(project)
+        return rows, views
+
     async def current_fingerprint(self, project: Project, stage: int) -> Fingerprint:
         """段階が今入力にしているものの版(下書きの生成時に記録する。承認時と同じ規則)。"""
         rows, views, documents = await self._load(project)

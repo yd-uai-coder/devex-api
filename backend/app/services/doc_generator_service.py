@@ -126,7 +126,7 @@ from app.services.errors import (
 from app.services.fix_check_service import FixCheckService
 from app.services.generation_progress import GenerationProgress, GenerationProgressStore
 from app.services.generation_staleness import is_stale
-from app.services.llm_resolver import LlmResolver
+from app.services.llm_resolver import LlmResolver, injected_llm
 from app.services.llm_retry import invoke_structured, invoke_with_retry
 from app.services.project_deletion import (
     commit_if_live,
@@ -397,9 +397,13 @@ class DocGeneratorService:
         reviewing = user is not None and await LlmResolver(self._session).review_effective(user)
 
         try:
-            llm = llm or (
-                await LlmResolver(self._session).resolve(user_id, Purpose.GENERATION)
-            ).llm
+            # 版に残すモデル名のため、解決した結果を持つ(渡された LLM は既定のモデルとみなす)
+            resolved = (
+                injected_llm(llm, Purpose.GENERATION)
+                if llm is not None
+                else await LlmResolver(self._session).resolve(user_id, Purpose.GENERATION)
+            )
+            llm = resolved.llm
             sendback = await ReviewService(self._session).sendback_findings(
                 project_id, finding_ids
             )
@@ -475,7 +479,11 @@ class DocGeneratorService:
                     )
                     model = plan.model_dump(mode="json")
                 await self._documents.create_version(
-                    project_id=project_id, doc_type=doc_type, content=content, model=model
+                    project_id=project_id,
+                    doc_type=doc_type,
+                    content=content,
+                    model=model,
+                    generated_model=resolved.model,
                 )
                 generated[doc_type] = content
                 new_models[doc_type] = model
@@ -491,6 +499,7 @@ class DocGeneratorService:
                     doc_type=TEST_SPEC,
                     content=content,
                     model=test_spec.model_dump(mode="json"),
+                    generated_model=resolved.model,
                 )
                 progress.done.append(TEST_SPEC)
             progress.current = None

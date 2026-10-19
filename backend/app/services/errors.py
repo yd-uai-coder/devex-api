@@ -500,3 +500,17 @@ class PasswordNotSetError(ConflictError):
     送出する。先にパスワードを設定させる。"""
 
     code: ClassVar[str | None] = "PASSWORD_NOT_SET"
+
+
+# 合意済みの版(ステージ11)
+class BaselineDocumentsMissingError(ConflictError):
+    """要件定義書・外部設計書の表示中の版がそろっていないプロジェクトで、合意済みの版(束)を
+    作ろうとした場合に送出する。束は少なくともこの2つの文書を合意の基準として持つ。"""
+
+    code: ClassVar[str | None] = "BASELINE_DOCUMENTS_MISSING"
+
+
+class BaselineNotFoundError(NotFoundError):
+    """指定した番号の合意済みの版が、そのプロジェクトに無い場合に送出する。"""
+
+    code: ClassVar[str | None] = "RESOURCE_NOT_FOUND"

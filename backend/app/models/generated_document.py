@@ -55,6 +55,8 @@ class GeneratedDocument(Base):
     # contentはこれから組み立てたmd。modelを持たない文書・以前の版はNULL(mdのまま使う)
     model: Mapped[dict | None] = mapped_column(PortableJSON, nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # 生成したモデル名(例: gemini-3-flash-preview)。この列を足す前の版は NULL
+    generated_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     # is_current：復元用
     is_current: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=false()
