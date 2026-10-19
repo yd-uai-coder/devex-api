@@ -2,8 +2,8 @@
 
 SUT: ルート create_change_request / list_change_requests / get_change_request /
      update_change_request / explain_change_request / decide_change_request /
-     withdraw_change_request / copy_change_request(→ ChangeRequestService)と、
-     api_router への登録
+     withdraw_change_request / copy_change_request / get_change_request_impact
+     (→ ChangeRequestService)と、api_router への登録
 ドライバ: pytest のテスト関数(ルートは関数を直接呼ぶ)
 スタブ不要 ── LLM を呼ばず、ルートがサービスの結果を応答の形に詰めることが検証対象のため、
 テスト用の SQLite のセッションと、合意済みの版を作った fixture(`create_impact_project`)を使う
@@ -23,6 +23,7 @@ from app.api.routes.change_requests import (
     decide_change_request,
     explain_change_request,
     get_change_request,
+    get_change_request_impact,
     list_change_requests,
     update_change_request,
     withdraw_change_request,
@@ -40,11 +41,13 @@ from app.services.baseline_service import BaselineService
 from app.services.errors import ChangeRequestInvalidTransitionError, ChangeRequestNotFoundError
 
 _AT = datetime(2026, 10, 19, 10, 0, tzinfo=UTC)
-_CREATE = ChangeRequestCreate(
-    title="一覧に絞り込みを足す",
-    content="日付で絞り込む",
-    background_source="email",
-    target_requirement_ids=["FR-002"],
+_CREATE = ChangeRequestCreate.model_validate(
+    {
+        "title": "一覧に絞り込みを足す",
+        "content": "日付で絞り込む",
+        "background_source": "email",
+        "targets": [{"requirement_id": "FR-002"}],
+    }
 )
 
 
@@ -106,6 +109,33 @@ async def test_routes_raise_for_missing_and_invalid(db_session: AsyncSession) ->
         await copy_change_request(1, db_session, project, user)
 
 
+async def test_impact_route_predicts_then_returns_saved(db_session: AsyncSession) -> None:
+    project, user = await _setup(db_session)
+    await create_change_request(_CREATE, db_session, project, user)
+
+    before = await get_change_request_impact(1, db_session, project)
+    await explain_change_request(1, db_session, project, user)
+    await decide_change_request(
+        1,
+        ChangeRequestDecision(decision="agreed", decided_at=_AT, reason="合う"),
+        db_session,
+        project,
+        user,
+    )
+    after = await get_change_request_impact(1, db_session, project)
+
+    assert (before.label, before.baseline_label, before.saved) == ("CR-1", "B-1", False)
+    assert [(t.requirement_id, t.kind_label, t.text) for t in before.targets] == [
+        ("FR-002", "内容の変更", "予約の一覧を見られる")
+    ]
+    assert {"screen:SCR-001", "fn:F-02", "unit:U-003"} <= {i.key for i in before.items}
+    assert [(e.key, e.state) for e in before.excluded] == [("test_spec", "absent")]
+    assert after.saved is True
+    assert after.items == before.items
+    with pytest.raises(ChangeRequestNotFoundError):
+        await get_change_request_impact(9, db_session, project)
+
+
 def test_router_is_registered() -> None:
     """api_router(app/api/routes/__init__.py)に CR のルーターを登録したこと。"""
     app = FastAPI()
@@ -115,3 +145,4 @@ def test_router_is_registered() -> None:
     assert "/projects/{project_id}/change-requests" in paths
     assert "/projects/{project_id}/change-requests/{number}/decision" in paths
     assert "/projects/{project_id}/change-requests/{number}/copy" in paths
+    assert "/projects/{project_id}/change-requests/{number}/impact" in paths

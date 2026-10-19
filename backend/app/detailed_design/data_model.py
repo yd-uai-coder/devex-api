@@ -37,6 +37,11 @@ DATA_MODEL_STAGE = 3
 # (部分図の ER は無い)
 ER_SUBJECT = ""
 
+# 段階3の写しに添える ER のテーブル定義の欄(ER は段階の model の外の図にあるため、承認したときの
+# 定義を写しに残し、テーブルの内容(列の追加など)の差分を取れるようにする。合意済みの版の写しから
+# 要素を組むときも、ここから ER を読む)
+ER_SNAPSHOT_KEY = "er_snapshot"
+
 # CRUD 図のセルに書ける操作。セルの文字列はこの順に並べる(「RC」ではなく「CR」)
 CRUD_OPS = "CRUD"
 WRITE_OPS = frozenset("CUD")

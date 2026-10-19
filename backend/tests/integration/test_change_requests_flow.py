@@ -1,8 +1,10 @@
-"""変更要求(CR)の API を実際の PostgreSQL で確かめる(JSONB の対象・時系列・自己参照・CASCADE)。
+"""変更要求(CR)の API を実際の PostgreSQL で確かめる(JSONB の対象と予測・時系列・自己参照・
+CASCADE)。
 
 SUT: POST・GET /api/v1/projects/{id}/change-requests、GET・PATCH .../{number}、
-     POST .../{number}/explain・decision・withdraw・copy(ルート → ChangeRequestService →
-     ChangeRequestRepository)と、プロジェクトの削除での CR と時系列の CASCADE
+     POST .../{number}/explain・decision・withdraw・copy、GET .../{number}/impact(ルート →
+     ChangeRequestService → ChangeRequestRepository)と、プロジェクトの削除での CR と時系列の
+     CASCADE
 ドライバ: httpx の AsyncClient(ASGITransport)
 スタブ不要 ── LLM を呼ばない。利用者・プロジェクト・文書はセッションで直接作り、アクセストークンも
 直接発行する(API で登録すると、スイート全体で登録・ログインの IP ごとの上限に当たるため)
@@ -13,6 +15,7 @@ import uuid
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select
+from tests.fixtures.change_impact import impact_documents
 
 from app.core.database import AsyncSessionLocal
 from app.core.security import create_access_token
@@ -30,7 +33,7 @@ _CR = {
     "background_source": "meeting",
     "background_date": "2026-10-18",
     "background_memo": "定例で依頼",
-    "target_requirement_ids": ["FR-001"],
+    "targets": [{"requirement_id": "FR-001"}],
 }
 _DECISION = {
     "decision": "rejected",
@@ -54,12 +57,9 @@ async def _project(user_id: uuid.UUID) -> uuid.UUID:
         project = Project(user_id=user_id, title="備品予約", mode="detailed", status="completed")
         session.add(project)
         await session.flush()
-        for doc_type in ("requirements", "external_design"):
+        for doc_type, model in impact_documents().items():
             await GeneratedDocumentRepository(session).create_version(
-                project_id=project.id,
-                doc_type=doc_type,
-                content=f"# {doc_type}",
-                model={"rows": [{"id": "FR-001"}, {"id": "FR-002"}]},
+                project_id=project.id, doc_type=doc_type, content=f"# {doc_type}", model=model
             )
         await session.commit()
         return project.id
@@ -102,16 +102,39 @@ async def test_reject_copy_agree_and_cascade(client: AsyncClient) -> None:
     assert (copied.json()["label"], copied.json()["derived_from_number"]) == ("CR-2", 1)
     patched = await client.patch(
         f"{base}/2",
-        json={"target_requirement_ids": ["FR-001", "FR-002"], "background_date": None},
+        json={
+            "targets": [
+                {"requirement_id": "FR-001"},
+                {"requirement_id": "FR-002", "kind": "delete"},
+            ],
+            "background_date": None,
+        },
         headers=headers,
     )
-    assert patched.json()["target_requirement_ids"] == ["FR-001", "FR-002"]
+    assert [(t["requirement_id"], t["kind_label"]) for t in patched.json()["targets"]] == [
+        ("FR-001", "内容の変更"),
+        ("FR-002", "削除"),
+    ]
     assert patched.json()["background_date"] is None
     await client.post(f"{base}/2/explain", headers=headers)
     agreed = await client.post(
         f"{base}/2/decision", json={**_DECISION, "decision": "agreed"}, headers=headers
     )
     assert agreed.json()["status"] == "agreed"
+    # 判断の時点の予測が JSON の列に残り、読み直しても同じ形で返る
+    impact = (await client.get(f"{base}/2/impact", headers=headers)).json()
+    assert (impact["saved"], impact["baseline_label"]) == (True, "B-1")
+    assert [(t["requirement_id"], t["kind"]) for t in impact["targets"]] == [
+        ("FR-001", "content"),
+        ("FR-002", "delete"),
+    ]
+    # 段階は承認していないので、予測は文書の側の要素(画面・API)だけ
+    assert {i["key"] for i in impact["items"]} == {
+        "screen:SCR-001",
+        "api:POST /api/v1/reservations",
+        "api:GET /api/v1/reservations",
+    }
+    assert {"stage:1", "stage:8"} <= {e["key"] for e in impact["excluded"]}
     assert [e["to_status"] for e in agreed.json()["events"]] == ["draft", "explained", "agreed"]
 
     source = (await client.get(f"{base}/1", headers=headers)).json()
@@ -136,17 +159,23 @@ async def test_errors_overlap_and_ownership(client: AsyncClient) -> None:
     await client.post(base, json=_CR, headers=headers)
 
     unknown = await client.post(
-        base, json={**_CR, "target_requirement_ids": ["FR-404"]}, headers=headers
+        base, json={**_CR, "targets": [{"requirement_id": "FR-404"}]}, headers=headers
     )
-    no_target = await client.post(
-        base, json={**_CR, "target_requirement_ids": []}, headers=headers
-    )
+    no_target = await client.post(base, json={**_CR, "targets": []}, headers=headers)
     invalid = await client.post(base, json={**_CR, "background_source": "phone"}, headers=headers)
     early = await client.post(f"{base}/1/decision", json=_DECISION, headers=headers)
     not_found = await client.get(f"{base}/9", headers=headers)
     other = await client.get(base, headers=other_headers)
     second = await client.post(
-        base, json={**_CR, "target_requirement_ids": ["FR-002", "FR-001"]}, headers=headers
+        base,
+        json={
+            **_CR,
+            "targets": [
+                {"requirement_id": "FR-002"},
+                {"requirement_id": "FR-001", "kind": "delete"},
+            ],
+        },
+        headers=headers,
     )
 
     assert (unknown.status_code, unknown.json()["code"]) == (422, "CR_TARGET_UNKNOWN")

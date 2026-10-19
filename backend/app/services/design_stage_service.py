@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.detailed_design import (
     DATA_MODEL_STAGE,
+    ER_SNAPSHOT_KEY,
     ER_SUBJECT,
     PLAN_STAGE,
     PROCEDURE_DOC_STAGE,
@@ -123,9 +124,6 @@ IMPACT_DOCUMENTS: dict[str, tuple[str, ...]] = {
     "detailed": ("requirements", "external_design"),
     "simple": ("requirements", "external_design", "internal_design", "implementation_plan"),
 }
-# 段階3の写しに添える ER のテーブル定義の欄(ER は段階の model の外の図にあるため、承認したときの
-# 定義を写しに残し、テーブルの内容(列の追加など)の差分を取れるようにする)
-ER_SNAPSHOT_KEY = "er_snapshot"
 
 
 class DesignStageService:

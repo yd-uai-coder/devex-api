@@ -2,15 +2,28 @@ import uuid
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+)
 
 from app.change_requests import (
     BACKGROUND_SOURCE_LABEL,
     STATUS_LABEL,
+    TARGET_KIND_LABEL,
     BackgroundSource,
     ChangeRequestAction,
     ChangeRequestStatus,
     Overlap,
+    Prediction,
+    Target,
+    TargetKind,
+    normalize_targets,
+    targets_from_json,
 )
 from app.schemas.agreement import MEMO_MAX, REASON_MAX, AgreementNotes
 
@@ -27,12 +40,30 @@ Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, ma
 Content = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=CONTENT_MAX)
 ]
-RequirementIds = Annotated[list[str], Field(max_length=TARGETS_MAX)]
+
+
+class ChangeRequestTargetIn(BaseModel):
+    """CR の対象1つ(要件 ID と変更の種類。種類を省くと内容の変更)。"""
+
+    requirement_id: str
+    kind: TargetKind = "content"
+
+
+TargetsIn = Annotated[list[ChangeRequestTargetIn], Field(max_length=TARGETS_MAX)]
+
+
+def _normalized(value: list[ChangeRequestTargetIn] | None) -> list[ChangeRequestTargetIn] | None:
+    """対象を整える(空白・同じ組の重複を除く)。同じ要件が違う種類なら検証の誤り(422)。"""
+    if value is None:
+        return None
+    targets = normalize_targets(Target(t.requirement_id, t.kind) for t in value)
+    return [ChangeRequestTargetIn(requirement_id=t.requirement_id, kind=t.kind) for t in targets]
 
 
 class ChangeRequestCreate(BaseModel):
     """CR を作るときの本文。背景は出どころの種類・日付(日の粒度。任意)・メモ。対象は基準の束の
-    要件定義書にある要件 ID と、新しい要件を足すかの印(どちらか一方は要る。サービスで確かめる)。
+    要件定義書にある要件 ID と変更の種類の組と、新しい要件を足すかの印(どちらか一方は要る。
+    サービスで確かめる)。
     基準の束の番号を省くと、最新の束を基準にする。"""
 
     title: Title
@@ -40,9 +71,14 @@ class ChangeRequestCreate(BaseModel):
     background_source: BackgroundSource
     background_date: date | None = None
     background_memo: str = Field(default="", max_length=MEMO_MAX)
-    target_requirement_ids: RequirementIds = Field(default_factory=list)
+    targets: TargetsIn = Field(default_factory=list)
     adds_requirement: bool = False
     baseline_number: int | None = Field(default=None, ge=1)
+
+    @field_validator("targets")
+    @classmethod
+    def _normalize_targets(cls, value: list[ChangeRequestTargetIn]) -> list[ChangeRequestTargetIn]:
+        return _normalized(value) or []
 
 
 class ChangeRequestUpdate(BaseModel):
@@ -54,8 +90,15 @@ class ChangeRequestUpdate(BaseModel):
     background_source: BackgroundSource | None = None
     background_date: date | None = None
     background_memo: str | None = Field(default=None, max_length=MEMO_MAX)
-    target_requirement_ids: RequirementIds | None = None
+    targets: TargetsIn | None = None
     adds_requirement: bool | None = None
+
+    @field_validator("targets")
+    @classmethod
+    def _normalize_targets(
+        cls, value: list[ChangeRequestTargetIn] | None
+    ) -> list[ChangeRequestTargetIn] | None:
+        return _normalized(value)
 
 
 class ChangeRequestDecision(AgreementNotes):
@@ -95,6 +138,22 @@ class ChangeRequestDecisionRead(BaseModel):
     recorded_by: uuid.UUID | None
 
 
+class ChangeRequestTargetRead(BaseModel):
+    """CR の対象1つ(要件 ID・変更の種類と、その表示名)。"""
+
+    requirement_id: str
+    kind: TargetKind
+    kind_label: str
+
+    @classmethod
+    def from_target(cls, target: Target) -> "ChangeRequestTargetRead":
+        return cls(
+            requirement_id=target.requirement_id,
+            kind=target.kind,
+            kind_label=TARGET_KIND_LABEL[target.kind],
+        )
+
+
 class ChangeRequestOverlapRead(BaseModel):
     """同じ要件を対象にする、ほかの進行中の CR。"""
 
@@ -114,7 +173,7 @@ class ChangeRequestSummaryRead(BaseModel):
     background_source: BackgroundSource
     background_source_label: str
     background_date: date | None
-    target_requirement_ids: list[str]
+    targets: list[ChangeRequestTargetRead]
     adds_requirement: bool
     baseline_number: int
     baseline_label: str
@@ -183,6 +242,87 @@ class ChangeRequestRead(ChangeRequestSummaryRead):
         )
 
 
+class PredictedTargetRead(ChangeRequestTargetRead):
+    """予測の起点の要件1つ(基準の束の要件定義書の文つき)。"""
+
+    text: str
+
+
+class PredictedItemRead(BaseModel):
+    """見直しが要る要素1つ。`path`は起点の要件からの道、`requirement_ids`は届いた対象の要件。"""
+
+    key: str
+    kind: str
+    stage: int
+    label: str
+    path: list[str]
+    reason: str
+    requirement_ids: list[str]
+
+
+class ExcludedItemRead(BaseModel):
+    """基準の束に入っていない文書・段階(その要素は予測に出ない)。`state`は束を作ったときの状態。"""
+
+    key: str
+    state: str
+
+
+class ChangeRequestImpactRead(BaseModel):
+    """CR の影響の予測。`saved`は判断の時点で保存したものか(偽なら今、基準の束から求めたもの)。
+    `unpredicted_new_requirement`は、新しい要件を足す分が予測に入っていないこと(起点が無いため)。"""
+
+    number: int
+    label: str
+    baseline_number: int
+    baseline_label: str
+    saved: bool
+    targets: list[PredictedTargetRead]
+    items: list[PredictedItemRead]
+    unpredicted_new_requirement: bool
+    excluded: list[ExcludedItemRead]
+
+    @classmethod
+    def build(
+        cls,
+        change_request: "ChangeRequest",
+        prediction: Prediction,
+        *,
+        saved: bool,
+        excluded: list[ExcludedItemRead],
+    ) -> "ChangeRequestImpactRead":
+        baseline_number = change_request.baseline.number
+        return cls(
+            number=change_request.number,
+            label=change_request_label(change_request.number),
+            baseline_number=baseline_number,
+            baseline_label=f"B-{baseline_number}",
+            saved=saved,
+            targets=[
+                PredictedTargetRead(
+                    requirement_id=t.requirement_id,
+                    kind=t.kind,
+                    kind_label=TARGET_KIND_LABEL[t.kind],
+                    text=t.text,
+                )
+                for t in prediction.targets
+            ],
+            items=[
+                PredictedItemRead(
+                    key=i.key,
+                    kind=i.kind,
+                    stage=i.stage,
+                    label=i.label,
+                    path=list(i.path),
+                    reason=i.reason,
+                    requirement_ids=list(i.requirement_ids),
+                )
+                for i in prediction.items
+            ],
+            unpredicted_new_requirement=prediction.unpredicted_new_requirement,
+            excluded=excluded,
+        )
+
+
 def change_request_label(number: int) -> str:
     return f"CR-{number}"
 
@@ -201,7 +341,10 @@ def summary_fields(change_request: "ChangeRequest") -> dict[str, Any]:
         "background_source": source,
         "background_source_label": BACKGROUND_SOURCE_LABEL[source],
         "background_date": change_request.background_date,
-        "target_requirement_ids": list(change_request.target_requirement_ids),
+        "targets": [
+            ChangeRequestTargetRead.from_target(t)
+            for t in targets_from_json(change_request.targets)
+        ],
         "adds_requirement": change_request.adds_requirement,
         "baseline_number": baseline_number,
         "baseline_label": f"B-{baseline_number}",

@@ -95,12 +95,3 @@ def overlaps(
             found.append(Overlap(number=number, requirement_ids=shared))
     return found
 
-
-def normalize_targets(requirement_ids: Iterable[str]) -> list[str]:
-    """対象の要件 ID の前後の空白を除き、重複を除く(最初に出た順)。空の ID は捨てる。"""
-    seen: dict[str, None] = {}
-    for req_id in requirement_ids:
-        value = req_id.strip()
-        if value:
-            seen.setdefault(value, None)
-    return list(seen)

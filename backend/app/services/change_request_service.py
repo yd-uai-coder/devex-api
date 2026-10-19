@@ -1,5 +1,5 @@
 import uuid
-from collections.abc import Iterable
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -14,10 +14,15 @@ from app.change_requests import (
     ChangeRequestAction,
     ChangeRequestStatus,
     Overlap,
+    Prediction,
+    Target,
     allowed_actions,
     next_status,
-    normalize_targets,
     overlaps,
+    predict_from_snapshots,
+    target_ids,
+    targets_from_json,
+    targets_to_json,
 )
 from app.models.baseline import Baseline
 from app.models.change_request import ChangeRequest
@@ -57,13 +62,33 @@ class ChangeRequestView:
     allowed_actions: list[ChangeRequestAction]
 
 
+@dataclass(frozen=True)
+class ExcludedItem:
+    """基準の束に入っていない文書・段階(その要素は予測に出ない)と、束を作ったときの状態。"""
+
+    key: str
+    state: str
+
+
+@dataclass(frozen=True)
+class ImpactView:
+    """CR 1つの影響の予測。`saved`は判断の時点で保存したものか(偽なら今求めたもの)。"""
+
+    change_request: ChangeRequest
+    prediction: Prediction
+    saved: bool
+    excluded: list[ExcludedItem]
+
+
 class ChangeRequestService:
     """変更要求(CR)の作成・一覧・取得・更新と、状態の遷移(説明済み・合意 / 却下・取り下げ)・
     却下した CR の写し(docs/external_design.md 2.14節)。
 
     CR は合意済みの版(束)を基準にし、対象は基準の束の要件定義書にある要件 ID と、新しい要件を
     足す印。遷移の可否は app/change_requests/states.py の表で決め、遷移ごとに時系列へ1行残す。
-    同じ要件を対象にする進行中の CR は止めず、詳細に重なりとして示す。詳細設計モードだけ。"""
+    同じ要件を対象にする進行中の CR は止めず、詳細に重なりとして示す。影響の予測は基準の束の写しから
+    求め(app/change_requests/prediction.py)、判断(合意・却下)の時点で CR に保存する。
+    詳細設計モードだけ。"""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -82,7 +107,9 @@ class ChangeRequestService:
             )
         baseline = await self._base_baseline(project, payload.baseline_number)
         targets = checked_targets(
-            payload.target_requirement_ids, payload.adds_requirement, baseline
+            [Target(t.requirement_id, t.kind) for t in payload.targets],
+            payload.adds_requirement,
+            baseline,
         )
         change_request = await self._change_requests.create(
             project_id=project.id,
@@ -93,7 +120,7 @@ class ChangeRequestService:
             background_source=payload.background_source,
             background_date=payload.background_date,
             background_memo=payload.background_memo,
-            target_requirement_ids=targets,
+            targets=targets_to_json(targets),
             adds_requirement=payload.adds_requirement,
             status=INITIAL_STATUS,
             action="create",
@@ -126,13 +153,19 @@ class ChangeRequestService:
         change_request = await self._load(project, number)
         to_status = self._next(change_request, "edit")
         changes = payload.model_dump(exclude_unset=True)
-        if "target_requirement_ids" in changes or "adds_requirement" in changes:
-            targets = changes.get("target_requirement_ids")
+        if "targets" in changes or "adds_requirement" in changes:
             adds = changes.get("adds_requirement")
-            changes["target_requirement_ids"] = checked_targets(
-                change_request.target_requirement_ids if targets is None else targets,
-                change_request.adds_requirement if adds is None else adds,
-                await self._baseline_with_items(change_request),
+            targets = (
+                targets_from_json(change_request.targets)
+                if payload.targets is None
+                else [Target(t.requirement_id, t.kind) for t in payload.targets]
+            )
+            changes["targets"] = targets_to_json(
+                checked_targets(
+                    targets,
+                    change_request.adds_requirement if adds is None else adds,
+                    await self._baseline_with_items(change_request),
+                )
             )
         for field, value in changes.items():
             # 必須の項目に null を送ったときは、変えない(背景の日付だけは null で消せる)
@@ -170,10 +203,14 @@ class ChangeRequestService:
         *,
         actor_id: uuid.UUID | None,
     ) -> ChangeRequestView:
-        """説明済みの CR を合意か却下にし、合意の記録(相手・日時・メモ・理由・記録した人)を残す。"""
+        """説明済みの CR を合意か却下にし、合意の記録(相手・日時・メモ・理由・記録した人)と、
+        その時点の影響の予測を残す。"""
         change_request = await self._load(project, number)
         action = DECISION_ACTIONS[payload.decision]
         to_status = self._next(change_request, action)
+        # 判断のときに示した影響の範囲を残す(後でたどり方の規則を直しても変わらないように)
+        baseline = await self._baseline_with_items(change_request)
+        change_request.predicted_impact = predict_for(change_request, baseline).to_dict()
         change_request.decision_counterpart = payload.counterpart
         change_request.decided_at = payload.decided_at
         change_request.decision_memo = payload.memo
@@ -230,7 +267,7 @@ class ChangeRequestService:
             background_source=source.background_source,
             background_date=source.background_date,
             background_memo=source.background_memo,
-            target_requirement_ids=list(source.target_requirement_ids),
+            targets=list(source.targets),
             adds_requirement=source.adds_requirement,
             status=INITIAL_STATUS,
             action="copy",
@@ -253,6 +290,27 @@ class ChangeRequestService:
             number=copied.number,
         )
         return await self._view(copied)
+
+    async def impact(self, project: Project, number: int) -> ImpactView:
+        """CR の影響の予測。判断の後は保存したもの、判断の前(と取り下げ)は基準の束から求める。"""
+        change_request = await self._load(project, number)
+        baseline = await self._baseline_with_items(change_request)
+        saved = change_request.predicted_impact
+        prediction = (
+            Prediction.from_dict(saved)
+            if saved is not None
+            else predict_for(change_request, baseline)
+        )
+        return ImpactView(
+            change_request=change_request,
+            prediction=prediction,
+            saved=saved is not None,
+            excluded=[
+                ExcludedItem(key=item.key, state=item.state)
+                for item in baseline.items
+                if not item.included
+            ],
+        )
 
     async def _base_baseline(self, project: Project, number: int | None) -> Baseline:
         if number is not None:
@@ -291,9 +349,9 @@ class ChangeRequestService:
                 change_request.project_id, ACTIVE_STATUSES
             )
             overlapping = overlaps(
-                change_request.target_requirement_ids,
+                target_ids(targets_from_json(change_request.targets)),
                 (
-                    (other.number, other.target_requirement_ids)
+                    (other.number, target_ids(targets_from_json(other.targets)))
                     for other in others
                     if other.id != change_request.id
                 ),
@@ -313,6 +371,16 @@ class ChangeRequestService:
         )
 
 
+def predict_for(change_request: ChangeRequest, baseline: Baseline) -> Prediction:
+    """CR の対象から、基準の束(写し付き)の要素で影響を予測する。"""
+    snapshots = {item.key: item.model for item in baseline.items if item.included}
+    return predict_from_snapshots(
+        snapshots,
+        targets_from_json(change_request.targets),
+        adds_requirement=change_request.adds_requirement,
+    )
+
+
 def baseline_requirement_ids(baseline: Baseline) -> list[str]:
     """束の要件定義書の写しにある要件 ID(行の順)。写しが無い・model が無ければ空。"""
     item = next((i for i in baseline.items if i.key == REQUIREMENTS_KEY), None)
@@ -322,13 +390,13 @@ def baseline_requirement_ids(baseline: Baseline) -> list[str]:
 
 
 def checked_targets(
-    requirement_ids: Iterable[str], adds_requirement: bool, baseline: Baseline
-) -> list[str]:
-    """対象の要件 ID を整え(空白・重複を除く)、基準の束の要件定義書にあるかを確かめる。無い ID が
-    あるか、対象が空で新しい要件を足す印も無ければ ChangeRequestTargetUnknownError。"""
-    targets = normalize_targets(requirement_ids)
+    targets: Sequence[Target], adds_requirement: bool, baseline: Baseline
+) -> list[Target]:
+    """対象(整えたもの。スキーマが空白・重複を除く)の要件 ID が、基準の束の要件定義書にあるかを
+    確かめる。無い ID があるか、対象が空で新しい要件を足す印も無ければ
+    ChangeRequestTargetUnknownError。"""
     known = set(baseline_requirement_ids(baseline))
-    unknown = [req_id for req_id in targets if req_id not in known]
+    unknown = [req_id for req_id in target_ids(targets) if req_id not in known]
     if unknown:
         raise ChangeRequestTargetUnknownError(
             f"基準の合意済みの版(B-{baseline.number})の要件定義書に無い要件です: "
@@ -338,4 +406,4 @@ def checked_targets(
         raise ChangeRequestTargetUnknownError(
             "対象の要件を選ぶか、新しい要件を足す CR にしてください。"
         )
-    return targets
+    return list(targets)

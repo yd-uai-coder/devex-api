@@ -82,7 +82,7 @@ async def test_create_keeps_fields_and_first_event(db_session: AsyncSession) -> 
         1,
         background_date=date(2026, 10, 18),
         background_memo="定例",
-        target_requirement_ids=["FR-005"],
+        targets=[{"requirement_id": "FR-005", "kind": "delete"}],
         adds_requirement=True,
         created_by=project.user_id,
     )
@@ -92,7 +92,10 @@ async def test_create_keeps_fields_and_first_event(db_session: AsyncSession) -> 
     loaded = await repository.get_by_number(project_id=project.id, number=1)
     assert loaded is not None and loaded.id == created.id
     assert (loaded.background_date, loaded.background_memo) == (date(2026, 10, 18), "定例")
-    assert (loaded.target_requirement_ids, loaded.adds_requirement) == (["FR-005"], True)
+    assert (loaded.targets, loaded.adds_requirement) == (
+        [{"requirement_id": "FR-005", "kind": "delete"}],
+        True,
+    )
     assert loaded.baseline.number == 1
     assert loaded.decided_at is None
     event: ChangeRequestEvent = loaded.events[0]

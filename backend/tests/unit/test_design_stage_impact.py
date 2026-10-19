@@ -33,6 +33,7 @@ from app.api.routes.design_stages import (
     list_design_stages,
     review_impact_marks,
 )
+from app.detailed_design import ER_SNAPSHOT_KEY
 from app.detailed_design.impact import Mark, StageImpact, blocking_marks
 from app.models.design_stage import DesignStage
 from app.models.project import Project
@@ -40,7 +41,7 @@ from app.repositories.design_stage import DesignStageRepository
 from app.repositories.generated_document import GeneratedDocumentRepository
 from app.repositories.uml_diagram import UmlDiagramRepository
 from app.schemas.design_stage import ImpactReview
-from app.services.design_stage_service import ER_SNAPSHOT_KEY, DesignStageService
+from app.services.design_stage_service import DesignStageService
 from app.services.doc_generator_service import DocGeneratorService
 from app.services.errors import DesignStageUnreviewedImpactError
 

@@ -20,6 +20,7 @@ from app.detailed_design.data_flow import (
 from app.detailed_design.data_model import (
     CRUD_OPS,
     DATA_MODEL_STAGE,
+    ER_SNAPSHOT_KEY,
     ER_SUBJECT,
     CrudCell,
     CrudDraft,
@@ -179,6 +180,7 @@ __all__ = [
     "CRUD_OPS",
     "DATA_FLOW_STAGE",
     "DATA_MODEL_STAGE",
+    "ER_SNAPSHOT_KEY",
     "ER_SUBJECT",
     "FINDING_LEVELS",
     "LOGIC_STAGE",
