@@ -1,7 +1,7 @@
 """実装手順書の Markdown を組み立てる(純粋関数)。
 
 docs/external_design.md 2.8節「出力」。作成方針
-(appendix/devex_implementation_procedure_guideline.md)5・9・12・17章の形で、次の3つを作る。
+(appendix/concept-history.md 5節。元の作成方針の5・9・12・17章)の形で、次の3つを作る。
 
 - `to_index_markdown`: `implementation_procedure/index.md`(実装概要・実装前提・単位の一覧・
   要件との対応・未定義の一覧・完了条件)。段階8が承認済みでなければ「未承認」とだけ書く(詳細設計書の章と同じ)。

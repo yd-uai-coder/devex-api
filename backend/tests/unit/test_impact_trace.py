@@ -6,7 +6,7 @@ SUT: impact_of / regeneration_targets / EDGE_REASON(app/detailed_design/impact/t
 スタブ不要 ── どれも純粋関数(副作用なし)で、DB や LLM を呼ばないため。要素は fixture の model から
 `build_elements`で作る(導出そのものは test_impact_elements.py が確かめる)。
 
-見本(appendix/change-impact-sample/)の例1〜3 と同じ形の変更を、予約の2処理の設計で確かめる。
+代表的な3つの形の変更を、予約の2処理の設計で確かめる。
 """
 
 from tests.fixtures.change_impact import ROUTE, SERVICE, impact_documents, impact_stages
