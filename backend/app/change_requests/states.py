@@ -1,0 +1,106 @@
+"""変更要求(CR)の状態と遷移の表(純粋関数。docs/external_design.md 2.14節)。
+
+状態: 下書き → 説明済み → 合意 / 却下 → 反映済み → 検証済み。合意の前(下書き・説明済み)なら
+取り下げ。説明済みで中身を直すと下書きに戻る(説明した中身と変わるため)。却下は終わりの状態で、
+出し直すときは写して新しい CR(下書き)を作る(元の CR は却下と理由のまま残す)。
+反映(apply)・検証(verify)の操作は表にだけ持ち、API は反映・再検証の Phase で足す。
+"""
+
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from typing import Literal, get_args
+
+ChangeRequestStatus = Literal[
+    "draft", "explained", "agreed", "rejected", "applied", "verified", "withdrawn"
+]
+ChangeRequestAction = Literal[
+    "create", "copy", "copied", "edit", "explain", "agree", "reject", "withdraw", "apply", "verify"
+]
+BackgroundSource = Literal["meeting", "email", "document", "other"]
+
+STATUSES: tuple[ChangeRequestStatus, ...] = get_args(ChangeRequestStatus)
+BACKGROUND_SOURCES: tuple[BackgroundSource, ...] = get_args(BackgroundSource)
+
+STATUS_LABEL: dict[ChangeRequestStatus, str] = {
+    "draft": "下書き",
+    "explained": "説明済み",
+    "agreed": "合意",
+    "rejected": "却下",
+    "applied": "反映済み",
+    "verified": "検証済み",
+    "withdrawn": "取り下げ",
+}
+BACKGROUND_SOURCE_LABEL: dict[BackgroundSource, str] = {
+    "meeting": "打ち合わせ",
+    "email": "メール",
+    "document": "資料",
+    "other": "その他",
+}
+
+# 新しく作った CR の状態(作成・写しとも)
+INITIAL_STATUS: ChangeRequestStatus = "draft"
+
+# 操作 → {元の状態: 後の状態}。表に無い組は不正な遷移
+TRANSITIONS: dict[ChangeRequestAction, dict[ChangeRequestStatus, ChangeRequestStatus]] = {
+    "edit": {"draft": "draft", "explained": "draft"},
+    "explain": {"draft": "explained"},
+    "agree": {"explained": "agreed"},
+    "reject": {"explained": "rejected"},
+    "withdraw": {"draft": "withdrawn", "explained": "withdrawn"},
+    "apply": {"agreed": "applied"},
+    "verify": {"applied": "verified"},
+}
+
+# 写して新しい下書きを作れる状態
+COPYABLE_STATUSES: frozenset[ChangeRequestStatus] = frozenset({"rejected"})
+# 進行中(重なりを示す対象)。終わった CR(却下・検証済み・取り下げ)は数えない
+ACTIVE_STATUSES: frozenset[ChangeRequestStatus] = frozenset(
+    {"draft", "explained", "agreed", "applied"}
+)
+# 判断(合意・却下)の操作
+DECISION_ACTIONS: dict[str, ChangeRequestAction] = {"agreed": "agree", "rejected": "reject"}
+
+
+def next_status(current: str, action: ChangeRequestAction) -> ChangeRequestStatus | None:
+    """`current`の CR に`action`をした後の状態。許されない遷移なら None。"""
+    return TRANSITIONS.get(action, {}).get(current)  # type: ignore[call-overload]
+
+
+def allowed_actions(current: str) -> list[ChangeRequestAction]:
+    """`current`の CR にできる操作(表の順。写しを含む)。画面のボタンの出し分けに使う。"""
+    actions: list[ChangeRequestAction] = [
+        action for action, table in TRANSITIONS.items() if current in table
+    ]
+    if current in COPYABLE_STATUSES:
+        actions.append("copy")
+    return actions
+
+
+@dataclass(frozen=True)
+class Overlap:
+    """同じ要件を対象にする、ほかの進行中の CR(番号)と、重なった要件 ID(対象の順)。"""
+
+    number: int
+    requirement_ids: list[str]
+
+
+def overlaps(
+    targets: Sequence[str], others: Iterable[tuple[int, Sequence[str]]]
+) -> list[Overlap]:
+    """`targets`と重なる、ほかの CR(番号, 対象)。重なりの無い CR は入れない(渡した順)。"""
+    found = []
+    for number, other_targets in others:
+        shared = [req_id for req_id in targets if req_id in set(other_targets)]
+        if shared:
+            found.append(Overlap(number=number, requirement_ids=shared))
+    return found
+
+
+def normalize_targets(requirement_ids: Iterable[str]) -> list[str]:
+    """対象の要件 ID の前後の空白を除き、重複を除く(最初に出た順)。空の ID は捨てる。"""
+    seen: dict[str, None] = {}
+    for req_id in requirement_ids:
+        value = req_id.strip()
+        if value:
+            seen.setdefault(value, None)
+    return list(seen)

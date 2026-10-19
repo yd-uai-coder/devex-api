@@ -514,3 +514,30 @@ class BaselineNotFoundError(NotFoundError):
     """指定した番号の合意済みの版が、そのプロジェクトに無い場合に送出する。"""
 
     code: ClassVar[str | None] = "RESOURCE_NOT_FOUND"
+
+
+class ChangeRequestNotFoundError(NotFoundError):
+    """指定した番号の変更要求(CR)が、そのプロジェクトに無い場合に送出する。"""
+
+    code: ClassVar[str | None] = "RESOURCE_NOT_FOUND"
+
+
+class ChangeRequestBaselineMissingError(ConflictError):
+    """合意済みの版(束)が1つも無いプロジェクトで CR を作ろうとした場合に送出する。CR は合意済みの
+    版からの差分なので、基準の束が要る。"""
+
+    code: ClassVar[str | None] = "CR_BASELINE_MISSING"
+
+
+class ChangeRequestTargetUnknownError(UnprocessableEntityError):
+    """CR の対象の要件 ID が基準の束の要件定義書に無い場合と、対象が空で新しい要件を足す印も無い
+    場合に送出する。"""
+
+    code: ClassVar[str | None] = "CR_TARGET_UNKNOWN"
+
+
+class ChangeRequestInvalidTransitionError(ConflictError):
+    """CR の今の状態では許されない操作(合意の後の編集・却下の後の説明など)をしようとした場合に
+    送出する(画面が古いまま押したときに起きうる)。"""
+
+    code: ClassVar[str | None] = "CR_INVALID_TRANSITION"

@@ -1,4 +1,5 @@
 from app.models.baseline import Baseline, BaselineItem
+from app.models.change_request import ChangeRequest, ChangeRequestEvent
 from app.models.chat_history import ChatHistory
 from app.models.data_item import DataItem
 from app.models.design_stage import DesignStage
@@ -18,6 +19,8 @@ from app.models.user_model_setting import UserModelSetting
 __all__ = [
     "Baseline",
     "BaselineItem",
+    "ChangeRequest",
+    "ChangeRequestEvent",
     "ChatHistory",
     "DataItem",
     "DesignStage",

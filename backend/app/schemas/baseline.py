@@ -1,40 +1,17 @@
 import uuid
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Any
 
-from pydantic import (
-    AwareDatetime,
-    BaseModel,
-    ConfigDict,
-    Field,
-    StringConstraints,
-    computed_field,
-    field_validator,
-)
+from pydantic import AwareDatetime, BaseModel, ConfigDict, computed_field
 
-# 合意の記録の文の上限(相手は名前・会社名、メモは打ち合わせの要点)
-COUNTERPART_MAX = 200
-MEMO_MAX = 10000
-REASON_MAX = 2000
+from app.schemas.agreement import AgreementNotes
 
 
-class BaselineCreate(BaseModel):
-    """合意済みの版(束)を作るときの合意の記録。相手は空でもよい(空白だけは null にそろえる)。
-    合意の日時は記録する日時と別に、タイムゾーン付きで受け取る。理由は必須。"""
+class BaselineCreate(AgreementNotes):
+    """合意済みの版(束)を作るときの合意の記録。相手・メモ・理由は AgreementNotes。合意の日時は
+    記録する日時と別に、タイムゾーン付きで受け取る。"""
 
-    counterpart: str | None = Field(default=None, max_length=COUNTERPART_MAX)
     agreed_at: AwareDatetime
-    memo: str = Field(default="", max_length=MEMO_MAX)
-    reason: Annotated[
-        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=REASON_MAX)
-    ]
-
-    @field_validator("counterpart")
-    @classmethod
-    def _blank_to_none(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return value.strip() or None
 
 
 class BaselineItemSummaryRead(BaseModel):

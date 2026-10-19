@@ -11,6 +11,7 @@ from app.core.database import Base, PortableJSON
 # 通常の実行時には False -> importされない（循環import回避のため）
 if TYPE_CHECKING:
     from app.models.baseline import Baseline
+    from app.models.change_request import ChangeRequest
     from app.models.chat_history import ChatHistory
     from app.models.data_item import DataItem
     from app.models.design_stage import DesignStage
@@ -101,4 +102,7 @@ class Project(Base):
     )
     baselines: Mapped[list["Baseline"]] = relationship(
         back_populates="project", cascade="all, delete-orphan", order_by="Baseline.number"
+    )
+    change_requests: Mapped[list["ChangeRequest"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan", order_by="ChangeRequest.number"
     )

@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.routes.auth import router as auth_router
 from app.api.routes.baselines import router as baselines_router
+from app.api.routes.change_requests import router as change_requests_router
 from app.api.routes.design_stages import router as design_stages_router
 from app.api.routes.llm import router as llm_router
 from app.api.routes.projects import router as projects_router
@@ -20,5 +21,6 @@ api_router.include_router(uml_router)
 api_router.include_router(design_stages_router)
 api_router.include_router(reviews_router)
 api_router.include_router(baselines_router)
+api_router.include_router(change_requests_router)
 api_router.include_router(llm_router)
 
