@@ -59,6 +59,8 @@ class GeneratedDocumentRead(BaseModel):
     is_current: bool
     # 生成したモデル名(この列を足す前の版は None)
     generated_model: str | None = None
+    # 反映した変更要求の番号(CR を渡した再生成で作った版だけ。ほかは None)。ルートが入れる
+    change_request_number: int | None = None
     # 要件定義書で model を持つ版だけ(ほかは None)。ルートが requirements_summary で入れる
     requirements: RequirementsSummaryRead | None = None
     # 外部設計書で model を持つ版だけ(ほかは None)。ルートが external_design_summary で入れる

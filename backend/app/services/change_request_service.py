@@ -75,7 +75,11 @@ from app.schemas.change_request import (
     DocumentChecksUpdate,
     change_request_label,
 )
-from app.services.baseline_service import BaselineService
+from app.services.baseline_service import (
+    BaselineService,
+    baseline_requirement_rows,
+    require_detailed,
+)
 from app.services.errors import (
     ChangeRequestBaselineMissingError,
     ChangeRequestInvalidTransitionError,
@@ -86,7 +90,6 @@ from app.services.errors import (
     ChangeRequestReviewNotLinkableError,
     ChangeRequestSummaryNotFoundError,
     ChangeRequestTargetUnknownError,
-    DesignStagesNotAvailableError,
     ReviewRunNotFoundError,
 )
 from app.services.llm_resolver import LlmResolver, ResolvedLlm, injected_llm
@@ -94,8 +97,6 @@ from app.services.llm_retry import invoke_with_retry
 
 logger = structlog.get_logger(__name__)
 
-# 対象の要件を読む、束の写しの key
-REQUIREMENTS_KEY = "requirements"
 # 反映した後の状態(予測と実際の印を比べられる)
 APPLIED_STATUSES = frozenset({"applied", "verified"})
 
@@ -218,11 +219,7 @@ class ChangeRequestService:
     ) -> ChangeRequestView:
         """CR を下書きで作る。基準の束は番号の束(省けば最新の束)。束が1つも無ければ
         ChangeRequestBaselineMissingError、番号の束が無ければ BaselineNotFoundError。"""
-        if project.mode != "detailed":
-            raise DesignStagesNotAvailableError(
-                f"Change requests are not available for project {project.id} "
-                f"(mode={project.mode})"
-            )
+        require_detailed(project, "Change requests")
         baseline = await self._base_baseline(project, payload.baseline_number)
         targets = checked_targets(
             [Target(t.requirement_id, t.kind, t.proposed_text) for t in payload.targets],
@@ -251,7 +248,8 @@ class ChangeRequestService:
         return await self._view(change_request)
 
     async def list_for_project(self, project: Project) -> list[ChangeRequest]:
-        """プロジェクトの CR を新しい順に返す。"""
+        """プロジェクトの CR を新しい順に返す(詳細設計モードだけ)。"""
+        require_detailed(project, "Change requests")
         return await self._change_requests.list_for_project(project.id)
 
     async def get(self, project: Project, number: int) -> ChangeRequestView:
@@ -785,10 +783,10 @@ class ChangeRequestService:
     async def _base_baseline(self, project: Project, number: int | None) -> Baseline:
         if number is not None:
             return await BaselineService(self._session).get(project, number)
-        latest = await self._baselines.list_for_project(project.id)
-        if not latest:
+        latest = await self._baselines.latest(project.id)
+        if latest is None:
             raise ChangeRequestBaselineMissingError(f"No baseline in project {project.id}")
-        return latest[0]
+        return latest
 
     async def _baseline_with_items(self, change_request: ChangeRequest) -> Baseline:
         """CR の基準の束を、写し付きで読む(CR と一緒に読んだ束は写しを読んでいないため)。"""
@@ -797,6 +795,8 @@ class ChangeRequestService:
         return baseline
 
     async def _load(self, project: Project, number: int) -> ChangeRequest:
+        # CR ごとの操作と読み出し(予測・比較・検証・説明書・たどる記録)はみなここを通る
+        require_detailed(project, "Change requests")
         change_request = await self._change_requests.get_by_number(
             project_id=project.id, number=number
         )
@@ -891,10 +891,7 @@ def facts_of(change_request: ChangeRequest, baseline_number: int) -> ChangeReque
 
 def baseline_requirement_ids(baseline: Baseline) -> list[str]:
     """束の要件定義書の写しにある要件 ID(行の順)。写しが無い・model が無ければ空。"""
-    item = next((i for i in baseline.items if i.key == REQUIREMENTS_KEY), None)
-    if item is None or not item.model:
-        return []
-    return [str(row["id"]) for row in item.model.get("rows", []) if row.get("id")]
+    return [str(row["id"]) for row in baseline_requirement_rows(baseline)]
 
 
 def checked_targets(

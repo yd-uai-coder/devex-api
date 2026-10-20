@@ -156,6 +156,13 @@ class ChangeRequestRepository(CRUDRepository[ChangeRequest]):
         )
         return list((await self._session.execute(stmt)).scalars().all())
 
+    async def numbers_by_id(self, ids: Collection[uuid.UUID]) -> dict[uuid.UUID, int]:
+        """CR の id → 番号。文書の版の応答に、反映した CR の番号を出すため(時系列は読まない)。"""
+        if not ids:
+            return {}
+        stmt = select(ChangeRequest.id, ChangeRequest.number).where(ChangeRequest.id.in_(ids))
+        return {row.id: row.number for row in (await self._session.execute(stmt)).all()}
+
     async def find_derived(self, change_request_id: uuid.UUID) -> list[ChangeRequest]:
         """この CR を写して作った CR(番号の順)。"""
         return await self.list_all(

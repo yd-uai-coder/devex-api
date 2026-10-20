@@ -2,7 +2,8 @@
 
 SUT: ChangeRequestService(create / list_for_project / get / update / explain / decide /
      withdraw / copy_rejected / impact / explanation / generate_summary / edit_summary /
-     confirm_summary)と ExplanationView(summary_state・output)、純粋関数 baseline_requirement_ids /
+     confirm_summary。簡易モードは作成・読み出しとも require_detailed で断る)と
+     ExplanationView(summary_state・output)、純粋関数 baseline_requirement_ids /
      checked_targets / predict_for / facts_of、
      スキーマ ChangeRequestCreate・ChangeRequestUpdate・ChangeRequestDecision・
      ChangeRequestWithdraw・ChangeRequestRead・ChangeRequestSummaryRead、共有の AgreementNotes
@@ -158,6 +159,13 @@ async def test_create_conditions(db_session: AsyncSession) -> None:
     project.mode = "simple"
     with pytest.raises(DesignStagesNotAvailableError):
         await service.create(project, _create(), created_by=None)
+    # 読み出しと CR ごとの操作も詳細設計モードだけ
+    with pytest.raises(DesignStagesNotAvailableError):
+        await service.list_for_project(project)
+    with pytest.raises(DesignStagesNotAvailableError):
+        await service.get(project, view.change_request.number)
+    with pytest.raises(DesignStagesNotAvailableError):
+        await service.explanation(project, view.change_request.number)
 
 
 async def test_base_baseline_defaults_to_latest(db_session: AsyncSession) -> None:

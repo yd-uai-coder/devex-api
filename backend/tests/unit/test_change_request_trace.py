@@ -5,7 +5,8 @@ SUT: 純粋関数 trace_entries と ACTION_LABEL(app/change_requests/trace.py)�
      BaselineService.create の`change_request_numbers`(app/services/baseline_service.py)、
      スキーマ BaselineCreate・ChangeRequestTraceRead・TraceEntryRead、
      ChangeRequestNotIncludableError、
-     ルート get_change_request_trace(app/api/routes/change_requests.py)・
+     ルート get_change_request_trace・list_change_requests(一覧の入れた束。
+     app/api/routes/change_requests.py)・
      create_baseline(app/api/routes/baselines.py)、モデルの列 included_baseline_id
 ドライバ: 各テスト関数
 スタブ: 純粋関数のテストはスタブ不要 ── 対象が純粋(副作用なし)で外部依存を呼ばないため。
@@ -26,7 +27,7 @@ from tests.fixtures.change_requests import (
 )
 
 from app.api.routes.baselines import create_baseline
-from app.api.routes.change_requests import get_change_request_trace
+from app.api.routes.change_requests import get_change_request_trace, list_change_requests
 from app.change_requests import (
     ACTION_LABEL,
     ChangeRequestAction,
@@ -143,6 +144,9 @@ async def test_verified_change_request_goes_into_new_baseline_and_trace(
     trace = await get_change_request_trace(1, db_session, project)
     assert isinstance(trace, ChangeRequestTraceRead)
     assert (trace.label, trace.baseline_number, trace.included_baseline_number) == ("CR-1", 1, 2)
+    # 一覧も入れた束を持つ(束の作成で、まだ入れていない検証済みの CR を選ぶ)
+    listed = await list_change_requests(db_session, project)
+    assert [(c.label, c.included_baseline_number) for c in listed] == [("CR-1", 2)]
     actions = [e.action for e in trace.entries]
     assert actions == ["create", "explain", "agree", "apply", "link_review", "verify", "baseline"]
     apply = trace.entries[3]

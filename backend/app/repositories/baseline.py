@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import defer, selectinload
 
 from app.models.baseline import Baseline, BaselineItem
 from app.repositories.base import CRUDRepository
@@ -81,8 +81,30 @@ class BaselineRepository(CRUDRepository[Baseline]):
         return baseline
 
     async def list_for_project(self, project_id: uuid.UUID) -> list[Baseline]:
-        """プロジェクトの束を新しい順に返す(写し付き)。"""
-        return await self.list_all(order_by=Baseline.number.desc(), project_id=project_id)
+        """プロジェクトの束を新しい順に返す。写しは付けるが、中身(`content`・`model`)は読まない
+        (一覧の応答は写しの中身を返さず、束が増えるほど重くなるため)。"""
+        stmt = (
+            select(Baseline)
+            .where(Baseline.project_id == project_id)
+            .order_by(Baseline.number.desc())
+            .options(
+                selectinload(Baseline.items).options(
+                    defer(BaselineItem.content), defer(BaselineItem.model)
+                )
+            )
+        )
+        return list((await self._session.execute(stmt)).scalars().all())
+
+    async def latest(self, project_id: uuid.UUID) -> Baseline | None:
+        """プロジェクトの最新の束(写し付き。中身も読む)。無ければ None。"""
+        stmt = (
+            select(Baseline)
+            .where(Baseline.project_id == project_id)
+            .order_by(Baseline.number.desc())
+            .limit(1)
+            .options(*self._default_options())
+        )
+        return (await self._session.execute(stmt)).scalars().first()
 
     async def get_by_number(self, *, project_id: uuid.UUID, number: int) -> Baseline | None:
         """プロジェクトの番号の束(写し付き)。無ければ None。"""

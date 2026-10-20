@@ -111,6 +111,9 @@ async def test_routes_run_the_whole_flow(db_session: AsyncSession) -> None:
     assert (copied.label, copied.derived_from_number) == ("CR-2", 1)
     assert withdrawn.status_label == "取り下げ"
     assert [c.label for c in listed] == ["CR-2", "CR-1"]
+    # 一覧も合意の記録を持つ(束の作成で、合意の記録の初期値にする)
+    assert listed[1].decision is not None and listed[1].decision.reason == "範囲の外"
+    assert listed[0].decision is None and listed[0].included_baseline_number is None
     assert fetched.derived_numbers == [2]
     assert [e.action for e in fetched.events] == ["create", "explain", "reject", "copied"]
 

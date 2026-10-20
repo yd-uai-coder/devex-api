@@ -308,9 +308,16 @@ async def download_generated_document(
 async def list_document_versions(
     doc_type: DocType, session: SessionDep, current_project: CurrentProjectDep
 ) -> list[GeneratedDocumentRead]:
-    """指定doc_typeの保管済み全バージョン(最大3件)を新しい順に取得する。"""
-    versions = await DocGeneratorService(session).list_versions(current_project.id, doc_type)
-    return [document_read(v) for v in versions]
+    """指定doc_typeの保管済み全バージョン(最大3件)を新しい順に取得する(反映した CR の番号付き)。"""
+    service = DocGeneratorService(session)
+    versions = await service.list_versions(current_project.id, doc_type)
+    numbers = await service.change_request_numbers(versions)
+    return [
+        document_read(
+            v, numbers.get(v.change_request_id) if v.change_request_id is not None else None
+        )
+        for v in versions
+    ]
 
 
 @router.post(

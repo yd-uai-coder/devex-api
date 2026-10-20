@@ -93,6 +93,7 @@ from app.models.chat_history import ChatHistory
 from app.models.generated_document import GeneratedDocument
 from app.models.project import Project
 from app.models.user import User
+from app.repositories.change_request import ChangeRequestRepository
 from app.repositories.chat_history import ChatHistoryRepository
 from app.repositories.generated_document import (
     DOC_TYPES_BY_MODE,
@@ -685,6 +686,13 @@ class DocGeneratorService:
         """指定doc_typeの保管済み全バージョン(最大3件)を新しい順に返す。"""
         return await self._documents.list_versions(project_id=project_id, doc_type=doc_type)
 
+    async def change_request_numbers(
+        self, documents: Sequence[GeneratedDocument]
+    ) -> dict[uuid.UUID, int]:
+        """版が反映した CR の id → 番号(版の履歴に「CR-N で反映」と出すため)。"""
+        ids = {d.change_request_id for d in documents if d.change_request_id is not None}
+        return await ChangeRequestRepository(self._session).numbers_by_id(ids)
+
     async def restore_version(
         self, project_id: uuid.UUID, doc_type: str, version: int
     ) -> GeneratedDocument:
@@ -1103,10 +1111,13 @@ def _issues_read(issues: list[DocumentIssue]) -> list[DocumentIssueRead]:
     ]
 
 
-def document_read(document: GeneratedDocument) -> GeneratedDocumentRead:
+def document_read(
+    document: GeneratedDocument, change_request_number: int | None = None
+) -> GeneratedDocumentRead:
     """文書の応答。要件定義書は出どころの件数・推測の要件・検証の指摘を、外部設計書・内部設計書・
-    実装計画書は行数と検証の指摘を付ける。"""
+    実装計画書は行数と検証の指摘を付ける。反映した CR の番号は、読んだ呼び手が渡す(版の履歴)。"""
     read = GeneratedDocumentRead.model_validate(document)
+    read.change_request_number = change_request_number
     read.requirements = requirements_summary(document)
     read.external_design = external_design_summary(document)
     read.internal_design = internal_design_summary(document)

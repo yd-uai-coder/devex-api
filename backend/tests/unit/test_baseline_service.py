@@ -1,8 +1,9 @@
 """合意済みの版(束)の作成・一覧・取得のテスト。
 
-SUT: BaselineService(create / list_for_project / get)と、写しを作る純粋関数
+SUT: BaselineService(create / list_for_project / get)・BaselineRepository(list_for_project /
+     latest)と、写しを作る純粋関数
      document_snapshots / stage_snapshots、ルート create_baseline / list_baselines /
-     get_baseline、BaselineCreate、DesignStageService.stage_rows
+     get_baseline / list_baseline_requirements、BaselineCreate、DesignStageService.stage_rows
 ドライバ: pytest のテスト関数(ルートは関数を直接呼ぶ)
 スタブ不要 ── LLM を呼ばず、永続化と状態の判定が検証対象のため、テスト用の SQLite のセッションと、
 段階1〜8 を承認済みにした fixture(`create_impact_project`)を使う
@@ -12,14 +13,20 @@ from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from tests.fixtures.change_impact import create_impact_project
 
-from app.api.routes.baselines import create_baseline, get_baseline, list_baselines
+from app.api.routes.baselines import (
+    create_baseline,
+    get_baseline,
+    list_baseline_requirements,
+    list_baselines,
+)
 from app.models.design_stage import DesignStage
 from app.models.project import Project
 from app.models.user import User
+from app.repositories.baseline import BaselineRepository
 from app.repositories.generated_document import GeneratedDocumentRepository
 from app.schemas.baseline import BaselineCreate
 from app.services.baseline_service import BaselineService
@@ -167,17 +174,48 @@ async def test_list_and_get_routes(db_session: AsyncSession) -> None:
 
     assert [b.label for b in listed] == ["B-2", "B-1"]
     assert not hasattr(listed[0].items[0], "content")
+    # 一覧は写しの中身を DB から読まない(束が増えても軽く保つ)
+    db_session.expunge_all()
+    rows = await BaselineRepository(db_session).list_for_project(project.id)
+    assert {"content", "model"} <= inspect(rows[0].items[0]).unloaded
+    latest = await BaselineRepository(db_session).latest(project.id)
+    assert latest is not None and latest.number == 2
+    assert latest.items[0].content is not None
     assert second.reason == "二回目"
     with pytest.raises(BaselineNotFoundError):
         await get_baseline(3, db_session, project)
 
 
+async def test_requirements_route_returns_snapshot_rows(db_session: AsyncSession) -> None:
+    project = await create_impact_project(db_session)
+    baseline = await BaselineService(db_session).create(project, _payload(), recorded_by=None)
+    snapshot = next(i for i in baseline.items if i.key == "requirements")
+    assert snapshot.model is not None
+    expected = [row["id"] for row in snapshot.model["rows"]]
+
+    rows = await list_baseline_requirements(1, db_session, project)
+
+    assert [row.id for row in rows] == expected
+    assert rows[0].text
+    assert not hasattr(rows[0], "points")
+    with pytest.raises(BaselineNotFoundError):
+        await list_baseline_requirements(2, db_session, project)
+
+
 async def test_simple_mode_is_rejected(db_session: AsyncSession) -> None:
     project = await create_impact_project(db_session)
+    await BaselineService(db_session).create(project, _payload(), recorded_by=None)
     project.mode = "simple"
 
     with pytest.raises(DesignStagesNotAvailableError):
         await BaselineService(db_session).create(project, _payload(), recorded_by=None)
+    # 読み出しも詳細設計モードだけ(画面はこの 409 で「詳細設計モードだけ」と知らせる)
+    with pytest.raises(DesignStagesNotAvailableError):
+        await list_baselines(db_session, project)
+    with pytest.raises(DesignStagesNotAvailableError):
+        await get_baseline(1, db_session, project)
+    with pytest.raises(DesignStagesNotAvailableError):
+        await list_baseline_requirements(1, db_session, project)
 
 
 async def test_generating_is_rejected(db_session: AsyncSession) -> None:

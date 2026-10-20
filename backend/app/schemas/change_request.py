@@ -243,7 +243,9 @@ class ChangeRequestOverlapRead(BaseModel):
 
 
 class ChangeRequestSummaryRead(BaseModel):
-    """CR 1つ(一覧用)。`label`は画面に出す名前(CR-1…)、`baseline_label`は基準の束(B-1…)。"""
+    """CR 1つ(一覧用)。`label`は画面に出す名前(CR-1…)、`baseline_label`は基準の束(B-1…)。
+    合意の記録と入れた束(検証済みの後)も持つ(束の作成で、入れる CR を選び、合意の記録の初期値に
+    するため)。"""
 
     number: int
     label: str
@@ -260,6 +262,8 @@ class ChangeRequestSummaryRead(BaseModel):
     created_by: uuid.UUID | None
     created_at: datetime
     updated_at: datetime
+    decision: ChangeRequestDecisionRead | None
+    included_baseline_number: int | None
 
     @classmethod
     def from_model(cls, change_request: "ChangeRequest") -> "ChangeRequestSummaryRead":
@@ -272,10 +276,8 @@ class ChangeRequestRead(ChangeRequestSummaryRead):
 
     content: str
     background_memo: str
-    decision: ChangeRequestDecisionRead | None
     events: list[ChangeRequestEventRead]
     reviews: list[LinkedReviewRead]
-    included_baseline_number: int | None
     overlapping: list[ChangeRequestOverlapRead]
     derived_from_number: int | None
     derived_numbers: list[int]
@@ -291,31 +293,16 @@ class ChangeRequestRead(ChangeRequestSummaryRead):
         derived_numbers: list[int],
         allowed_actions: list[ChangeRequestAction],
     ) -> "ChangeRequestRead":
-        decision = None
-        if change_request.decided_at is not None:
-            decision = ChangeRequestDecisionRead(
-                counterpart=change_request.decision_counterpart,
-                decided_at=change_request.decided_at,
-                memo=change_request.decision_memo or "",
-                reason=change_request.decision_reason or "",
-                recorded_by=change_request.decision_recorded_by,
-            )
         return cls.model_validate(
             {
                 **summary_fields(change_request),
                 "content": change_request.content,
                 "background_memo": change_request.background_memo,
-                "decision": decision,
                 "events": [
                     ChangeRequestEventRead.model_validate(event)
                     for event in change_request.events
                 ],
                 "reviews": [LinkedReviewRead.from_link(r) for r in change_request.reviews],
-                "included_baseline_number": (
-                    change_request.included_baseline.number
-                    if change_request.included_baseline is not None
-                    else None
-                ),
                 "overlapping": [
                     ChangeRequestOverlapRead(
                         number=o.number,
@@ -760,10 +747,20 @@ def change_request_label(number: int) -> str:
 
 
 def summary_fields(change_request: "ChangeRequest") -> dict[str, Any]:
-    """一覧と詳細に共通の項目(基準の束は読み込み済みであること)。"""
+    """一覧と詳細に共通の項目(基準の束・入れた束は読み込み済みであること)。"""
     status: ChangeRequestStatus = change_request.status  # type: ignore[assignment]
     source: BackgroundSource = change_request.background_source  # type: ignore[assignment]
     baseline_number = change_request.baseline.number
+    decision = None
+    if change_request.decided_at is not None:
+        decision = ChangeRequestDecisionRead(
+            counterpart=change_request.decision_counterpart,
+            decided_at=change_request.decided_at,
+            memo=change_request.decision_memo or "",
+            reason=change_request.decision_reason or "",
+            recorded_by=change_request.decision_recorded_by,
+        )
+    included = change_request.included_baseline
     return {
         "number": change_request.number,
         "label": change_request_label(change_request.number),
@@ -783,6 +780,8 @@ def summary_fields(change_request: "ChangeRequest") -> dict[str, Any]:
         "created_by": change_request.created_by,
         "created_at": change_request.created_at,
         "updated_at": change_request.updated_at,
+        "decision": decision,
+        "included_baseline_number": included.number if included is not None else None,
     }
 
 

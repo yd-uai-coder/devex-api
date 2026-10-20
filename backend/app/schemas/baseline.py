@@ -72,3 +72,13 @@ class BaselineRead(_BaselineRecordRead):
     """合意済みの版1つ(写しの中身付き)。"""
 
     items: list[BaselineItemRead]
+
+
+class BaselineRequirementRead(BaseModel):
+    """束の要件定義書の写しにある要件1行(CR の対象を選ぶ画面用。根拠の観点などは返さない)。"""
+
+    id: str
+    kind: str
+    priority: str | None = None
+    category: str = ""
+    text: str

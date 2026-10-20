@@ -16,9 +16,9 @@ from app.ai.llm.catalog import (
 )
 
 
-def test_catalog_has_four_models_per_provider() -> None:
-    for provider in Provider:
-        assert len([m for m in CATALOG if m.provider == provider]) == 4
+def test_catalog_models_per_provider() -> None:
+    counts = {p: len([m for m in CATALOG if m.provider == p]) for p in Provider}
+    assert counts == {Provider.GEMINI: 3, Provider.CLAUDE: 4}
     assert len({m.model_id for m in CATALOG}) == len(CATALOG)
     assert set(PROVIDER_LABELS) == set(Provider)
 
@@ -27,6 +27,8 @@ def test_find_model_requires_matching_provider() -> None:
     assert find_model(Provider.CLAUDE, "claude-haiku-5-5") is not None
     assert find_model(Provider.GEMINI, "claude-haiku-5-5") is None
     assert find_model(Provider.GEMINI, "gemini-2.5-flash") is None
+    # 終了の告知で外した(設定はマイグレーションで後継の 3.5 Flash-Lite へ移した)
+    assert find_model(Provider.GEMINI, "gemini-3.1-flash-lite") is None
 
 
 def test_provider_of() -> None:
