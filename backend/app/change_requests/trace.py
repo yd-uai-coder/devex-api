@@ -1,8 +1,9 @@
 """変更要求(CR)の、受付から検証までをたどる記録(純粋関数。docs/external_design.md 2.14節)。
 
 CR の時系列の行(状態の遷移・反映・レビューを結ぶ・検証・束に入れる)の`refs`を、指す先の今の
-状態で読み解く。文書の版は直近の数版しか残さないので、作った版が今も残っているかを示す。レビューは
-CR に結んだ回の要点(区切り・モデル・状態・指摘と採用の数)を付ける。
+状態で読み解く。文書の版は直近の数版しか残さないので、作った版が今も残っているかを示す(CR で反映した
+版は消さないが、それより前の記録もあるため)。レビューは CR に結んだ回の要点(区切り・モデル・状態・
+指摘と採用の数)を付ける。合意・却下の行のメモには、CR に残した合意の記録(相手・メモ・理由)を出す。
 """
 
 from collections.abc import Collection, Mapping, Sequence
@@ -39,6 +40,18 @@ class EventFacts:
     actor_id: Any
     note: str
     refs: Mapping[str, Any] | None
+
+
+@dataclass(frozen=True)
+class DecisionFacts:
+    """CR に残した合意の記録(相手・メモ・理由。無いものは None か空)。"""
+
+    counterpart: str | None
+    memo: str | None
+    reason: str | None
+
+
+DECISION_ACTIONS: frozenset[str] = frozenset({"agree", "reject"})
 
 
 @dataclass(frozen=True)
@@ -94,10 +107,25 @@ def trace_entries(
     events: Sequence[EventFacts],
     available_versions: Mapping[str, Collection[int]],
     reviews: Mapping[str, ReviewFacts],
+    decision: DecisionFacts | None = None,
 ) -> list[TraceEntry]:
     """時系列の行を、起きた順のたどる記録にする。`available_versions`は文書の種類 → 今ある版、
-    `reviews`は回の id → 要点(結んだ回)。形の正しくない`refs`は読まない(記録で詳細を壊さない)。"""
-    return [_entry(i, e, available_versions, reviews) for i, e in enumerate(events)]
+    `reviews`は回の id → 要点(結んだ回)、`decision`は合意の記録(合意・却下の行のメモに出す)。
+    形の正しくない`refs`は読まない(記録で詳細を壊さない)。"""
+    return [_entry(i, e, available_versions, reviews, decision) for i, e in enumerate(events)]
+
+
+def decision_note(note: str, decision: DecisionFacts) -> str:
+    """合意・却下の行のメモ。行のメモに、相手・メモ・理由(あるものだけ)を続ける。"""
+    parts = [note] if note else []
+    for label, value in (
+        ("相手", decision.counterpart),
+        ("メモ", decision.memo),
+        ("理由", decision.reason),
+    ):
+        if value:
+            parts.append(f"{label}: {value}")
+    return " / ".join(parts)
 
 
 def _entry(
@@ -105,8 +133,12 @@ def _entry(
     event: EventFacts,
     available_versions: Mapping[str, Collection[int]],
     reviews: Mapping[str, ReviewFacts],
+    decision: DecisionFacts | None,
 ) -> TraceEntry:
     refs = event.refs or {}
+    note = event.note
+    if decision is not None and event.action in DECISION_ACTIONS:
+        note = decision_note(note, decision)
     model = refs.get("model")
     run_ids = [refs["review_run_id"]] if "review_run_id" in refs else refs.get("review_run_ids")
     baseline = refs.get("baseline_number")
@@ -118,7 +150,7 @@ def _entry(
         to_status=event.to_status,
         occurred_at=event.occurred_at,
         actor_id=event.actor_id,
-        note=event.note,
+        note=note,
         model=model if isinstance(model, str) else None,
         documents=tuple(_documents(refs.get("documents"), available_versions)),
         stage=_stage(refs) if event.action == "apply" else None,

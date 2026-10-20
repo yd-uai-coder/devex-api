@@ -87,11 +87,13 @@ from app.change_requests.targets import (
 )
 from app.change_requests.trace import (
     ACTION_LABEL,
+    DecisionFacts,
     EventFacts,
     ReviewFacts,
     TraceDocument,
     TraceEntry,
     TraceStage,
+    decision_note,
     trace_entries,
 )
 from app.change_requests.verification import (
@@ -143,6 +145,7 @@ __all__ = [
     "Comparison",
     "ComparisonStatus",
     "DocumentItem",
+    "DecisionFacts",
     "EventFacts",
     "Explanation",
     "MarkConfirmation",
@@ -171,6 +174,7 @@ __all__ = [
     "build_explanation",
     "build_summary_messages",
     "check_summary",
+    "decision_note",
     "checked_documents",
     "clip_summary",
     "compare",

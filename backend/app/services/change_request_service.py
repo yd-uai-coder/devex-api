@@ -21,6 +21,7 @@ from app.change_requests import (
     ChangeRequestFacts,
     ChangeRequestStatus,
     Comparison,
+    DecisionFacts,
     EventFacts,
     Explanation,
     Overlap,
@@ -625,7 +626,12 @@ class ChangeRequestService:
             )
             for e in change_request.events
         ]
-        return TraceView(change_request, trace_entries(events, available, reviews))
+        decision = DecisionFacts(
+            change_request.decision_counterpart,
+            change_request.decision_memo,
+            change_request.decision_reason,
+        )
+        return TraceView(change_request, trace_entries(events, available, reviews, decision))
 
     async def reflectable(
         self, project: Project, number: int, *, stage: bool = False

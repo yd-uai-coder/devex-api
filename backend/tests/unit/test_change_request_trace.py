@@ -1,6 +1,6 @@
 """検証済みの変更要求(CR)を合意済みの版(束)に入れることと、受付から検証までをたどる記録のテスト。
 
-SUT: 純粋関数 trace_entries と ACTION_LABEL(app/change_requests/trace.py)、
+SUT: 純粋関数 trace_entries・decision_note と ACTION_LABEL(app/change_requests/trace.py)、
      ChangeRequestService.trace と review_facts(app/services/change_request_service.py)、
      BaselineService.create の`change_request_numbers`(app/services/baseline_service.py)、
      スキーマ BaselineCreate・ChangeRequestTraceRead・TraceEntryRead、
@@ -31,10 +31,12 @@ from app.api.routes.change_requests import get_change_request_trace, list_change
 from app.change_requests import (
     ACTION_LABEL,
     ChangeRequestAction,
+    DecisionFacts,
     EventFacts,
     ReviewFacts,
     TraceDocument,
     TraceStage,
+    decision_note,
     trace_entries,
 )
 from app.models.project import Project
@@ -90,6 +92,22 @@ def test_trace_entries_reads_refs() -> None:
     assert entries[4].reviews == (review,)  # 結んでいない(消えた)回は読まない
     assert entries[5].baseline_number == 2
     assert entries[5].action_label == "合意済みの版に入れた"
+
+
+def test_decision_rows_show_the_agreement_record() -> None:
+    # 合意・却下の行のメモに、CR に残した相手・メモ・理由を出す(内容のタブを開かなくても分かる)
+    decision = DecisionFacts("先方の山田さん", "定例で確認", "費用が収まる")
+    events = [_event("agree"), _event("reject"), _event("explain")]
+
+    entries = trace_entries(events, {}, {}, decision)
+
+    expected = "相手: 先方の山田さん / メモ: 定例で確認 / 理由: 費用が収まる"
+    assert [e.note for e in entries] == [expected, expected, ""]
+
+
+def test_decision_note_skips_missing_values_and_keeps_row_note() -> None:
+    assert decision_note("", DecisionFacts(None, "", "合意")) == "理由: 合意"
+    assert decision_note("行のメモ", DecisionFacts("相手", None, None)) == "行のメモ / 相手: 相手"
 
 
 def test_action_labels_cover_every_action() -> None:
@@ -149,6 +167,7 @@ async def test_verified_change_request_goes_into_new_baseline_and_trace(
     assert [(c.label, c.included_baseline_number) for c in listed] == [("CR-1", 2)]
     actions = [e.action for e in trace.entries]
     assert actions == ["create", "explain", "agree", "apply", "link_review", "verify", "baseline"]
+    assert trace.entries[2].note == "理由: 合意"  # 合意の記録(相手は無し)
     apply = trace.entries[3]
     assert [(d.doc_type, d.available) for d in apply.documents] == [
         ("requirements", True),
