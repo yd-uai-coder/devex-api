@@ -74,6 +74,15 @@ class BaselineRead(_BaselineRecordRead):
     items: list[BaselineItemRead]
 
 
+class BaselineOriginRead(BaseModel):
+    """束で、新しい要件の予測の起点に選べる要素1つ(CR の起点を選ぶ画面用)。`kind`は
+    requirement / screen / api。"""
+
+    key: str
+    kind: str
+    label: str
+
+
 class BaselineRequirementRead(BaseModel):
     """束の要件定義書の写しにある要件1行(CR の対象を選ぶ画面用。根拠の観点などは返さない)。"""
 

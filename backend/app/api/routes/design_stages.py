@@ -183,9 +183,10 @@ async def approve_design_stage(
 ) -> DesignStageRead:
     """段階を承認する(古い段階は、内容を変えずに承認し直せる)。他の段階・文書の変更から届いた
     見直しの印が未確認なら409(`DESIGN_STAGE_UNREVIEWED_IMPACT`)。設計レビューがオンなら、
-    承認の後に、採用した指摘が直ったかをバックグラウンドで判定する(シャドーモード)。"""
+    承認の後に、採用した指摘が直ったかをバックグラウンドで判定する(シャドーモード)。反映済みの CR で
+    作り直した後の最初の承認なら、付いた印を CR に結ぶ。"""
     approved = await DesignStageService(session).approve(
-        current_project, stage=stage, expected_version=payload.version
+        current_project, stage=stage, expected_version=payload.version, actor_id=current_user.id
     )
     if await LlmResolver(session).review_effective(current_user):
         background_tasks.add_task(run_fix_checks, current_project.id, current_user.id)

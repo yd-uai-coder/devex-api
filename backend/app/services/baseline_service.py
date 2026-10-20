@@ -5,7 +5,11 @@ from typing import Any
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.change_requests import INCLUDABLE_STATUSES
+from app.change_requests import (
+    INCLUDABLE_STATUSES,
+    PredictedOrigin,
+    origin_candidates_from_snapshots,
+)
 from app.change_requests.explanation import REQUIREMENTS_KEY
 from app.detailed_design import StageView, stage_key
 from app.models.baseline import Baseline
@@ -148,6 +152,17 @@ class BaselineService:
         """番号の束の要件定義書の写しにある要件の行(CR の対象を選ぶ画面用)。無ければ
         BaselineNotFoundError。"""
         return baseline_requirement_rows(await self.get(project, number))
+
+    async def origins(self, project: Project, number: int) -> list[PredictedOrigin]:
+        """番号の束で、新しい要件の予測の起点に選べる要素(要件・画面・API。CR の起点を選ぶ
+        画面用)。無ければ BaselineNotFoundError。"""
+        baseline = await self.get(project, number)
+        return origin_candidates_from_snapshots(baseline_snapshots(baseline))
+
+
+def baseline_snapshots(baseline: Baseline) -> dict[str, Any]:
+    """束の写しのうち入っているもの(key → model)。予測と起点の候補の入力。"""
+    return {item.key: item.model for item in baseline.items if item.included}
 
 
 def baseline_requirement_rows(baseline: Baseline) -> list[dict[str, Any]]:

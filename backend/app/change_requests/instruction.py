@@ -15,10 +15,12 @@ CR_INSTRUCTION_HEAD = (
     "必要のある行だけを書き直し、変更要求に関係しない行は変えない(unchanged にする)。"
 )
 ADDS_REQUIREMENT_LINE = "- 新しい要件を足す(内容は上の「内容」のとおり。ID は既存の要件と重ねない)"
+ORIGIN_LINE = "  - 新しい要件が関わる既存の要素(予測の起点): {origins}"
 
 
 def build_cr_instruction(facts: ChangeRequestFacts) -> str:
-    """指示の文(頭の1文 + タイトル・内容 + 対象1件1行 + 新しい要件を足すなら1行)。"""
+    """指示の文(頭の1文 + タイトル・内容 + 対象1件1行 + 新しい要件を足すなら1行と、起点があれば
+    その1行)。"""
     lines = [
         CR_INSTRUCTION_HEAD.format(number=facts.number),
         f"タイトル: {facts.title}",
@@ -38,6 +40,8 @@ def build_cr_instruction(facts: ChangeRequestFacts) -> str:
             lines.append(f"- {target.requirement_id}({kind}): 上の「内容」のとおりに変える")
     if facts.adds_requirement:
         lines.append(ADDS_REQUIREMENT_LINE)
+        if facts.origin_labels:
+            lines.append(ORIGIN_LINE.format(origins="・".join(facts.origin_labels)))
     return "\n".join(lines)
 
 

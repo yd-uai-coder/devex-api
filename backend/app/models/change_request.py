@@ -34,7 +34,9 @@ class ChangeRequest(Base):
     app/change_requests/states.py の状態。背景は出どころの種類(`background_source`)・日付
     (日の粒度。任意)・メモ。対象は基準の束の要件定義書にある要件 ID と変更の種類の組の一覧
     (`targets`。`[{requirement_id, kind}]`、app/change_requests/targets.py)と、新しい要件を足すかの
-    印(`adds_requirement`)。`derived_from_id`は、却下した CR を写して作ったときの元の CR。
+    印(`adds_requirement`)。`origins`は新しい要件を足す CR の予測の起点(`[{key, label}]`。基準の
+    束の要件・画面・API。NULL は起点なし)。`derived_from_id`は、却下した CR を写して作ったときの
+    元の CR。
     `decision_*`は合意・却下の記録(合意済みの版と同じ項目。判断の前は NULL)。
     `predicted_impact`は判断の時点の影響の予測(app/change_requests/prediction.py の保存の形。
     判断の前と取り下げは NULL で、求めるたびに基準の束から作る)。`applied_impact`は反映(CR を
@@ -64,6 +66,7 @@ class ChangeRequest(Base):
     background_memo: Mapped[str] = mapped_column(Text, nullable=False, default="")
     targets: Mapped[list[dict]] = mapped_column(PortableJSON, nullable=False, default=list)
     adds_requirement: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    origins: Mapped[list[dict] | None] = mapped_column(PortableJSON, nullable=True)
     baseline_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("baselines.id", ondelete="CASCADE"), nullable=False
     )

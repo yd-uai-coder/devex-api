@@ -7,7 +7,9 @@ SUT: POST・GET /api/v1/projects/{id}/change-requests、GET・PATCH .../{number}
      POST .../explanation/summary/confirm、CR を渡した POST /api/v1/projects/{id}/generate と
      GET .../{number}/comparison、GET .../{number}/verification・PUT .../document-checks・
      POST .../verify、GET .../review-candidates・POST .../reviews、束の作成の
-     change_request_numbers、GET .../{number}/trace(ルート → ChangeRequestService・
+     change_request_numbers、GET .../{number}/trace、新しい要件の予測の起点
+     (GET /api/v1/projects/{id}/baselines/{number}/origins と CR の`origins`)
+     (ルート → ChangeRequestService・
      DocGeneratorService・BaselineService → ChangeRequestRepository・
      ChangeRequestSummaryRepository・GeneratedDocumentRepository・ReviewRunRepository)と、
      プロジェクトの削除での CR・時系列・要約・結んだレビューの CASCADE
@@ -214,6 +216,39 @@ async def test_errors_overlap_and_ownership(client: AsyncClient) -> None:
     assert second.json()["overlapping"] == [
         {"number": 1, "label": "CR-1", "requirement_ids": ["FR-001"]}
     ]
+
+
+async def test_new_requirement_origins(client: AsyncClient) -> None:
+    """起点の候補を束から読み、新しい要件を足す CR に起点を持たせると、JSONB の列に表示名つきで
+    残り、予測は起点から求まる(判断の後は保存した予測にも残る)。"""
+    headers, user_id = await _login("cr-origins@example.com")
+    project_id = await _project(user_id)
+    await client.post(f"/api/v1/projects/{project_id}/baselines", json=_BASELINE, headers=headers)
+    base = f"/api/v1/projects/{project_id}/change-requests"
+
+    candidates = await client.get(
+        f"/api/v1/projects/{project_id}/baselines/1/origins", headers=headers
+    )
+    assert candidates.status_code == 200
+    screen = next(c for c in candidates.json() if c["key"] == "screen:SCR-001")
+    assert (screen["kind"], screen["label"]) == ("screen", "SCR-001 予約画面")
+    payload = {**_CR, "targets": [], "adds_requirement": True, "origins": ["screen:SCR-001"]}
+    unknown = await client.post(
+        base, json={**payload, "origins": ["screen:SCR-404"]}, headers=headers
+    )
+    assert (unknown.status_code, unknown.json()["code"]) == (422, "CR_TARGET_UNKNOWN")
+
+    created = await client.post(base, json=payload, headers=headers)
+    assert created.status_code == 201
+    assert created.json()["origins"] == [{"key": "screen:SCR-001", "label": "SCR-001 予約画面"}]
+    await client.post(f"{base}/1/explain", headers=headers)
+    agreed = {**_DECISION, "decision": "agreed"}
+    await client.post(f"{base}/1/decision", json=agreed, headers=headers)
+    impact = (await client.get(f"{base}/1/impact", headers=headers)).json()
+    assert (impact["saved"], impact["unpredicted_new_requirement"]) == (True, False)
+    assert impact["origins"] == [{"key": "screen:SCR-001", "label": "SCR-001 予約画面"}]
+    item = next(i for i in impact["items"] if i["key"] == "screen:SCR-001")
+    assert item["origin_keys"] == ["screen:SCR-001"]
 
 
 async def _request_ids(project_id: uuid.UUID) -> list[uuid.UUID]:

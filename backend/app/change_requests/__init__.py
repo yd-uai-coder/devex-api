@@ -1,6 +1,6 @@
 """変更要求(CR)の状態・遷移・重なりの判定と、対象(要件 ID・変更の種類・変更後の案)の扱い・
 影響の予測・説明書の組み立てと、任意の要約の入力・照合・状態・反映の指示・予測と実際の比較・
-検証の条件・レビューを結ぶ条件・たどる記録(純粋関数)。
+検証の条件・CR で作り直した段階の承認・レビューを結ぶ条件・たどる記録(純粋関数)。
 
 docs/internal_design.md 3.3節「11. 合意と変更の一巡」。
 """
@@ -16,6 +16,7 @@ from app.change_requests.comparison import (
     PredictedOnlyReason,
     applied_marks_from_json,
     compare,
+    merge_applied_marks,
 )
 from app.change_requests.explanation import (
     AffectedUnits,
@@ -30,10 +31,16 @@ from app.change_requests.explanation import (
 )
 from app.change_requests.instruction import build_cr_instruction, join_instructions
 from app.change_requests.prediction import (
+    ORIGIN_KINDS,
+    ORIGIN_REASON,
     PredictedItem,
+    PredictedOrigin,
     PredictedTarget,
     Prediction,
     baseline_models,
+    origin_candidates,
+    origin_candidates_from_snapshots,
+    origin_name,
     predict,
     predict_from_snapshots,
     predicted_document_keys,
@@ -45,6 +52,12 @@ from app.change_requests.reviews import (
     aware,
     first_applied_at,
     review_link_problem,
+)
+from app.change_requests.stage_approvals import (
+    APPROVE_STAGE_ACTION,
+    StageFacts,
+    pending_stages,
+    stage_apply_versions,
 )
 from app.change_requests.states import (
     ACTIVE_STATUSES,
@@ -116,6 +129,7 @@ from app.change_requests.verification import (
 __all__ = [
     "ACTION_LABEL",
     "ACTIVE_STATUSES",
+    "APPROVE_STAGE_ACTION",
     "COMPARISON_STATUSES",
     "COMPARISON_STATUS_LABEL",
     "PREDICTED_ONLY_REASON_LABEL",
@@ -131,6 +145,8 @@ __all__ = [
     "LINKABLE_RUN_STATUS",
     "MARK_CONFIRMATIONS",
     "MARK_CONFIRMATION_LABEL",
+    "ORIGIN_KINDS",
+    "ORIGIN_REASON",
     "STAGE_REFLECTABLE_STATUSES",
     "STATUSES",
     "STATUS_LABEL",
@@ -157,9 +173,11 @@ __all__ = [
     "Overlap",
     "PredictedOnlyReason",
     "PredictedItem",
+    "PredictedOrigin",
     "PredictedTarget",
     "Prediction",
     "ReviewFacts",
+    "StageFacts",
     "SummaryCheck",
     "SummaryState",
     "SummaryStatus",
@@ -187,15 +205,21 @@ __all__ = [
     "first_applied_at",
     "join_instructions",
     "mark_states",
+    "merge_applied_marks",
     "next_status",
+    "origin_candidates",
+    "origin_candidates_from_snapshots",
+    "origin_name",
     "normalize_targets",
     "overlaps",
+    "pending_stages",
     "predict",
     "predict_from_snapshots",
     "predicted_document_keys",
     "requirement_texts",
     "rewritable_keys",
     "review_link_problem",
+    "stage_apply_versions",
     "summary_state",
     "target_ids",
     "targets_from_json",

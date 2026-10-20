@@ -53,6 +53,8 @@ TITLE_MAX = 200
 CONTENT_MAX = 20000
 # 1つの CR の対象の要件の数の上限
 TARGETS_MAX = 100
+# 新しい要件の予測の起点の数の上限
+ORIGINS_MAX = 20
 # 対象1つの変更後の案の上限(要件1行の文)
 PROPOSED_TEXT_MAX = 2000
 
@@ -90,10 +92,14 @@ def _normalized(value: list[ChangeRequestTargetIn] | None) -> list[ChangeRequest
     ]
 
 
+OriginsIn = Annotated[list[str], Field(max_length=ORIGINS_MAX)]
+
+
 class ChangeRequestCreate(BaseModel):
     """CR を作るときの本文。背景は出どころの種類・日付(日の粒度。任意)・メモ。対象は基準の束の
     要件定義書にある要件 ID と変更の種類の組と、新しい要件を足すかの印(どちらか一方は要る。
-    サービスで確かめる)。
+    サービスで確かめる)。`origins`は新しい要件の予測の起点(基準の束の要件・画面・API の要素の
+    キー。新しい要件を足す CR だけが持てる。サービスで確かめる)。
     基準の束の番号を省くと、最新の束を基準にする。"""
 
     title: Title
@@ -103,6 +109,7 @@ class ChangeRequestCreate(BaseModel):
     background_memo: str = Field(default="", max_length=MEMO_MAX)
     targets: TargetsIn = Field(default_factory=list)
     adds_requirement: bool = False
+    origins: OriginsIn = Field(default_factory=list)
     baseline_number: int | None = Field(default=None, ge=1)
 
     @field_validator("targets")
@@ -122,6 +129,7 @@ class ChangeRequestUpdate(BaseModel):
     background_memo: str | None = Field(default=None, max_length=MEMO_MAX)
     targets: TargetsIn | None = None
     adds_requirement: bool | None = None
+    origins: OriginsIn | None = None
 
     @field_validator("targets")
     @classmethod
@@ -234,6 +242,13 @@ class ChangeRequestTargetDetailRead(ChangeRequestTargetRead):
         )
 
 
+class ChangeRequestOriginRead(BaseModel):
+    """新しい要件の予測の起点1つ(要素のキーと表示名)。"""
+
+    key: str
+    label: str
+
+
 class ChangeRequestOverlapRead(BaseModel):
     """同じ要件を対象にする、ほかの進行中の CR。"""
 
@@ -257,6 +272,7 @@ class ChangeRequestSummaryRead(BaseModel):
     background_date: date | None
     targets: list[ChangeRequestTargetDetailRead]
     adds_requirement: bool
+    origins: list[ChangeRequestOriginRead]
     baseline_number: int
     baseline_label: str
     created_by: uuid.UUID | None
@@ -325,7 +341,8 @@ class PredictedTargetRead(ChangeRequestTargetRead):
 
 
 class PredictedItemRead(BaseModel):
-    """見直しが要る要素1つ。`path`は起点の要件からの道、`requirement_ids`は届いた対象の要件。"""
+    """見直しが要る要素1つ。`path`は起点(対象の要件か新しい要件の起点)からの道、
+    `requirement_ids`は届いた対象の要件、`origin_keys`は届いた新しい要件の起点。"""
 
     key: str
     kind: str
@@ -334,6 +351,7 @@ class PredictedItemRead(BaseModel):
     path: list[str]
     reason: str
     requirement_ids: list[str]
+    origin_keys: list[str] = []
 
 
 class ComparedItemRead(BaseModel):
@@ -421,7 +439,8 @@ class DocumentItemRead(BaseModel):
 
 class ChangeRequestVerificationRead(BaseModel):
     """CR の検証の確かめ。`can_verify`は今、検証済みにできるか(反映済みで、印と文書の側に未確認が
-    無い)。`open_marks`・`open_documents`は未確認の数。"""
+    無く、CR で作り直した段階がすべて承認済み)。`open_marks`・`open_documents`は未確認の数、
+    `pending_stages`は CR で作り直した後にまだ承認していない段階。"""
 
     number: int
     label: str
@@ -431,6 +450,7 @@ class ChangeRequestVerificationRead(BaseModel):
     open_documents: int
     marks: list[MarkStateRead]
     documents: list[DocumentItemRead]
+    pending_stages: list[int] = []
 
     @classmethod
     def build(
@@ -458,6 +478,7 @@ class ChangeRequestVerificationRead(BaseModel):
                 DocumentItemRead(key=d.key, label=d.label, reason=d.reason, reviewed=d.reviewed)
                 for d in verification.documents
             ],
+            pending_stages=list(verification.pending_stages),
         )
 
 
@@ -595,7 +616,8 @@ class ExcludedItemRead(BaseModel):
 
 class ChangeRequestImpactRead(BaseModel):
     """CR の影響の予測。`saved`は判断の時点で保存したものか(偽なら今、基準の束から求めたもの)。
-    `unpredicted_new_requirement`は、新しい要件を足す分が予測に入っていないこと(起点が無いため)。"""
+    `unpredicted_new_requirement`は、新しい要件を足す分が予測に入っていないこと(起点が無いため)。
+    `origins`は予測に使った新しい要件の起点。"""
 
     number: int
     label: str
@@ -606,6 +628,7 @@ class ChangeRequestImpactRead(BaseModel):
     items: list[PredictedItemRead]
     unpredicted_new_requirement: bool
     excluded: list[ExcludedItemRead]
+    origins: list[ChangeRequestOriginRead] = []
 
     @classmethod
     def build(
@@ -641,11 +664,13 @@ class ChangeRequestImpactRead(BaseModel):
                     path=list(i.path),
                     reason=i.reason,
                     requirement_ids=list(i.requirement_ids),
+                    origin_keys=list(i.origin_keys),
                 )
                 for i in prediction.items
             ],
             unpredicted_new_requirement=prediction.unpredicted_new_requirement,
             excluded=excluded,
+            origins=[ChangeRequestOriginRead(key=o.key, label=o.label) for o in prediction.origins],
         )
 
 
@@ -778,6 +803,10 @@ def summary_fields(change_request: "ChangeRequest") -> dict[str, Any]:
             for t in targets_from_json(change_request.targets)
         ],
         "adds_requirement": change_request.adds_requirement,
+        "origins": [
+            ChangeRequestOriginRead(key=str(o["key"]), label=str(o.get("label", "")))
+            for o in change_request.origins or []
+        ],
         "baseline_number": baseline_number,
         "baseline_label": f"B-{baseline_number}",
         "created_by": change_request.created_by,

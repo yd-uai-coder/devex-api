@@ -1,6 +1,6 @@
 import uuid
-from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -27,6 +27,7 @@ from app.change_requests import (
     Overlap,
     Prediction,
     ReviewFacts,
+    StageFacts,
     SummaryState,
     Target,
     TraceEntry,
@@ -41,10 +42,14 @@ from app.change_requests import (
     compare,
     document_items,
     first_applied_at,
+    merge_applied_marks,
     next_status,
+    origin_candidates_from_snapshots,
     overlaps,
+    pending_stages,
     predict_from_snapshots,
     review_link_problem,
+    stage_apply_versions,
     summary_state,
     target_ids,
     targets_from_json,
@@ -76,7 +81,11 @@ from app.schemas.change_request import (
     DocumentChecksUpdate,
     change_request_label,
 )
-from app.services.baseline_service import BaselineService, baseline_requirement_rows
+from app.services.baseline_service import (
+    BaselineService,
+    baseline_requirement_rows,
+    baseline_snapshots,
+)
 from app.services.detailed_mode import require_detailed
 from app.services.errors import (
     ChangeRequestBaselineMissingError,
@@ -224,6 +233,7 @@ class ChangeRequestService:
             payload.adds_requirement,
             baseline,
         )
+        origins = checked_origins(payload.origins, payload.adds_requirement, baseline)
         change_request = await self._change_requests.create(
             project_id=project.id,
             number=await self._change_requests.next_number(project.id),
@@ -235,6 +245,7 @@ class ChangeRequestService:
             background_memo=payload.background_memo,
             targets=targets_to_json(targets),
             adds_requirement=payload.adds_requirement,
+            origins=origins,
             status=INITIAL_STATUS,
             action="create",
             created_by=created_by,
@@ -263,14 +274,16 @@ class ChangeRequestService:
         actor_id: uuid.UUID | None,
     ) -> ChangeRequestView:
         """CR の中身を直す(送った項目だけ)。下書き・説明済みだけで、説明済みで直すと下書きに
-        戻る。対象を変えたら、基準の束の要件定義書で確かめ直す。値の変わった項目があれば
+        戻る。対象を変えたら、基準の束の要件定義書で確かめ直す。予測の起点は、送ったときと新しい
+        要件を足す印を変えたときに、基準の束で確かめ直す。値の変わった項目があれば
         (下書きのままでも)時系列に「直した」の1行を足し、`refs`に直した項目の名前を残す
         (前後の値は持たない)。値の変わらない保存は行を足さない。"""
         change_request = await self._load(project, number)
         to_status = self._next(change_request, "edit")
         changes = payload.model_dump(exclude_unset=True)
+        adds = changes.get("adds_requirement")
+        adds_requirement = change_request.adds_requirement if adds is None else adds
         if "targets" in changes or "adds_requirement" in changes:
-            adds = changes.get("adds_requirement")
             targets = (
                 targets_from_json(change_request.targets)
                 if payload.targets is None
@@ -278,15 +291,21 @@ class ChangeRequestService:
             )
             changes["targets"] = targets_to_json(
                 checked_targets(
-                    targets,
-                    change_request.adds_requirement if adds is None else adds,
-                    await self._baseline_with_items(change_request),
+                    targets, adds_requirement, await self._baseline_with_items(change_request)
                 )
+            )
+        if payload.origins is None:
+            changes.pop("origins", None)  # null は変えない(下の確かめ直しでだけ入る)
+        if payload.origins is not None or "adds_requirement" in changes:
+            keys = origin_keys_of(change_request) if payload.origins is None else payload.origins
+            changes["origins"] = checked_origins(
+                keys, adds_requirement, await self._baseline_with_items(change_request)
             )
         edited: list[str] = []
         for field, value in changes.items():
-            # 必須の項目に null を送ったときは、変えない(背景の日付だけは null で消せる)
-            if value is None and field != "background_date":
+            # 必須の項目に null を送ったときは、変えない(背景の日付は null で消せる。起点は
+            # 確かめた結果が None = 起点なし)
+            if value is None and field not in ("background_date", "origins"):
                 continue
             if getattr(change_request, field) != value:
                 edited.append(field)
@@ -392,6 +411,7 @@ class ChangeRequestService:
             background_memo=source.background_memo,
             targets=list(source.targets),
             adds_requirement=source.adds_requirement,
+            origins=list(source.origins) if source.origins else None,
             status=INITIAL_STATUS,
             action="copy",
             derived_from_id=source.id,
@@ -537,9 +557,11 @@ class ChangeRequestService:
         to_status = self._next(change_request, "verify")
         _, verification, _ = await self._verification(project, change_request)
         if not verification.complete:
+            pending = "".join(f"・段階{n}の承認" for n in verification.pending_stages)
             raise ChangeRequestNotVerifiableError(
                 f"{change_request_label(number)} に未確認が残っています(印 "
-                f"{verification.open_marks} 件・文書の側 {verification.open_documents} 件)。"
+                f"{verification.open_marks} 件・文書の側 {verification.open_documents} 件"
+                f"{pending})。"
             )
         await self._change_requests.add_event(
             change_request,
@@ -732,12 +754,21 @@ class ChangeRequestService:
         _, view = await self._impact_with_baseline(change_request)
         rows = await DesignStageRepository(self._session).list_for_project(project.id)
         current = {row.stage: StageImpact.from_dict(row.impact) for row in rows}
+        pending = pending_stages(
+            change_request.id,
+            stage_apply_versions((e.action, e.refs) for e in change_request.events),
+            [
+                StageFacts(row.stage, row.generation_change_request_id, row.approved_version)
+                for row in rows
+            ],
+        )
         verification = verification_of(
             applied_marks_from_json(change_request.applied_impact),
             current,
             change_request.number,
             view.prediction,
             change_request.document_checks or [],
+            pending,
         )
         marked = {row.stage for row in rows if row.approved_version is not None}
         return view, verification, marked
@@ -853,16 +884,6 @@ class ChangeRequestService:
         )
 
 
-def merge_applied_marks(
-    existing: Sequence[Mapping[str, Any]] | None, marks: Sequence[Mark]
-) -> list[dict[str, Any]]:
-    """反映で付いた印の写しに、新しい印を重ねる(同じ要素は新しい印にする。置き場とキーの順)。"""
-    by_key = {str(item["key"]): dict(item) for item in existing or []}
-    for mark in marks:
-        by_key[mark.key] = asdict(mark)
-    return sorted(by_key.values(), key=lambda m: (int(m["stage"]), str(m["key"])))
-
-
 def review_facts(run: ReviewRun) -> ReviewFacts:
     """結んだレビューの回の要点(指摘は読み込み済みであること)。"""
     return ReviewFacts(
@@ -877,11 +898,11 @@ def review_facts(run: ReviewRun) -> ReviewFacts:
 
 def predict_for(change_request: ChangeRequest, baseline: Baseline) -> Prediction:
     """CR の対象から、基準の束(写し付き)の要素で影響を予測する。"""
-    snapshots = {item.key: item.model for item in baseline.items if item.included}
     return predict_from_snapshots(
-        snapshots,
+        baseline_snapshots(baseline),
         targets_from_json(change_request.targets),
         adds_requirement=change_request.adds_requirement,
+        origins=origin_keys_of(change_request),
     )
 
 
@@ -898,12 +919,43 @@ def facts_of(change_request: ChangeRequest, baseline_number: int) -> ChangeReque
         targets=tuple(targets_from_json(change_request.targets)),
         adds_requirement=change_request.adds_requirement,
         baseline_number=baseline_number,
+        origin_labels=tuple(str(o.get("label", "")) for o in change_request.origins or []),
     )
 
 
 def baseline_requirement_ids(baseline: Baseline) -> list[str]:
     """束の要件定義書の写しにある要件 ID(行の順)。写しが無い・model が無ければ空。"""
     return [str(row["id"]) for row in baseline_requirement_rows(baseline)]
+
+
+def origin_keys_of(change_request: ChangeRequest) -> list[str]:
+    """CR に保存した新しい要件の予測の起点のキー(選んだ順)。"""
+    return [str(o["key"]) for o in change_request.origins or []]
+
+
+def checked_origins(
+    keys: Sequence[str], adds_requirement: bool, baseline: Baseline
+) -> list[dict[str, str]] | None:
+    """新しい要件の予測の起点(要素のキー)を確かめ、保存の形(`[{key, label}]`。選んだ順・重なりを
+    除く)にする。起点が無ければ None。新しい要件を足さない CR の起点と、基準の束の要件・画面・API に
+    無いキーは ChangeRequestTargetUnknownError。表示名は束の写しから写す(束は凍結されている)。"""
+    wanted = list(dict.fromkeys(key.strip() for key in keys if key.strip()))
+    if not wanted:
+        return None
+    if not adds_requirement:
+        raise ChangeRequestTargetUnknownError(
+            "予測の起点は、新しい要件を足す CR だけが持てます。"
+        )
+    candidates = {
+        c.key: c for c in origin_candidates_from_snapshots(baseline_snapshots(baseline))
+    }
+    unknown = [key for key in wanted if key not in candidates]
+    if unknown:
+        raise ChangeRequestTargetUnknownError(
+            f"基準の合意済みの版(B-{baseline.number})に無い要件・画面・API です: "
+            f"{', '.join(unknown)}"
+        )
+    return [{"key": key, "label": candidates[key].label} for key in wanted]
 
 
 def checked_targets(

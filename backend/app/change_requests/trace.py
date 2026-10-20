@@ -1,9 +1,10 @@
 """変更要求(CR)の、受付から検証までをたどる記録(純粋関数。docs/external_design.md 2.14節)。
 
-CR の時系列の行(状態の遷移・直した・反映・レビューを結ぶ・検証・束に入れる)の`refs`を、指す先の今の
-状態で読み解く。文書の版は直近の数版しか残さないので、作った版が今も残っているかを示す(CR で反映した
-版は消さないが、それより前の記録もあるため)。レビューは CR に結んだ回の要点(区切り・モデル・状態・
-指摘と採用の数)を付ける。合意・却下の行のメモには、CR に残した合意の記録(相手・メモ・理由)を出す。
+CR の時系列の行(状態の遷移・直した・反映・段階の承認で印を結ぶ・レビューを結ぶ・検証・
+束に入れる)の`refs`を、指す先の今の状態で読み解く。文書の版は直近の数版しか残さないので、
+作った版が今も残っているかを示す(CR で反映した版は消さないが、それより前の記録もあるため)。
+レビューは CR に結んだ回の要点(区切り・モデル・状態・指摘と採用の数)を付ける。合意・却下の行の
+メモには、CR に残した合意の記録(相手・メモ・理由)を出す。
 """
 
 from collections.abc import Collection, Mapping, Sequence
@@ -26,6 +27,7 @@ ACTION_LABEL: dict[str, str] = {
     "verify": "検証",
     "link_review": "レビューを結んだ",
     "baseline": "合意済みの版に入れた",
+    "approve_stage": "段階の承認で印を結んだ",
 }
 
 
@@ -38,6 +40,7 @@ EDITED_FIELD_LABEL: dict[str, str] = {
     "background_memo": "背景のメモ",
     "targets": "対象",
     "adds_requirement": "新しい要件を足す",
+    "origins": "予測の起点",
 }
 
 
@@ -64,6 +67,8 @@ class DecisionFacts:
 
 
 DECISION_ACTIONS: frozenset[str] = frozenset({"agree", "reject"})
+# 段階と版(`refs.stage`・`refs.version`)を持つ行(段階の反映・CR で作り直した段階の承認)
+STAGE_ACTIONS: frozenset[str] = frozenset({"apply", "approve_stage"})
 
 
 @dataclass(frozen=True)
@@ -166,7 +171,7 @@ def _entry(
         note=note,
         model=model if isinstance(model, str) else None,
         documents=tuple(_documents(refs.get("documents"), available_versions)),
-        stage=_stage(refs) if event.action == "apply" else None,
+        stage=_stage(refs) if event.action in STAGE_ACTIONS else None,
         reviews=tuple(
             reviews[str(run_id)] for run_id in run_ids or [] if str(run_id) in reviews
         ),
