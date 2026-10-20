@@ -3,8 +3,9 @@
 SUT: rows_text / changed_rows / changed_rows_text / requirement_rows / external_design_rows /
      internal_design_rows / revision_rule(app/documents/revision.py)、
      4文書の build_model の変更なし(`unchanged`)と実装計画書の`prev_key`、要件定義書の写した行の
-     出どころ(`cap_source`のかけ直し)、4文書の`REVISION`(節の分け方)、
-     4文書の下書きのメッセージ(前の版の行・上流の変わった行)、
+     出どころ(`cap_source`のかけ直しと、合意済みの行はかけ直さないこと)、4文書の`REVISION`(節の
+     分け方)、
+     4文書の下書きのメッセージ(前の版の行・上流の変わった行・要件定義書の合意済みの印)、
      upstream_changes(app/services/doc_generator_service.py)
 ドライバ: 各テスト関数
 スタブ不要 ── どれも純粋関数(副作用なし)で、DB や LLM を呼ばないため。下書きは偽の LLM の見本の
@@ -31,9 +32,9 @@ from app.documents.internal_design.drafting import SYSTEM_PROMPT as INTERNAL_PRO
 from app.documents.internal_design.drafting import build_internal_design_messages
 from app.documents.internal_design.drafting import to_draft as to_internal_design_draft
 from app.documents.requirements import build_model as build_requirements_model
+from app.documents.requirements.drafting import AGREED_MARK, build_requirements_messages
 from app.documents.requirements.drafting import REVISION as REQUIREMENTS_REVISION
 from app.documents.requirements.drafting import SYSTEM_PROMPT as REQUIREMENTS_PROMPT
-from app.documents.requirements.drafting import build_requirements_messages
 from app.documents.requirements.drafting import to_draft as to_requirements_draft
 from app.documents.revision import (
     NONE_TEXT,
@@ -174,6 +175,44 @@ def test_unchanged_requirement_source_is_capped_again_by_current_points():
 
     third = build_requirements_model(to_requirements_draft(again), second, decided, None)
     assert third.rows[0].source == "adopted"
+
+
+def test_unchanged_agreed_requirement_keeps_its_source():
+    """合意済みの行(`agreed_ids`)は、写すときに出どころの上限をかけ直さない(「採用にする」で
+    採用にした行が、観点が未決のままでも次の再生成で推測に戻らない)。"""
+    output = requirements_output(text="備品を予約できる")
+    output.requirements[0].points = ["core"]
+    first = build_requirements_model(to_requirements_draft(output), None, {}, None)
+    adopted = first.model_copy(
+        update={"rows": [first.rows[0].model_copy(update={"source": "adopted"}), first.rows[1]]}
+    )
+    again = requirements_output(prev_id="FR-001", text="言い換え")
+    again.requirements[0].unchanged = True
+    open_states = initial_states()
+    draft = to_requirements_draft(again)
+
+    assert build_requirements_model(draft, adopted, open_states, None).rows[0].source == "assumed"
+    kept = build_requirements_model(
+        draft, adopted, open_states, None, agreed_ids=frozenset({"FR-001"})
+    )
+    assert kept.rows[0] == adopted.rows[0]
+
+
+def test_requirements_prompt_marks_agreed_rows_and_users():
+    """前の版の要件のうち、合意済みの行に印を付け、合意済みの利用者を足す。規則にも1文ある。"""
+    previous = _requirements()
+    users = previous.users
+    (_, plain) = build_requirements_messages("会話", {}, None, previous)
+    (_, marked) = build_requirements_messages(
+        "会話", {}, None, previous, agreed_ids=frozenset({"FR-001"}), agreed_users=users
+    )
+    assert f"FR-001|{previous.rows[0].text}\n" in str(plain.content)
+    assert f"FR-001|{previous.rows[0].text}|{AGREED_MARK}\n" in str(marked.content)
+    assert f"NFR-001|{previous.rows[1].text}\n" in str(marked.content)
+    assert f"利用者と使う場面({AGREED_MARK}): {users[0].user}: {users[0].scene}" in str(
+        marked.content
+    )
+    assert f"「{AGREED_MARK}」の印が付いた行は" in REQUIREMENTS_PROMPT
 
 
 # --- 外部設計書 ---

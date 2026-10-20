@@ -61,6 +61,10 @@ class GeneratedDocument(Base):
     change_request_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("change_requests.id", ondelete="SET NULL"), nullable=True
     )
+    # 再生成の後に合意の形へ戻した要素(`[{key, reason}]`。app/agreements/protection.py の
+    # Restored の形)。合意を守った版だけ(戻すものが無ければ空の一覧)。簡易ドキュメントモード・
+    # 要件定義書でない版・この列を足す前の版は NULL
+    protection: Mapped[list[dict] | None] = mapped_column(PortableJSON, nullable=True)
     # is_current：復元用
     is_current: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=false()

@@ -6,7 +6,7 @@ AI には会話と観点の表から、要件の中身・出どころ・根拠�
 答えさせ、前の版の行をそのまま使う(`app.documents.revision`)。
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Literal
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
@@ -17,7 +17,7 @@ from app.documents.requirements.assemble import (
     RequirementsDraft,
     UserSceneDraft,
 )
-from app.documents.requirements.model import RequirementsModel
+from app.documents.requirements.model import RequirementsModel, UserScene
 from app.documents.revision import (
     NONE_TEXT,
     UNCHANGED_DESCRIPTION,
@@ -112,8 +112,14 @@ SYSTEM_PROMPT = (
     "ログイン)の機能要件を Must で書く。方法を利用者が言っていなければ、その要件は assumed\n"
     "- 要件ID は書かない(システムが振る)。【前の版の要件】に同じ要件があれば、"
     "その ID を prev_id に書く。中身を言い直しただけの要件も同じ要件として扱う\n"
+    "- 【前の版の要件】で「合意済み」の印が付いた行は、クライアントと合意した行。【修正指示】が"
+    "その ID を指していなければ、unchanged を true にして必ず残す(書き直さない・落とさない。"
+    "同じ中身を別の要件として書かない)。合意済みの利用者と使う場面も、そのまま書く\n"
     f"{revision_rule(REVISION)}"
 )
+
+# 前の版の要件のうち、合意済みの行に付ける印
+AGREED_MARK = "合意済み"
 
 
 def points_table(states: Mapping[str, PointState], scale: Scale | None) -> str:
@@ -127,11 +133,23 @@ def points_table(states: Mapping[str, PointState], scale: Scale | None) -> str:
     return "\n".join(lines)
 
 
-def previous_rows_text(previous: RequirementsModel | None) -> str:
-    """前の版の要件(ID の引き継ぎに使う)。無ければ「なし」。"""
+def previous_rows_text(
+    previous: RequirementsModel | None,
+    agreed_ids: frozenset[str] = frozenset(),
+    agreed_users: Sequence[UserScene] = (),
+) -> str:
+    """前の版の要件(ID の引き継ぎに使う)。無ければ「なし」。合意済みの行(`agreed_ids`)には
+    印を付け、合意済みの利用者と使う場面(`agreed_users`)を末尾に足す。"""
     if previous is None or not previous.rows:
         return NONE_TEXT
-    return "\n".join(f"{r.id}|{r.text}" for r in previous.rows)
+    lines = [
+        f"{r.id}|{r.text}|{AGREED_MARK}" if r.id in agreed_ids else f"{r.id}|{r.text}"
+        for r in previous.rows
+    ]
+    if agreed_users:
+        users = " / ".join(f"{u.user}: {u.scene}" for u in agreed_users)
+        lines.append(f"利用者と使う場面({AGREED_MARK}): {users}")
+    return "\n".join(lines)
 
 
 def build_requirements_messages(
@@ -140,10 +158,16 @@ def build_requirements_messages(
     scale: Scale | None,
     previous: RequirementsModel | None,
     instruction: str = "",
+    *,
+    agreed_ids: frozenset[str] = frozenset(),
+    agreed_users: Sequence[UserScene] = (),
 ) -> list[BaseMessage]:
+    """要件定義書の生成のメッセージ。`agreed_ids`・`agreed_users`は守る合意(前の版の要件に印を
+    付ける。app/agreements/protection.py が生成の後に戻すもの)。"""
+    previous_text = previous_rows_text(previous, agreed_ids, agreed_users)
     human = (
         f"## 観点の表\nkey|名前|状態|決めたこと\n{points_table(states, scale)}\n\n"
-        f"## 前の版の要件\n{previous_rows_text(previous)}\n\n"
+        f"## 前の版の要件\n{previous_text}\n\n"
         f"## 修正指示\n{instruction_text(instruction)}\n\n"
         f"## 会話\n{transcript}"
     )

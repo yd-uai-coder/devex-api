@@ -8,9 +8,15 @@ from pydantic import BaseModel, ValidationError
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agreements import (
+    USERS_KEY,
+    agreed_requirement_ids,
+    protect_requirements,
+    requirement_key,
+)
 from app.ai.llm.catalog import Purpose
 from app.ai.llm.content import extract_text_content
-from app.change_requests import join_instructions
+from app.change_requests import join_instructions, targets_from_json
 from app.core.database import AsyncSessionLocal
 from app.core.errors import AppError
 from app.detailed_design.function_list import FunctionListModel
@@ -57,6 +63,7 @@ from app.documents.internal_design.drafting import to_draft as to_internal_desig
 from app.documents.issues import DocumentIssue
 from app.documents.requirements import (
     RequirementsModel,
+    UserScene,
     build_model,
     mark_adopted,
     render_requirements,
@@ -89,6 +96,7 @@ from app.documents.test_spec.drafting import TestSpecGenerationOutput, build_tes
 from app.documents.test_spec.drafting import to_draft as to_test_spec_draft
 from app.hearing import as_scale
 from app.infrastructure.redis import get_redis_client
+from app.models.change_request import ChangeRequest
 from app.models.chat_history import ChatHistory
 from app.models.generated_document import GeneratedDocument
 from app.models.project import Project
@@ -479,6 +487,7 @@ class DocGeneratorService:
                 progress.current = doc_type
                 await self._progress.write(project_id, progress)
                 model: dict | None = None
+                protection: list[dict] | None = None
                 # 再生成を前の版の差分にとどめるため、上流の文書で変わった行を渡す
                 changed = upstream_changes(
                     doc_type, previous_models, requirements, external, internal
@@ -487,8 +496,12 @@ class DocGeneratorService:
                     [build_instruction(findings_for([doc_type], sendback)), cr_instruction]
                 )
                 if doc_type == "requirements":
-                    content, requirements = await self._generate_requirements(
-                        project, transcript, instruction, llm=llm
+                    content, requirements, protection = await self._generate_requirements(
+                        project,
+                        transcript,
+                        instruction,
+                        reflection.change_request if reflection is not None else None,
+                        llm=llm,
                     )
                     model = requirements.model_dump(mode="json")
                 elif doc_type == "external_design":
@@ -518,6 +531,7 @@ class DocGeneratorService:
                     model=model,
                     generated_model=resolved.model,
                     change_request_id=change_request_id,
+                    protection=protection,
                 )
                 versions.append((doc_type, document.version))
                 generated[doc_type] = content
@@ -750,20 +764,62 @@ class DocGeneratorService:
         return document
 
     async def _generate_requirements(
-        self, project: Project, transcript: str, instruction: str = "", *, llm
-    ) -> tuple[str, RequirementsModel]:
+        self,
+        project: Project,
+        transcript: str,
+        instruction: str = "",
+        change_request: ChangeRequest | None = None,
+        *,
+        llm,
+    ) -> tuple[str, RequirementsModel, list[dict] | None]:
         """要件定義書を構造化出力で下書きし、model と md を作る。入力は会話・観点の表・前の版の
-        要件(ID を引き継ぐため)。出どころは観点の状態を上限に直す(app/documents/requirements)。"""
+        要件(ID を引き継ぐため)。出どころは観点の状態を上限に直す(app/documents/requirements)。
+
+        詳細設計モードでは、合意済みの要件の行と利用者(1.2)を守る(docs/external_design.md
+        2.15節)。プロンプトで「変えない行」として渡し、組み立ての後に合意の形へ戻す
+        (app/agreements/protection.py)。反映する CR(`change_request`)の対象の要件は書き換えて
+        よい。戻した要素の一覧を3つ目に返す(簡易ドキュメントモードは None)。"""
         states = await self._hearing_points.load_states(project.id)
         scale = as_scale(project.hearing_scale)
         current = await self._documents.get_current(
             project_id=project.id, doc_type="requirements"
         )
         previous = parse_requirements_model(current.model if current else None)
-        messages = build_requirements_messages(transcript, states, scale, previous, instruction)
+        agreed = await self._agreed_elements(project)
+        exempt = frozenset(
+            requirement_key(target.requirement_id)
+            for target in targets_from_json(change_request.targets if change_request else None)
+        )
+        agreed_ids = agreed_requirement_ids(agreed or {}, exempt)
+        agreed_users = (
+            [UserScene.model_validate(u) for u in agreed[USERS_KEY]["users"]]
+            if agreed and USERS_KEY in agreed
+            else []
+        )
+        messages = build_requirements_messages(
+            transcript,
+            states,
+            scale,
+            previous,
+            instruction,
+            agreed_ids=agreed_ids,
+            agreed_users=agreed_users,
+        )
         output = await invoke_structured(llm, RequirementsGenerationOutput, messages)
-        model = build_model(to_draft(output), previous, states, scale)
-        return render_requirements(model), model
+        model = build_model(to_draft(output), previous, states, scale, agreed_ids=agreed_ids)
+        if agreed is None:
+            return render_requirements(model), model, None
+        model, restored = protect_requirements(model, previous, agreed, exempt=exempt)
+        protection = [{"key": r.key, "reason": r.reason} for r in restored]
+        return render_requirements(model), model, protection
+
+    async def _agreed_elements(self, project: Project) -> dict[str, dict] | None:
+        """今の合意(キー → 合意した中身)。合意は詳細設計モードの機能なので、簡易ドキュメント
+        モードは None(合意を読まず、守らない)。"""
+        if project.mode != "detailed":
+            return None
+        records = await AgreementService(self._session).current(project)
+        return {r.key: r.content for r in records if r.content is not None}
 
     async def _generate_external_design(
         self,

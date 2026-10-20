@@ -10,6 +10,8 @@ AI には要件の中身・出どころ・観点だけを書かせ、ID は書�
 - 変更なし(`unchanged`): 前の版の同じ ID・同じ種別の行があれば、その行をそのまま使う
   (再生成の言い換えで要件が変わらないため。`app.documents.revision`)。出どころだけは今の観点の
   表で上限をかけ直す(観点が採用から未決に戻ったのに、写した行が「ユーザー」のまま残らないように)。
+  ただし合意済みの行(`agreed_ids`)にはかけ直さない。合意の根拠は観点ではなく合意そのもので
+  あるため(合意の形への戻しは app/agreements/protection.py)。
 """
 
 from collections.abc import Iterable, Mapping, Sequence
@@ -145,8 +147,11 @@ def build_model(
     previous: RequirementsModel | None,
     states: Mapping[str, PointState],
     scale: Scale | None,
+    *,
+    agreed_ids: frozenset[str] = frozenset(),
 ) -> RequirementsModel:
-    """下書きから model を作る(知らない種別・空の要件は捨てる)。観点の状態と規模を写して持つ。"""
+    """下書きから model を作る(知らない種別・空の要件は捨てる)。観点の状態と規模を写して持つ。
+    `agreed_ids`は合意済みの要件の ID(`unchanged`で写すとき、出どころの上限をかけ直さない)。"""
     kept = [r for r in draft.requirements if r.kind in REQUIREMENT_KINDS and r.text.strip()]
     kinds: list[RequirementKind] = [r.kind for r in kept]  # type: ignore[misc]
     ids, next_seq = assign_ids(
@@ -157,6 +162,9 @@ def build_model(
     for req_id, kind, r in zip(ids, kinds, kept, strict=True):
         same = prev_rows.get(req_id)
         if r.unchanged and same is not None and same.kind == kind:
+            if req_id in agreed_ids:
+                rows.append(same)
+                continue
             source = cap_source(same.source, same.points, states, kind=kind)
             rows.append(
                 same if source == same.source else same.model_copy(update={"source": source})
