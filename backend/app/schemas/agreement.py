@@ -1,13 +1,17 @@
 import uuid
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, StringConstraints, field_validator
 
 from app.agreements import (
+    ELEMENT_STATE_LABEL,
+    RESTORE_REASON_LABEL,
     AgreedKind,
     AgreementOrigin,
+    DocumentAgreementStatus,
     ElementHistory,
+    ElementState,
     HistoryEvent,
     RestoreReason,
     origin_label,
@@ -156,5 +160,74 @@ def agreement_history_read(history: ElementHistory) -> AgreementHistoryRead:
                 predicted=c.predicted,
             )
             for c in history.change_requests
+        ],
+    )
+
+
+# 合意の状態を引ける文書(合意の対象の要素を持つ2文書)
+AgreementDocType = Literal["requirements", "external_design"]
+
+
+class ElementStatusRead(BaseModel):
+    """表示中の版の要素1つの合意の状態(app/agreements/status.py の ElementStatus)。出どころの
+    欄は、合意の記録がある要素(`unagreed`以外)だけが持つ。"""
+
+    key: str
+    kind: AgreedKind
+    label: str
+    state: ElementState
+    state_label: str
+    origin_label: str | None
+    baseline_number: int | None
+    change_request_number: int | None
+
+
+class RestoredElementRead(BaseModel):
+    """表示中の版で合意の形へ戻した要素1つ。"""
+
+    key: str
+    label: str
+    reason: RestoreReason
+    reason_label: str
+
+
+class AgreementStatusRead(BaseModel):
+    """文書1つの表示中の版の合意の状態。`version`は表示中の版(文書が無ければ null)、
+    `change_request_number`は版が反映した CR(CR を渡さない再生成の版は null)。`restored`は、その
+    版で合意の形へ戻した要素(CR の版なら、CR の予測に無いので戻したもの)。"""
+
+    doc_type: AgreementDocType
+    version: int | None
+    change_request_number: int | None
+    elements: list[ElementStatusRead]
+    restored: list[RestoredElementRead]
+
+
+def agreement_status_read(status: DocumentAgreementStatus) -> AgreementStatusRead:
+    return AgreementStatusRead(
+        doc_type=status.doc_type,  # type: ignore[arg-type]
+        version=status.version,
+        change_request_number=status.change_request_number,
+        elements=[
+            ElementStatusRead(
+                key=e.key,
+                kind=e.kind,
+                label=e.label,
+                state=e.state,
+                state_label=ELEMENT_STATE_LABEL[e.state],
+                origin_label=e.origin_label,
+                baseline_number=e.baseline_number,
+                change_request_number=e.change_request_number,
+            )
+            for e in status.elements
+        ],
+        restored=[
+            RestoredElementRead(
+                key=r.key,
+                label=r.label,
+                reason=r.reason,
+                reason_label=RESTORE_REASON_LABEL[r.reason],
+            )
+            for r in status.restored
         ],
     )

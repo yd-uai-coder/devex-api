@@ -6,6 +6,7 @@ docs/internal_design.md 3.3節「12. 合意の精度」。
 - origins: 合意の出どころと、画面に出す名前
 - protection: 再生成の後に、合意済みの要素を合意の形へ戻す
 - history: 要素1つの合意の履歴(合意の記録・戻した版・関わる CR)
+- status: 表示中の版の要素ごとの合意の状態(合意済み・合意と違う・未合意・今の版に無い)
 """
 
 from app.agreements.history import (
@@ -51,11 +52,24 @@ from app.agreements.protection import (
     protect_requirements,
     requirement_key,
 )
+from app.agreements.status import (
+    ELEMENT_STATE_LABEL,
+    ELEMENT_STATES,
+    CurrentAgreement,
+    DocumentAgreementStatus,
+    ElementState,
+    ElementStatus,
+    RestoredElement,
+    element_states,
+    restored_elements,
+)
 
 __all__ = [
     "ADOPT_LABEL",
     "AGREED_KINDS",
     "AGREEMENT_ORIGINS",
+    "ELEMENT_STATES",
+    "ELEMENT_STATE_LABEL",
     "HISTORY_EVENTS",
     "HISTORY_EVENT_LABEL",
     "RESTORE_REASONS",
@@ -66,6 +80,10 @@ __all__ = [
     "AgreedKind",
     "AgreementOrigin",
     "ChangeRequestRef",
+    "CurrentAgreement",
+    "DocumentAgreementStatus",
+    "ElementState",
+    "ElementStatus",
     "ElementHistory",
     "HistoryEntry",
     "HistoryEvent",
@@ -75,12 +93,14 @@ __all__ = [
     "RestoreReason",
     "AgreedExternalIds",
     "Restored",
+    "RestoredElement",
     "agreed_external_ids",
     "agreed_requirement_ids",
     "agreement_items",
     "body_of",
     "change_request_items",
     "element_history",
+    "element_states",
     "integration_key",
     "kind_of",
     "origin_label",
@@ -88,4 +108,5 @@ __all__ = [
     "protect_requirements",
     "removed_keys",
     "requirement_key",
+    "restored_elements",
 ]
