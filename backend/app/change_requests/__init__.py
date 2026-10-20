@@ -37,6 +37,7 @@ from app.change_requests.prediction import (
     predict,
     predict_from_snapshots,
     requirement_texts,
+    rewritable_keys,
 )
 from app.change_requests.reviews import (
     LINKABLE_RUN_STATUS,
@@ -189,6 +190,7 @@ __all__ = [
     "predict",
     "predict_from_snapshots",
     "requirement_texts",
+    "rewritable_keys",
     "review_link_problem",
     "summary_state",
     "target_ids",

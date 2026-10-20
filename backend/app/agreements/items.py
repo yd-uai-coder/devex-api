@@ -15,7 +15,7 @@ docs/external_design.md 2.15節。合意の記録は、変更影響分析の要�
 """
 
 import json
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, get_args
 
@@ -117,6 +117,45 @@ def removed_keys(agreed_keys: Iterable[str], items: Iterable[AgreedItem]) -> lis
     束に入らなかった要素を「外れた」と記録するために使う。"""
     present = {item.key for item in items}
     return [key for key in agreed_keys if key not in present]
+
+
+# 種類ごとの、キーの接頭辞(利用者と使う場面は接頭辞ではなく`USERS_KEY`そのもの)
+_KEY_PREFIXES: dict[AgreedKind, str] = {
+    "requirement": "req:",
+    "screen": "screen:",
+    "api": "api:",
+    "integration": "integration:",
+}
+
+
+def kind_of(key: str) -> AgreedKind | None:
+    """要素のキーの種類(合意の対象でないキー〈段階の要素など〉は None)。"""
+    if key == USERS_KEY:
+        return "users"
+    return next((k for k, prefix in _KEY_PREFIXES.items() if key.startswith(prefix)), None)
+
+
+def change_request_items(
+    rewritable: Collection[str],
+    items: Sequence[AgreedItem],
+    agreed_keys: Iterable[str],
+    kinds: Collection[AgreedKind],
+) -> tuple[list[AgreedItem], list[str]]:
+    """CR の反映で合意を更新する要素(新しく合意する要素と、外れたキー)。
+
+    `rewritable`は CR で書き換えてよい要素のキー(対象の要件と、保存した予測の画面・API)、
+    `items`は作り直した文書の要素、`kinds`は作り直した文書の要素の種類。書き換えてよい要素の
+    うち、作り直した文書にあるものは今の中身で合意にし(文書の並び順)、今の合意にあって無く
+    なったもの(作り直した文書の種類だけ。削除の対象など)は外れたとする(今の合意の順)。
+    CR で足された新しい要素は合意にしない(次の合意済みの版で合意になる)。"""
+    updated = [item for item in items if item.key in rewritable]
+    present = {item.key for item in items}
+    removed = [
+        key
+        for key in agreed_keys
+        if key in rewritable and key not in present and kind_of(key) in kinds
+    ]
+    return updated, removed
 
 
 def _json(value: Any) -> str:

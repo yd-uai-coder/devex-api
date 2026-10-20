@@ -68,7 +68,7 @@ class GeneratedDocumentRead(BaseModel):
     is_current: bool
     # 生成したモデル名(この列を足す前の版は None)
     generated_model: str | None = None
-    # 再生成の後に合意の形へ戻した要素(合意を守った要件定義書の版だけ。ほかは None)
+    # 再生成の後に合意の形へ戻した要素(合意を守った要件定義書・外部設計書の版だけ。ほかは None)
     protection: list[RestoredRead] | None = None
     # 反映した変更要求の番号(CR を渡した再生成で作った版だけ。ほかは None)。ルートが入れる
     change_request_number: int | None = None

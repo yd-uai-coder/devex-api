@@ -2,16 +2,19 @@
 
 AI には要件定義書から、画面・API・外部連携の行(関係する要件ID 付き)と本文の節を書かせる。
 画面ID は仮の ID として書かせ(前の版と同じ画面なら前の版の ID)、`assemble.build_model`が前の版に
-在る ID だけを引き継いで振り直す。再生成では、前の版の画面・API の行と要件定義書の変わった行を
-見せ、変えない行を`unchanged`と答えさせる(`app.documents.revision`)。
+在る ID だけを引き継いで振り直す。再生成では、前の版の画面・API・外部連携の行と要件定義書の
+変わった行を見せ、変えない行を`unchanged`と答えさせる(`app.documents.revision`)。合意済みの行には
+印を付ける(生成の後に合意の形へ戻すのは app/agreements/protection.py)。
 """
 
-from collections.abc import Sequence
+import json
+from collections.abc import Iterable, Sequence
 from typing import Literal
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
+from app.detailed_design.api_list import endpoint_key
 from app.documents.external_design.assemble import (
     ApiDraft,
     ExternalDesignDraft,
@@ -19,6 +22,7 @@ from app.documents.external_design.assemble import (
     ScreenDraft,
 )
 from app.documents.external_design.model import NO_BODY, ExternalDesignModel
+from app.documents.requirements.drafting import AGREED_MARK
 from app.documents.revision import (
     NONE_TEXT,
     UNCHANGED_DESCRIPTION,
@@ -26,7 +30,6 @@ from app.documents.revision import (
     changed_rows_text,
     instruction_text,
     revision_rule,
-    rows_text,
 )
 
 _REQ_IDS_DESCRIPTION = "関係する要件ID(【要件定義書】の FR-001・NFR-001・CON-001 など。1つ以上)"
@@ -106,7 +109,7 @@ class ExternalDesignGenerationOutput(BaseModel):
 
 # 再生成のプロンプトの節の分け方(前の版・きっかけ・参照)。節を足したら、ここにも分ける
 REVISION = RevisionInputs(
-    previous=("前の版の画面", "前の版の API"),
+    previous=("前の版の画面", "前の版の API", "前の版の外部連携"),
     triggers={
         "上流の変わった行": "要件定義書の要件で変わった行。その行に関係する行を書き直す",
         "修正指示": "設計レビューの採用した指摘。指示が指す行を書き直す",
@@ -128,15 +131,31 @@ SYSTEM_PROMPT = (
     "API の関連画面は画面ID で書く\n"
     "- 主要画面には UI 仕様(構成要素)を書く\n"
     "- 要件定義書に無い技術・外部サービスを創作しない\n"
+    "- 外部連携のサービス名は、【前の版の外部連携】に同じサービスがあれば、その名前のまま書く\n"
+    f"- 前の版の行で「{AGREED_MARK}」の印が付いた行は、クライアントと合意した行。"
+    "【上流の変わった行】【修正指示】がその行を指していなければ、unchanged を true にして"
+    "必ず残す(書き直さない・落とさない。同じ画面を別の画面ID で書かない)\n"
     f"{revision_rule(REVISION)}"
 )
 
 
-def previous_screens_text(previous: ExternalDesignModel | None) -> str:
+def previous_screens_text(
+    previous: ExternalDesignModel | None, agreed_screen_ids: frozenset[str] = frozenset()
+) -> str:
     """前の版の画面(画面ID の引き継ぎと、変えない行の判断に使う)。無ければ「なし」。"""
     if previous is None or not previous.screens:
         return NONE_TEXT
-    return rows_text(previous.screens)
+    return _marked_rows_text((s, s.id in agreed_screen_ids) for s in previous.screens)
+
+
+def _marked_rows_text(rows: Iterable[tuple[BaseModel, bool]]) -> str:
+    """前の版の行(1行1つの JSON)。合意済みの行は末尾に印を付ける。無ければ「なし」。"""
+    lines = [
+        json.dumps(row.model_dump(mode="json"), ensure_ascii=False)
+        + (f"|{AGREED_MARK}" if agreed else "")
+        for row, agreed in rows
+    ]
+    return "\n".join(lines) or NONE_TEXT
 
 
 def build_external_design_messages(
@@ -144,10 +163,25 @@ def build_external_design_messages(
     previous: ExternalDesignModel | None,
     changed_requirements: Sequence[str] = (),
     instruction: str = "",
+    *,
+    agreed_screen_ids: frozenset[str] = frozenset(),
+    agreed_endpoints: frozenset[str] = frozenset(),
+    agreed_services: frozenset[str] = frozenset(),
 ) -> list[BaseMessage]:
+    """外部設計書の生成のメッセージ。`agreed_*`は守る合意(画面ID・`endpoint_key`・サービス名。
+    前の版の行に印を付ける)。"""
+    apis = previous.apis if previous else []
+    integrations = previous.integrations if previous else []
+    apis_text = _marked_rows_text(
+        (a, endpoint_key(a.method, a.path) in agreed_endpoints) for a in apis
+    )
+    integrations_text = _marked_rows_text(
+        (i, i.service.strip() in agreed_services) for i in integrations
+    )
     human = (
-        f"## 前の版の画面\n{previous_screens_text(previous)}\n\n"
-        f"## 前の版の API\n{rows_text(previous.apis if previous else [])}\n\n"
+        f"## 前の版の画面\n{previous_screens_text(previous, agreed_screen_ids)}\n\n"
+        f"## 前の版の API\n{apis_text}\n\n"
+        f"## 前の版の外部連携\n{integrations_text}\n\n"
         f"## 上流の変わった行\n{changed_rows_text(changed_requirements)}\n\n"
         f"## 修正指示\n{instruction_text(instruction)}\n\n"
         f"## 要件定義書\n{requirements_md}"

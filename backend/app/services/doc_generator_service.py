@@ -10,13 +10,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agreements import (
     USERS_KEY,
+    agreed_external_ids,
     agreed_requirement_ids,
+    protect_external_design,
     protect_requirements,
-    requirement_key,
 )
 from app.ai.llm.catalog import Purpose
 from app.ai.llm.content import extract_text_content
-from app.change_requests import join_instructions, targets_from_json
+from app.change_requests import join_instructions, rewritable_keys, targets_from_json
 from app.core.database import AsyncSessionLocal
 from app.core.errors import AppError
 from app.detailed_design.function_list import FunctionListModel
@@ -409,7 +410,8 @@ class DocGeneratorService:
         `cr_number`(合意した CR)は、作り直す設計書のどれにも同じ指示にして入れ
         (app/change_requests/instruction.py)、作った版に CR を残す。生成が終わったら、CR を
         反映済みにし、付いた印(出どころに`cr:<番号>`を足す)を CR の写しに重ねる(同じ
-        トランザクション)。
+        トランザクション)。CR で書き換えてよい要素(対象の要件と、保存した予測の画面・API)の
+        合意も、作り直した中身で更新する(app/services/agreement_service.py)。
         受け付けの後に反映できない状態になった CR は渡さない。
 
         テスト仕様書(`TEST_SPEC`)は設計書の後に作る(簡易モードは毎回、詳細設計モードは
@@ -505,12 +507,13 @@ class DocGeneratorService:
                     )
                     model = requirements.model_dump(mode="json")
                 elif doc_type == "external_design":
-                    content, external = await self._generate_external_design(
+                    content, external, protection = await self._generate_external_design(
                         project,
                         generated["requirements"],
                         requirements,
                         changed,
                         instruction,
+                        reflection.change_request if reflection is not None else None,
                         llm=llm,
                     )
                     model = external.model_dump(mode="json")
@@ -573,6 +576,9 @@ class DocGeneratorService:
                     model=resolved.model,
                     marks=marks,
                     actor_id=user_id,
+                )
+                await AgreementService(self._session).record_change_request(
+                    project, reflection.change_request, new_models, recorded_by=user_id
                 )
 
             if designed and not reviewing:
@@ -786,10 +792,7 @@ class DocGeneratorService:
         )
         previous = parse_requirements_model(current.model if current else None)
         agreed = await self._agreed_elements(project)
-        exempt = frozenset(
-            requirement_key(target.requirement_id)
-            for target in targets_from_json(change_request.targets if change_request else None)
-        )
+        exempt = _rewritable(change_request)
         agreed_ids = agreed_requirement_ids(agreed or {}, exempt)
         agreed_users = (
             [UserScene.model_validate(u) for u in agreed[USERS_KEY]["users"]]
@@ -828,24 +831,42 @@ class DocGeneratorService:
         requirements: RequirementsModel | None,
         changed_upstream: list[str],
         instruction: str = "",
+        change_request: ChangeRequest | None = None,
         *,
         llm,
-    ) -> tuple[str, ExternalDesignModel]:
+    ) -> tuple[str, ExternalDesignModel, list[dict] | None]:
         """外部設計書を構造化出力で下書きし、model と md を作る。入力は要件定義書の md、前の版の
-        画面・API(画面ID を引き継ぎ、変えない行をそのまま使うため)と、要件定義書の変わった行。
-        要件ID の照合用に要件定義書の model を写す(app/documents/external_design)。"""
+        画面・API・外部連携(画面ID を引き継ぎ、変えない行をそのまま使うため)と、要件定義書の
+        変わった行。要件ID の照合用に要件定義書の model を写す(app/documents/external_design)。
+
+        詳細設計モードでは、合意済みの画面・API・外部連携を守る(要件定義書と同じ。
+        docs/external_design.md 2.15節)。反映する CR(`change_request`)の保存した予測の画面・API
+        は書き換えてよい。戻した要素の一覧を3つ目に返す(簡易ドキュメントモードは None)。"""
         current = await self._documents.get_current(
             project_id=project.id, doc_type="external_design"
         )
         previous = parse_external_design_model(current.model if current else None)
+        agreed = await self._agreed_elements(project)
+        exempt = _rewritable(change_request)
+        ids = agreed_external_ids(agreed or {}, exempt)
         messages = build_external_design_messages(
-            requirements_md, previous, changed_upstream, instruction
+            requirements_md,
+            previous,
+            changed_upstream,
+            instruction,
+            agreed_screen_ids=ids.screen_ids,
+            agreed_endpoints=ids.endpoints,
+            agreed_services=ids.services,
         )
         output = await invoke_structured(llm, ExternalDesignGenerationOutput, messages)
         model = build_external_design_model(
             to_external_design_draft(output), previous, requirements
         )
-        return render_external_design(model), model
+        if agreed is None:
+            return render_external_design(model), model, None
+        model, restored = protect_external_design(model, previous, agreed, exempt=exempt)
+        protection = [{"key": r.key, "reason": r.reason} for r in restored]
+        return render_external_design(model), model, protection
 
     async def _generate_internal_design(
         self,
@@ -1018,6 +1039,15 @@ def _render_transcript(history: list[ChatHistory]) -> str:
         if entry.sender != "others"
     ]
     return "\n".join(lines)
+
+
+def _rewritable(change_request: ChangeRequest | None) -> frozenset[str]:
+    """反映する CR で書き換えてよい要素のキー(合意済みの要素の保護から外す)。CR が無ければ空。"""
+    if change_request is None:
+        return frozenset()
+    return rewritable_keys(
+        targets_from_json(change_request.targets), change_request.predicted_impact
+    )
 
 
 def upstream_changes(

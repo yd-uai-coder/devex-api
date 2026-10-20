@@ -63,7 +63,7 @@ class GeneratedDocument(Base):
     )
     # 再生成の後に合意の形へ戻した要素(`[{key, reason}]`。app/agreements/protection.py の
     # Restored の形)。合意を守った版だけ(戻すものが無ければ空の一覧)。簡易ドキュメントモード・
-    # 要件定義書でない版・この列を足す前の版は NULL
+    # 要件定義書・外部設計書でない版・この列を足す前の版は NULL
     protection: Mapped[list[dict] | None] = mapped_column(PortableJSON, nullable=True)
     # is_current：復元用
     is_current: Mapped[bool] = mapped_column(

@@ -15,7 +15,9 @@ from app.agreements.items import (
     AgreedKind,
     agreement_items,
     body_of,
+    change_request_items,
     integration_key,
+    kind_of,
     removed_keys,
 )
 from app.agreements.origins import (
@@ -26,9 +28,12 @@ from app.agreements.origins import (
 )
 from app.agreements.protection import (
     RESTORE_REASONS,
+    AgreedExternalIds,
     Restored,
     RestoreReason,
+    agreed_external_ids,
     agreed_requirement_ids,
+    protect_external_design,
     protect_requirements,
     requirement_key,
 )
@@ -44,12 +49,17 @@ __all__ = [
     "AgreedKind",
     "AgreementOrigin",
     "RestoreReason",
+    "AgreedExternalIds",
     "Restored",
+    "agreed_external_ids",
     "agreed_requirement_ids",
     "agreement_items",
     "body_of",
+    "change_request_items",
     "integration_key",
+    "kind_of",
     "origin_label",
+    "protect_external_design",
     "protect_requirements",
     "removed_keys",
     "requirement_key",

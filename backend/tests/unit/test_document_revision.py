@@ -5,7 +5,7 @@ SUT: rows_text / changed_rows / changed_rows_text / requirement_rows / external_
      4文書の build_model の変更なし(`unchanged`)と実装計画書の`prev_key`、要件定義書の写した行の
      出どころ(`cap_source`のかけ直しと、合意済みの行はかけ直さないこと)、4文書の`REVISION`(節の
      分け方)、
-     4文書の下書きのメッセージ(前の版の行・上流の変わった行・要件定義書の合意済みの印)、
+     4文書の下書きのメッセージ(前の版の行・上流の変わった行・要件定義書と外部設計書の合意済みの印)、
      upstream_changes(app/services/doc_generator_service.py)
 ドライバ: 各テスト関数
 スタブ不要 ── どれも純粋関数(副作用なし)で、DB や LLM を呼ばないため。下書きは偽の LLM の見本の
@@ -19,7 +19,10 @@ from tests.fixtures.simple_documents import implementation_plan_output, internal
 from app.documents.external_design import build_model as build_external_design_model
 from app.documents.external_design.drafting import REVISION as EXTERNAL_REVISION
 from app.documents.external_design.drafting import SYSTEM_PROMPT as EXTERNAL_PROMPT
-from app.documents.external_design.drafting import build_external_design_messages
+from app.documents.external_design.drafting import (
+    GeneratedIntegration,
+    build_external_design_messages,
+)
 from app.documents.external_design.drafting import to_draft as to_external_design_draft
 from app.documents.implementation_plan import build_model as build_plan_model
 from app.documents.implementation_plan.drafting import REVISION as PLAN_REVISION
@@ -248,6 +251,32 @@ def test_external_design_messages_show_previous_rows_and_changed_requirements():
     assert "## 上流の変わった行\n- 要件 FR-001(変わった)" in human.content
     [_, initial] = build_external_design_messages("要件", None)
     assert f"## 前の版の API\n{NONE_TEXT}" in initial.content
+    assert f"## 前の版の外部連携\n{NONE_TEXT}" in initial.content
+
+
+def test_external_design_prompt_marks_agreed_rows():
+    """前の版の画面・API・外部連携のうち、合意済みの行に印を付ける。印が無ければ今までどおり。"""
+    output = external_design_output()
+    output.integrations = [
+        GeneratedIntegration(service="メール配信", purpose="通知", auth="", timing="", req_ids=[])
+    ]
+    first = build_external_design_model(to_external_design_draft(output), None, None)
+
+    [_, plain] = build_external_design_messages("要件", first)
+    [_, marked] = build_external_design_messages(
+        "要件",
+        first,
+        agreed_screen_ids=frozenset({"SCR-001"}),
+        agreed_endpoints=frozenset({"POST /api/v1/reservations"}),
+        agreed_services=frozenset({"メール配信"}),
+    )
+    assert AGREED_MARK not in str(plain.content)
+    assert '"service": "メール配信"' in str(plain.content)
+    marked_lines = [
+        line for line in str(marked.content).splitlines() if line.endswith(f"|{AGREED_MARK}")
+    ]
+    assert len(marked_lines) == 3
+    assert f"「{AGREED_MARK}」の印が付いた行は" in EXTERNAL_PROMPT
 
 
 # --- 内部設計書 ---
