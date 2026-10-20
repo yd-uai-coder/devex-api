@@ -83,6 +83,16 @@ class AgreementRepository(CRUDRepository[AgreementRecord]):
         )
         return list((await self._session.execute(stmt)).scalars().all())
 
+    async def list_for_key(self, project_id: uuid.UUID, key: str) -> list[AgreementRecord]:
+        """プロジェクトの、要素1つ(`key`)の記録を、記録の順(古い順)に返す(履歴のため)。"""
+        stmt = (
+            select(AgreementRecord)
+            .where(AgreementRecord.project_id == project_id, AgreementRecord.key == key)
+            .order_by(AgreementRecord.seq)
+            .options(*self._default_options())
+        )
+        return list((await self._session.execute(stmt)).scalars().all())
+
     async def current(self, project_id: uuid.UUID) -> list[AgreementRecord]:
         """今の合意(キーごとの最新の記録。最新が「外れた」のキーは除く)を、記録の順に返す。
         記録の数はプロジェクトの要素の数 × 合意の回数ほどで小さいので、全部読んで畳む。"""

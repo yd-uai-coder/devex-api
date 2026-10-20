@@ -1,7 +1,8 @@
 """今の合意の一覧の API を実際の PostgreSQL で確かめる(JSONB の写し・束と「採用にする」からの記録・
 CASCADE)。
 
-SUT: GET /api/v1/projects/{id}/agreements(ルート → AgreementService → AgreementRepository)と、
+SUT: GET /api/v1/projects/{id}/agreements(ルート → AgreementService → AgreementRepository)・
+     GET /api/v1/projects/{id}/agreements/history(要素1つの履歴。キーはクエリ)と、
      束の作成(POST .../baselines)・「採用にする」(POST .../documents/requirements/rows/{id}/adopt)
      での記録、プロジェクトの削除での記録の CASCADE
 ドライバ: httpx の AsyncClient(ASGITransport)
@@ -121,3 +122,53 @@ async def test_mode_and_ownership(client: AsyncClient) -> None:
     assert anonymous.status_code == 401
     assert adopted.status_code == 200
     assert await _records(simple_id) == 0
+
+
+async def test_history_of_an_adopted_requirement(client: AsyncClient) -> None:
+    """推測のまま束に入った FR-002 を「採用にする」と、中身(出どころ)の変わった合意になる。"""
+    headers, user_id = await _login("agreement-history@example.com")
+    project_id = await _project(user_id)
+    base = f"/api/v1/projects/{project_id}"
+    assert (await client.post(f"{base}/baselines", json=_BODY, headers=headers)).status_code == 201
+    adopted = await client.post(
+        f"{base}/documents/requirements/rows/FR-002/adopt", headers=headers
+    )
+    assert adopted.status_code == 200
+
+    history = await client.get(
+        f"{base}/agreements/history", params={"key": "req:FR-002"}, headers=headers
+    )
+    api = await client.get(
+        f"{base}/agreements/history",
+        params={"key": "api:GET /api/v1/reservations"},
+        headers=headers,
+    )
+    invalid = await client.get(
+        f"{base}/agreements/history", params={"key": "unit:U-001"}, headers=headers
+    )
+    missing = await client.get(f"{base}/agreements/history", headers=headers)
+
+    assert history.status_code == 200
+    body = history.json()
+    assert [(e["event"], e["origin_label"]) for e in body["entries"]] == [
+        ("agreed", "B-1"),
+        ("changed", "採用にする"),
+    ]
+    assert body["current"]["source"] == "adopted"
+    assert body["change_requests"] == []
+    assert (api.status_code, api.json()["kind"]) == (200, "api")
+    assert (invalid.status_code, invalid.json()["code"]) == (422, "AGREEMENT_KEY_INVALID")
+    assert missing.status_code == 422
+
+
+async def test_history_mode(client: AsyncClient) -> None:
+    headers, user_id = await _login("agreement-history-simple@example.com")
+    simple_id = await _project(user_id, mode="simple")
+
+    simple = await client.get(
+        f"/api/v1/projects/{simple_id}/agreements/history",
+        params={"key": "req:FR-001"},
+        headers=headers,
+    )
+
+    assert (simple.status_code, simple.json()["code"]) == (409, "DESIGN_STAGES_NOT_AVAILABLE")

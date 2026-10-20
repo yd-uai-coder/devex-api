@@ -30,6 +30,7 @@ from app.api.routes.baselines import create_baseline
 from app.api.routes.change_requests import get_change_request_trace, list_change_requests
 from app.change_requests import (
     ACTION_LABEL,
+    EDITED_FIELD_LABEL,
     ChangeRequestAction,
     DecisionFacts,
     EventFacts,
@@ -43,7 +44,12 @@ from app.models.project import Project
 from app.models.user import User
 from app.repositories.review import ReviewRunRepository
 from app.schemas.baseline import BaselineCreate
-from app.schemas.change_request import ChangeRequestTraceRead, ChangeRequestVerify
+from app.schemas.change_request import (
+    ChangeRequestTraceRead,
+    ChangeRequestUpdate,
+    ChangeRequestVerify,
+    TraceEntryRead,
+)
 from app.services.change_request_service import ChangeRequestService
 from app.services.errors import ChangeRequestNotFoundError, ChangeRequestNotIncludableError
 
@@ -103,6 +109,24 @@ def test_decision_rows_show_the_agreement_record() -> None:
 
     expected = "相手: 先方の山田さん / メモ: 定例で確認 / 理由: 費用が収まる"
     assert [e.note for e in entries] == [expected, expected, ""]
+
+
+def test_edit_rows_show_the_edited_fields() -> None:
+    """直したの行は、直した項目の名前を項目の並びで出す。知らない項目・形の悪い値・項目を残す
+    前の行(refs なし)・ほかの操作の行は空。"""
+    events = [
+        _event("edit", {"fields": ["targets", "title", "unknown"]}),
+        _event("edit", {"fields": "title"}),
+        _event("edit"),
+        _event("explain", {"fields": ["title"]}),
+    ]
+
+    entries = trace_entries(events, {}, {})
+
+    assert [e.edited_fields for e in entries] == [("タイトル", "対象"), (), (), ()]
+    assert entries[0].action_label == "直した"
+    assert set(EDITED_FIELD_LABEL) == set(ChangeRequestUpdate.model_fields)
+    assert TraceEntryRead.from_entry(entries[0]).edited_fields == ["タイトル", "対象"]
 
 
 def test_decision_note_skips_missing_values_and_keeps_row_note() -> None:

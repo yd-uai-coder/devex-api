@@ -115,7 +115,7 @@ async def test_routes_run_the_whole_flow(db_session: AsyncSession) -> None:
     assert listed[1].decision is not None and listed[1].decision.reason == "範囲の外"
     assert listed[0].decision is None and listed[0].included_baseline_number is None
     assert fetched.derived_numbers == [2]
-    assert [e.action for e in fetched.events] == ["create", "explain", "reject", "copied"]
+    assert [e.action for e in fetched.events] == ["create", "edit", "explain", "reject", "copied"]
 
 
 async def test_routes_raise_for_missing_and_invalid(db_session: AsyncSession) -> None:

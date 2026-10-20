@@ -225,7 +225,15 @@ async def test_update_in_explained_returns_to_draft(db_session: AsyncSession) ->
     draft_edit = await service.update(
         project, 1, ChangeRequestUpdate(title="題を直す"), actor_id=None
     )
-    assert len(draft_edit.change_request.events) == 1  # 下書きの中の直しは時系列に残さない
+    # 下書きの中の直しも、直した項目の名前を時系列に残す。値の変わらない保存は残さない
+    assert [(e.action, e.refs) for e in draft_edit.change_request.events] == [
+        ("create", None),
+        ("edit", {"fields": ["title"]}),
+    ]
+    same = await service.update(
+        project, 1, ChangeRequestUpdate(title="題を直す", content=None), actor_id=None
+    )
+    assert len(same.change_request.events) == 2
     await service.explain(project, 1, actor_id=None)
     view = await service.update(
         project,
@@ -249,9 +257,11 @@ async def test_update_in_explained_returns_to_draft(db_session: AsyncSession) ->
     assert change_request.content == "予約の一覧を日付で絞り込めるようにする"
     assert [(e.action, e.from_status, e.to_status) for e in change_request.events] == [
         ("create", None, "draft"),
+        ("edit", "draft", "draft"),
         ("explain", "draft", "explained"),
         ("edit", "explained", "draft"),
     ]
+    assert change_request.events[-1].refs == {"fields": ["background_date", "targets"]}
     with pytest.raises(ChangeRequestTargetUnknownError):
         await service.update(
             project, 1, ChangeRequestUpdate.model_validate({"targets": _t("FR-404")}), actor_id=None

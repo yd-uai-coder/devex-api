@@ -263,7 +263,9 @@ class ChangeRequestService:
         actor_id: uuid.UUID | None,
     ) -> ChangeRequestView:
         """CR の中身を直す(送った項目だけ)。下書き・説明済みだけで、説明済みで直すと下書きに
-        戻る(時系列に残す)。対象を変えたら、基準の束の要件定義書で確かめ直す。"""
+        戻る。対象を変えたら、基準の束の要件定義書で確かめ直す。値の変わった項目があれば
+        (下書きのままでも)時系列に「直した」の1行を足し、`refs`に直した項目の名前を残す
+        (前後の値は持たない)。値の変わらない保存は行を足さない。"""
         change_request = await self._load(project, number)
         to_status = self._next(change_request, "edit")
         changes = payload.model_dump(exclude_unset=True)
@@ -281,14 +283,21 @@ class ChangeRequestService:
                     await self._baseline_with_items(change_request),
                 )
             )
+        edited: list[str] = []
         for field, value in changes.items():
             # 必須の項目に null を送ったときは、変えない(背景の日付だけは null で消せる)
             if value is None and field != "background_date":
                 continue
+            if getattr(change_request, field) != value:
+                edited.append(field)
             setattr(change_request, field, value)
-        if to_status != change_request.status:
+        if edited or to_status != change_request.status:
             await self._change_requests.add_event(
-                change_request, action="edit", to_status=to_status, actor_id=actor_id
+                change_request,
+                action="edit",
+                to_status=to_status,
+                actor_id=actor_id,
+                refs={"fields": edited},
             )
         else:
             change_request.updated_at = datetime.now(UTC)

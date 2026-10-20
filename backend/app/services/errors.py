@@ -328,6 +328,20 @@ class RequirementNotAssumedError(ConflictError):
     code: ClassVar[str | None] = "REQUIREMENT_NOT_ASSUMED"
 
 
+class AgreementKeyInvalidError(UnprocessableEntityError):
+    """合意の対象でない要素のキー(要件・利用者と使う場面・画面・API・外部連携のどれでもない)の
+    履歴を求めた場合に送出する。"""
+
+    code: ClassVar[str | None] = "AGREEMENT_KEY_INVALID"
+
+
+class ConfirmationItemNotFoundError(NotFoundError):
+    """確認事項の一覧に、指定したキーの項目が無い場合に送出する(今の一覧にも、利用者が欄を決めた
+    行にも無い)。"""
+
+    code: ClassVar[str | None] = "CONFIRMATION_ITEM_NOT_FOUND"
+
+
 class ReviewNotAllowedError(ForbiddenError):
     """設計レビューを使えないアカウント(superuser 以外・設定がオフ)が、レビューの設定の変更や
     レビューを要求した場合に送出する。"""

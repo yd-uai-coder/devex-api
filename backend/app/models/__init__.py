@@ -3,6 +3,7 @@ from app.models.baseline import Baseline, BaselineItem
 from app.models.change_request import ChangeRequest, ChangeRequestEvent, ChangeRequestReview
 from app.models.change_request_summary import ChangeRequestSummary
 from app.models.chat_history import ChatHistory
+from app.models.confirmation import ConfirmationItemRecord
 from app.models.data_item import DataItem
 from app.models.design_stage import DesignStage
 from app.models.generated_document import GeneratedDocument
@@ -27,6 +28,7 @@ __all__ = [
     "ChangeRequestReview",
     "ChangeRequestSummary",
     "ChatHistory",
+    "ConfirmationItemRecord",
     "DataItem",
     "DesignStage",
     "GeneratedDocument",

@@ -518,6 +518,8 @@ class TraceEntryRead(BaseModel):
     stage: TraceStageRead | None
     reviews: list[TraceReviewRead]
     baseline_number: int | None
+    # 直した(edit)の行の、直した項目の名前(タイトル・対象…)。ほかの行と、項目を残す前の行は空
+    edited_fields: list[str]
 
     @classmethod
     def from_entry(cls, entry: TraceEntry) -> "TraceEntryRead":
@@ -554,6 +556,7 @@ class TraceEntryRead(BaseModel):
                 for r in entry.reviews
             ],
             baseline_number=entry.baseline_number,
+            edited_fields=list(entry.edited_fields),
         )
 
 

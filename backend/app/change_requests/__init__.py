@@ -36,6 +36,7 @@ from app.change_requests.prediction import (
     baseline_models,
     predict,
     predict_from_snapshots,
+    predicted_document_keys,
     requirement_texts,
     rewritable_keys,
 )
@@ -88,6 +89,7 @@ from app.change_requests.targets import (
 )
 from app.change_requests.trace import (
     ACTION_LABEL,
+    EDITED_FIELD_LABEL,
     DecisionFacts,
     EventFacts,
     ReviewFacts,
@@ -123,6 +125,7 @@ __all__ = [
     "COPYABLE_STATUSES",
     "DECISION_ACTIONS",
     "DOCUMENT_REFLECTABLE_STATUSES",
+    "EDITED_FIELD_LABEL",
     "INCLUDABLE_STATUSES",
     "INITIAL_STATUS",
     "LINKABLE_RUN_STATUS",
@@ -189,6 +192,7 @@ __all__ = [
     "overlaps",
     "predict",
     "predict_from_snapshots",
+    "predicted_document_keys",
     "requirement_texts",
     "rewritable_keys",
     "review_link_problem",

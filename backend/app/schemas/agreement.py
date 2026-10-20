@@ -4,7 +4,15 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, Field, StringConstraints, field_validator
 
-from app.agreements import AgreedKind, AgreementOrigin, origin_label
+from app.agreements import (
+    AgreedKind,
+    AgreementOrigin,
+    ElementHistory,
+    HistoryEvent,
+    RestoreReason,
+    origin_label,
+)
+from app.change_requests import TargetKind
 from app.models.agreement import AgreementRecord
 
 # 合意の記録の文の上限(相手は名前・会社名、メモは打ち合わせの要点)
@@ -66,4 +74,87 @@ def agreement_read(record: AgreementRecord) -> AgreementRead:
         change_request_number=cr_number,
         recorded_by=record.recorded_by,
         created_at=record.created_at,
+    )
+
+
+class HistoryEntryRead(BaseModel):
+    """要素の履歴の1行(app/agreements/history.py の HistoryEntry)。合意の記録の行は`origin`〜
+    `recorded_by`を、戻しの行(`restored`)は`doc_type`〜`change_request_number`を持つ。"""
+
+    event: HistoryEvent
+    event_label: str
+    occurred_at: datetime
+    origin: AgreementOrigin | None
+    origin_label: str | None
+    label: str | None
+    content: dict[str, Any] | None
+    recorded_by: uuid.UUID | None
+    doc_type: str | None
+    doc_label: str | None
+    version: int | None
+    restore_reason: RestoreReason | None
+    restore_reason_label: str | None
+    change_request_number: int | None
+
+
+class RelatedChangeRequestRead(BaseModel):
+    """要素に関わる CR 1つ(対象の要件の変更の種類か、保存した予測に入っているか)。"""
+
+    number: int
+    title: str
+    status: str
+    status_label: str
+    target_kind: TargetKind | None
+    target_kind_label: str | None
+    predicted: bool
+
+
+class AgreementHistoryRead(BaseModel):
+    """要素1つの履歴。`current`は今の合意の中身(合意していない・外れたなら null)。"""
+
+    key: str
+    kind: AgreedKind
+    label: str
+    current: dict[str, Any] | None
+    entries: list[HistoryEntryRead]
+    change_requests: list[RelatedChangeRequestRead]
+
+
+def agreement_history_read(history: ElementHistory) -> AgreementHistoryRead:
+    return AgreementHistoryRead(
+        key=history.key,
+        kind=history.kind,
+        label=history.label,
+        current=dict(history.current) if history.current is not None else None,
+        entries=[
+            HistoryEntryRead(
+                event=e.event,
+                event_label=e.event_label,
+                occurred_at=e.occurred_at,
+                origin=e.origin,  # type: ignore[arg-type]
+                origin_label=e.origin_label,
+                label=e.label,
+                content=dict(e.content) if e.content is not None else None,
+                recorded_by=e.recorded_by,
+                doc_type=e.doc_type,
+                doc_label=e.doc_label,
+                version=e.version,
+                restore_reason=e.restore_reason,
+                restore_reason_label=e.restore_reason_label,
+                change_request_number=e.change_request_number,
+            )
+            for e in history.entries
+        ],
+        change_requests=[
+            RelatedChangeRequestRead(
+                number=c.number,
+                title=c.title,
+                status=c.status,
+                status_label=c.status_label,
+                target_kind=c.target_kind,
+                target_kind_label=c.target_kind_label,
+                predicted=c.predicted,
+            )
+            for c in history.change_requests
+        ],
     )

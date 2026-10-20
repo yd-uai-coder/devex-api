@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Sequence
 
 from sqlalchemy import select
 
@@ -147,6 +148,22 @@ class GeneratedDocumentRepository(CRUDRepository[GeneratedDocument]):
         return await self.list_all(
             order_by=GeneratedDocument.version.desc(), project_id=project_id, doc_type=doc_type
         )
+
+    async def list_protected(
+        self, project_id: uuid.UUID, doc_types: Sequence[str]
+    ) -> list[GeneratedDocument]:
+        """`doc_types`の版のうち、合意を守った版(`protection`が一覧のもの)を、文書の種類・版の順に
+        返す(要素の履歴のため)。JSON の中身では DB で絞らない(版の数は巡回で小さいため)。"""
+        stmt = (
+            select(GeneratedDocument)
+            .where(
+                GeneratedDocument.project_id == project_id,
+                GeneratedDocument.doc_type.in_(doc_types),
+            )
+            .order_by(GeneratedDocument.doc_type, GeneratedDocument.version)
+        )
+        documents = (await self._session.execute(stmt)).scalars().all()
+        return [d for d in documents if isinstance(d.protection, list)]
 
     async def get_version(
         self, *, project_id: uuid.UUID, doc_type: str, version: int

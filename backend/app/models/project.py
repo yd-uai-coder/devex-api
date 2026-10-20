@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from app.models.baseline import Baseline
     from app.models.change_request import ChangeRequest
     from app.models.chat_history import ChatHistory
+    from app.models.confirmation import ConfirmationItemRecord
     from app.models.data_item import DataItem
     from app.models.design_stage import DesignStage
     from app.models.generated_document import GeneratedDocument
@@ -109,4 +110,7 @@ class Project(Base):
     )
     agreement_records: Mapped[list["AgreementRecord"]] = relationship(
         back_populates="project", cascade="all, delete-orphan", order_by="AgreementRecord.seq"
+    )
+    confirmation_items: Mapped[list["ConfirmationItemRecord"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
     )
