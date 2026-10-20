@@ -10,6 +10,7 @@ from app.core.database import Base, PortableJSON
 # 型チェック時の解決用。
 # 通常の実行時には False -> importされない（循環import回避のため）
 if TYPE_CHECKING:
+    from app.models.agreement import AgreementRecord
     from app.models.baseline import Baseline
     from app.models.change_request import ChangeRequest
     from app.models.chat_history import ChatHistory
@@ -105,4 +106,7 @@ class Project(Base):
     )
     change_requests: Mapped[list["ChangeRequest"]] = relationship(
         back_populates="project", cascade="all, delete-orphan", order_by="ChangeRequest.number"
+    )
+    agreement_records: Mapped[list["AgreementRecord"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan", order_by="AgreementRecord.seq"
     )

@@ -21,14 +21,15 @@ from app.repositories.generated_document import (
     GeneratedDocumentRepository,
 )
 from app.schemas.baseline import BaselineCreate
+from app.services.agreement_service import AgreementService
 from app.services.design_stage_service import DesignStageService
+from app.services.detailed_mode import require_detailed
 from app.services.errors import (
     BaselineDocumentsMissingError,
     BaselineNotFoundError,
     ChangeRequestNotFoundError,
     ChangeRequestNotIncludableError,
     DesignStageGenerationInProgressError,
-    DesignStagesNotAvailableError,
     DocGenerationInProgressError,
 )
 
@@ -44,7 +45,8 @@ class BaselineService:
     """合意済みの版(束)の作成・一覧・取得(docs/external_design.md 2.14節)。
 
     束は、作った時点の文書(要件定義書・外部設計書・テスト仕様書の表示中の版)と、段階1〜8 の
-    承認の写しを写して凍結する。承認の写しが無い段階・無い文書も「入っていない」として行を作り、
+    承認の写しを写して凍結する。要件定義書・外部設計書の要素は、要素ごとの合意の記録にも残す
+    (AgreementService)。承認の写しが無い段階・無い文書も「入っていない」として行を作り、
     そのときの状態を残す。作った後は直さず消さない。検証済みの CR を渡すと、束と CR を結ぶ
     (CR のサービスはこのサービスを使うので、循環を避けて CR はリポジトリで読む)。
     詳細設計モードだけ。"""
@@ -90,6 +92,11 @@ class BaselineService:
             reason=payload.reason,
             recorded_by=recorded_by,
             items=[*document_snapshots(documents), *stage_snapshots(rows, views)],
+        )
+        await AgreementService(self._session).record_baseline(
+            baseline,
+            {doc_type: doc.model if doc else None for doc_type, doc in documents.items()},
+            recorded_by=recorded_by,
         )
         for change_request in change_requests:
             change_request.included_baseline = baseline
@@ -141,16 +148,6 @@ class BaselineService:
         """番号の束の要件定義書の写しにある要件の行(CR の対象を選ぶ画面用)。無ければ
         BaselineNotFoundError。"""
         return baseline_requirement_rows(await self.get(project, number))
-
-
-def require_detailed(project: Project, what: str) -> None:
-    """合意済みの版と変更要求は詳細設計モードだけ(作成も読み出しも)。簡易モードなら
-    DesignStagesNotAvailableError(409)。画面は、この 409 を受けて「詳細設計モードだけ」と
-    知らせる。"""
-    if project.mode != "detailed":
-        raise DesignStagesNotAvailableError(
-            f"{what} are not available for project {project.id} (mode={project.mode})"
-        )
 
 
 def baseline_requirement_rows(baseline: Baseline) -> list[dict[str, Any]]:

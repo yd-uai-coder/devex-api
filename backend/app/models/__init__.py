@@ -1,3 +1,4 @@
+from app.models.agreement import AgreementRecord
 from app.models.baseline import Baseline, BaselineItem
 from app.models.change_request import ChangeRequest, ChangeRequestEvent, ChangeRequestReview
 from app.models.change_request_summary import ChangeRequestSummary
@@ -18,6 +19,7 @@ from app.models.user_model_setting import UserModelSetting
 
 # alembicにimportさせるモデル
 __all__ = [
+    "AgreementRecord",
     "Baseline",
     "BaselineItem",
     "ChangeRequest",

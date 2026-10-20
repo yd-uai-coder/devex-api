@@ -76,11 +76,8 @@ from app.schemas.change_request import (
     DocumentChecksUpdate,
     change_request_label,
 )
-from app.services.baseline_service import (
-    BaselineService,
-    baseline_requirement_rows,
-    require_detailed,
-)
+from app.services.baseline_service import BaselineService, baseline_requirement_rows
+from app.services.detailed_mode import require_detailed
 from app.services.errors import (
     ChangeRequestBaselineMissingError,
     ChangeRequestInvalidTransitionError,

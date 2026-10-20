@@ -339,10 +339,15 @@ async def restore_document_version(
     response_model=GeneratedDocumentRead,
 )
 async def adopt_requirement(
-    req_id: str, session: SessionDep, current_project: CurrentProjectDep
+    req_id: str,
+    session: SessionDep,
+    current_project: CurrentProjectDep,
+    current_user: CurrentUserDep,
 ) -> GeneratedDocumentRead:
     """要件定義書の推測の要件を、利用者が確かめた「採用」にする(LLMは呼ばない。同じ版の
-    model と md を書き換え、版は増やさない)。"""
-    document = await DocGeneratorService(session).adopt_requirement(current_project, req_id)
+    model と md を書き換え、版は増やさない。詳細設計モードでは合意として記録する)。"""
+    document = await DocGeneratorService(session).adopt_requirement(
+        current_project, req_id, recorded_by=current_user.id
+    )
     return document_read(document)
 

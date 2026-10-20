@@ -1,6 +1,11 @@
-from typing import Annotated
+import uuid
+from datetime import datetime
+from typing import Annotated, Any
 
 from pydantic import BaseModel, Field, StringConstraints, field_validator
+
+from app.agreements import AgreedKind, AgreementOrigin, origin_label
+from app.models.agreement import AgreementRecord
 
 # 合意の記録の文の上限(相手は名前・会社名、メモは打ち合わせの要点)
 COUNTERPART_MAX = 200
@@ -25,3 +30,40 @@ class AgreementNotes(BaseModel):
         if value is None:
             return None
         return value.strip() or None
+
+
+class AgreementRead(BaseModel):
+    """今の合意1件(要素1つの最新の記録)。`label`は記録した時点の表示名、`content`は合意した中身
+    (行の model の写し)。`origin_label`は出どころの名前(B-1・採用にする・CR-1)。"""
+
+    key: str
+    kind: AgreedKind
+    label: str
+    content: dict[str, Any]
+    origin: AgreementOrigin
+    origin_label: str
+    baseline_number: int | None
+    change_request_number: int | None
+    recorded_by: uuid.UUID | None
+    created_at: datetime
+
+
+def agreement_read(record: AgreementRecord) -> AgreementRead:
+    """記録の行から応答を作る(出どころの束・CR は読み込み済みであること)。"""
+    baseline_number = record.baseline.number if record.baseline is not None else None
+    cr_number = record.change_request.number if record.change_request is not None else None
+    origin: AgreementOrigin = record.origin  # type: ignore[assignment]
+    return AgreementRead(
+        key=record.key,
+        kind=record.kind,  # type: ignore[arg-type]
+        label=record.label,
+        content=record.content or {},
+        origin=origin,
+        origin_label=origin_label(
+            origin, baseline_number=baseline_number, cr_number=cr_number
+        ),
+        baseline_number=baseline_number,
+        change_request_number=cr_number,
+        recorded_by=record.recorded_by,
+        created_at=record.created_at,
+    )

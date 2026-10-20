@@ -115,7 +115,9 @@ async def test_requirements_summary_and_adopt_route(db_session: AsyncSession) ->
     await repo.create_version(project_id=project.id, doc_type="external_design", content="e")
 
     listed = {d.doc_type: d for d in await list_generated_documents(db_session, project)}
-    adopted = await adopt_requirement("FR-001", db_session, project)
+    user = await db_session.get(User, project.user_id)
+    assert user is not None
+    adopted = await adopt_requirement("FR-001", db_session, project, user)
 
     summary = listed["requirements"].requirements
     assert summary is not None
@@ -127,7 +129,7 @@ async def test_requirements_summary_and_adopt_route(db_session: AsyncSession) ->
     assert adopted.requirements is not None
     assert adopted.requirements.counts == {"user": 0, "adopted": 1, "assumed": 0}
     with pytest.raises(RequirementNotFoundError):
-        await adopt_requirement("FR-002", db_session, project)
+        await adopt_requirement("FR-002", db_session, project, user)
 
 
 async def test_list_document_versions_shows_the_reflected_change_request(

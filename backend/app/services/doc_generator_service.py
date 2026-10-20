@@ -116,6 +116,7 @@ from app.schemas.document import (
     RequirementsSummaryRead,
     TestSpecRead,
 )
+from app.services.agreement_service import AgreementService
 from app.services.change_request_service import ChangeRequestService
 from app.services.design_stage_service import DesignStageService
 from app.services.errors import (
@@ -714,11 +715,14 @@ class DocGeneratorService:
         await self._session.commit()
         return restored
 
-    async def adopt_requirement(self, project: Project, req_id: str) -> GeneratedDocument:
+    async def adopt_requirement(
+        self, project: Project, req_id: str, *, recorded_by: uuid.UUID | None = None
+    ) -> GeneratedDocument:
         """現在の版の要件定義書の推測の要件を、利用者が確かめた「採用」にする(LLMは呼ばない)。
 
         同じ版の model と md を書き換え、版は増やさない(中身は変わらないので、後続の段階を
-        古くしない)。生成中は409。要件が無い・model の無い版は404、推測でない要件は409。"""
+        古くしない)。詳細設計モードでは、採用した行を合意として記録する(記録した人 =
+        `recorded_by`)。生成中は409。要件が無い・model の無い版は404、推測でない要件は409。"""
         if project.status == "generating":
             raise DocGenerationInProgressError(
                 "設計書を生成しています。完了してから再度お試しください。"
@@ -739,6 +743,8 @@ class DocGeneratorService:
             content=render_requirements(adopted),
             model=adopted.model_dump(mode="json"),
         )
+        row = next(row for row in adopted.rows if row.id == req_id)
+        await AgreementService(self._session).record_adopt(project, row, recorded_by=recorded_by)
         await self._session.commit()
         await self._session.refresh(document)
         return document

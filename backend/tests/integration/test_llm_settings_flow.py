@@ -63,7 +63,7 @@ async def test_register_key_then_choose_model(client: AsyncClient) -> None:
 
     catalog = await client.get("/api/v1/llm/catalog", headers=headers)
     assert catalog.status_code == 200
-    assert len(catalog.json()["models"]) == 8
+    assert len(catalog.json()["models"]) == 7
 
     choice = {"choices": [{"purpose": "chat", "provider": "claude", "model": "claude-haiku-5-5"}]}
     refused = await client.put("/api/v1/users/me/models", json=choice, headers=headers)

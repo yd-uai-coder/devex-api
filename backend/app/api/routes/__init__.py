@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from app.api.routes.agreements import router as agreements_router
 from app.api.routes.auth import router as auth_router
 from app.api.routes.baselines import router as baselines_router
 from app.api.routes.change_requests import router as change_requests_router
@@ -22,5 +23,6 @@ api_router.include_router(design_stages_router)
 api_router.include_router(reviews_router)
 api_router.include_router(baselines_router)
 api_router.include_router(change_requests_router)
+api_router.include_router(agreements_router)
 api_router.include_router(llm_router)
 
