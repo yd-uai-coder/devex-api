@@ -1,6 +1,7 @@
 """変更の影響の記録(段階の承認・文書の版の切り替え)と、確認済み・承認し直しの条件のテスト。
 
-SUT: DesignStageService.approve(印の記録と承認を止める条件)/ record_document_change /
+SUT: DesignStageService.approve(印の記録と承認を止める条件。生成したままの承認は前の段階へ
+     送らない)/ record_document_change /
      review_marks / impact / stage_impact(app/services/design_stage_service.py)、
      ルート get_design_impact・review_impact_marks(app/api/routes/design_stages.py)、
      応答の形(app/schemas/design_stage.py)、DocGeneratorService.generate・
@@ -109,6 +110,49 @@ async def test_first_approval_without_snapshot_records_nothing(db_session: Async
     await _edit_and_approve(db_session, project, 1, _renamed_function())
 
     assert await _impacts(db_session, project, range(2, 9)) == [None] * 7
+
+
+def _changed_service_module() -> dict:
+    model = copy.deepcopy(impact_stages()[4])
+    model["modules"][1]["responsibility"] = "予約の規則をまとめる"
+    return model
+
+
+@pytest.fixture
+def skip_stage_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """段階4 の fixture は段階ごとの検証を通らない(印の記録だけを見るので、検証を外す)。"""
+    monkeypatch.setattr("app.services.design_stage_service.has_errors", lambda _issues: False)
+
+
+@pytest.mark.usefixtures("skip_stage_validation")
+async def test_edited_later_stage_sends_marks_to_earlier_stages(db_session: AsyncSession) -> None:
+    """人が直して保存した段階の承認は、前の段階にも印を送る(前の段階の見直しが要るかもしれない)。"""
+    project = await create_impact_project(db_session)
+
+    await _edit_and_approve(db_session, project, 4, _changed_service_module())
+
+    earlier = [s for s in range(1, 4) if (await _row(db_session, project, s)).impact]
+    assert earlier
+    assert (await _impact(db_session, project, 5)).marks
+
+
+@pytest.mark.usefixtures("skip_stage_validation")
+async def test_regenerated_stage_approved_as_is_sends_no_marks_to_earlier_stages(
+    db_session: AsyncSession,
+) -> None:
+    """生成で作り直したまま(`regenerated`)承認したときは、前の段階へ印を送らない。後の段階へは送る。"""
+    project = await create_impact_project(db_session)
+    row4 = await _row(db_session, project, 4)
+    row4.model = _changed_service_module()
+    row4.status = "regenerated"
+    row4.version += 1
+    await db_session.commit()
+
+    await DesignStageService(db_session).approve(project, stage=4, expected_version=row4.version)
+
+    assert await _impacts(db_session, project, range(1, 4)) == [None] * 3
+    assert (await _impact(db_session, project, 5)).marks
+    assert (await _row(db_session, project, 4)).status == "approved"
 
 
 async def test_marks_are_recorded_only_on_stages_approved_once(db_session: AsyncSession) -> None:

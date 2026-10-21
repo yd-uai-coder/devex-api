@@ -1,4 +1,5 @@
-"""段階1 機能一覧の組み立て(処理IDの採番と引き継ぎ・機能グループの初期値)と検証のテスト。
+"""段階1 機能一覧の組み立て(処理IDの採番と引き継ぎ〈言い換えた API でない行も〉・機能グループの
+初期値)と検証のテスト。
 
 SUT: merge_draft / initial_group(app/detailed_design/function_list.py)、
      validate_function_list / validate_stage / has_errors / STAGE_VALIDATORS
@@ -103,6 +104,65 @@ def test_regeneration_keeps_ids_and_confirmed_groups() -> None:
     ]
     assert model.groups == ["文書", "projects"]
     assert model.next_number == 5
+
+
+def _screen_draft(name: str, trigger: str, screens: tuple[str, ...]) -> FunctionDraft:
+    return FunctionDraft(name=name, kind="画面", trigger=trigger, screens=screens, summary="")
+
+
+def test_renamed_non_api_rows_keep_ids_by_screens_or_trigger() -> None:
+    """APIでない処理は名称で突き合わせる。言い換えで当たらなくても、同じ種別で関連画面か
+    トリガーが同じ前の行が1つだけなら、その ID と人の確定した機能グループを引き継ぐ。"""
+    previous = FunctionListModel(
+        groups=["画面", "運用"],
+        functions=[
+            FunctionRow(id="F-02", name="トップページを表示する", kind="画面",
+                        trigger="SCR-001: 表示", screens=["SCR-001"], group="画面"),
+            FunctionRow(id="F-05", name="トレンドを取得する", kind="バッチ",
+                        trigger="12時間ごとの定期実行", group="運用"),
+        ],
+        next_number=6,
+    )
+
+    model = merge_draft(
+        [
+            _screen_draft("トップページ表示", "SCR-001: ページアクセス", ("SCR-001",)),
+            _draft("トレンド情報取得バッチ", "12時間ごとの定期実行", kind="バッチ"),
+        ],
+        previous,
+    )
+
+    assert [(f.id, f.name, f.group) for f in model.functions] == [
+        ("F-02", "トップページ表示", "画面"),
+        ("F-05", "トレンド情報取得バッチ", "運用"),
+    ]
+    assert model.next_number == 6
+
+
+def test_ambiguous_or_name_matched_rows_are_not_taken_by_fallback() -> None:
+    """候補が2つ以上なら引き継がない(取り違えを避ける)。名称で当たる行は、言い換えの突き合わせに
+    先に取られない。"""
+    previous = FunctionListModel(
+        functions=[
+            FunctionRow(id="F-01", name="一覧を見る", kind="画面", screens=["SCR-001"]),
+            FunctionRow(id="F-02", name="詳細を見る", kind="画面", screens=["SCR-001"]),
+        ],
+        next_number=3,
+    )
+
+    model = merge_draft(
+        [
+            _screen_draft("一覧を表示する", "", ("SCR-001",)),
+            _screen_draft("詳細を見る", "", ("SCR-001",)),
+        ],
+        previous,
+    )
+
+    # 1行目は候補が F-01 だけになる(F-02 は2行目が名称で引き継ぐ)
+    assert [f.id for f in model.functions] == ["F-01", "F-02"]
+
+    ambiguous = merge_draft([_screen_draft("見る", "", ("SCR-001",))], previous)
+    assert [f.id for f in ambiguous.functions] == ["F-03"]
 
 
 def test_duplicate_draft_trigger_gets_a_new_id() -> None:

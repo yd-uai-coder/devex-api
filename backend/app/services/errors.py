@@ -342,6 +342,14 @@ class ConfirmationItemNotFoundError(NotFoundError):
     code: ClassVar[str | None] = "CONFIRMATION_ITEM_NOT_FOUND"
 
 
+class ConfirmationItemSettledError(ConflictError):
+    """今の一覧に無い項目(採用にして合意した推測の要件・利用者、観点の表で決まった観点など)の状態を
+    変えようとした場合に送出する。文書と合意の記録はもう変わっているので、確認事項の状態だけを戻すと
+    食い違う(合意を変えるときは変更要求を出す)。メモと決める機会は変えられる。"""
+
+    code: ClassVar[str | None] = "CONFIRMATION_ITEM_SETTLED"
+
+
 class ReviewNotAllowedError(ForbiddenError):
     """設計レビューを使えないアカウント(superuser 以外・設定がオフ)が、レビューの設定の変更や
     レビューを要求した場合に送出する。"""

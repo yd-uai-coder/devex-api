@@ -281,6 +281,10 @@ class DesignStageService:
         """段階を承認する。承認したときの入力の版を`input_fingerprint`に記録する(後で前の段階・
         文書が変わったら「古い」と判定するため)。versionは増やさない。
 
+        生成で作り直したまま(人が保存していない`regenerated`のまま)承認したときは、前の段階へ
+        印を送らない(後の段階は前の段階から作るので、生成の結果が前の段階を直す必要を生むことは
+        まれで、毎回の見直しが手間になるため)。人が直して保存した後の承認は、前の段階にも送る。
+
         反映済みの CR を渡して作り直した後の最初の承認なら、承認で付く印の出どころに`cr:<番号>`を
         足し、CR の印の写しに重ねて、CR の時系列に記録だけの1行を足す(app/change_requests/
         stage_approvals.py。同じトランザクション)。
@@ -320,8 +324,16 @@ class DesignStageService:
         extra_sources = (cr_source(change_request.number),) if change_request else ()
         marks: list[Mark] = []
         if row.approved_model and project.mode == "detailed":
+            # 生成したままなら、この段階より前の段階に届く印を記録しない
+            min_target = stage if row.status == "regenerated" else None
             marks = _record_stage_change(
-                rows, documents, stage, row.approved_model, er, extra_sources=extra_sources
+                rows,
+                documents,
+                stage,
+                row.approved_model,
+                er,
+                extra_sources=extra_sources,
+                min_target=min_target,
             )
         if change_request is not None:
             change_request.applied_impact = merge_applied_marks(
@@ -746,9 +758,11 @@ def _record_stage_change(
     er: dict[str, dict],
     *,
     extra_sources: tuple[str, ...] = (),
+    min_target: int | None = None,
 ) -> list[Mark]:
     """段階の承認時の写しと今の内容の差分から、変更の影響を印として記録する。記録した印を返す。
-    `extra_sources`(CR で作り直した段階の`cr:<番号>`)は印の出どころに足す。"""
+    `extra_sources`(CR で作り直した段階の`cr:<番号>`)は印の出どころに足す。`min_target`を
+    渡すと、それより前の段階に届く印は記録しない。"""
     stages = {s: row.model for s, row in rows.items()}
     docs = _document_models(documents)
     before = build_elements(
@@ -758,7 +772,13 @@ def _record_stage_change(
     )
     after = build_elements(DesignModels.from_dicts(stages, docs, er))
     return _record_impact(
-        rows, stage_source(stage), before, after, stages=(stage,), extra_sources=extra_sources
+        rows,
+        stage_source(stage),
+        before,
+        after,
+        stages=(stage,),
+        extra_sources=extra_sources,
+        min_target=min_target,
     )
 
 
@@ -801,11 +821,15 @@ def _record_impact(
     *,
     stages: tuple[int, ...],
     extra_sources: tuple[str, ...] = (),
+    min_target: int | None = None,
 ) -> list[Mark]:
     """前と後の差分から印を求め、届いた段階の行に記録する(今の記録に足す)。記録した印を返す
-    (印を記録しない段階に届いたものは入れない)。`extra_sources`は印の出どころにだけ足す。"""
+    (印を記録しない段階に届いたものは入れない)。`extra_sources`は印の出どころにだけ足す。
+    `min_target`より前の段階に届いた印は記録しない。"""
     recorded: list[Mark] = []
     for target, impact in _impact_by_stage(source, before, after, stages=stages).items():
+        if min_target is not None and target < min_target:
+            continue
         row = rows.get(target)
         if not _records_impact(row):
             continue

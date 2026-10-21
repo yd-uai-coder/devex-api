@@ -3,7 +3,8 @@
 SUT: ConfirmationService(view / update)と、DocGeneratorService の apply_adopt_requirement /
      apply_adopt_user / adopt_requirement(確認済みと合意の記録)、
      AgreementService.record_adopt_users、
-     schemas の confirmation_list_read・ConfirmationUpdate、エラー ConfirmationItemNotFoundError、
+     schemas の confirmation_list_read・ConfirmationUpdate、エラー ConfirmationItemNotFoundError・
+     ConfirmationItemSettledError、
      ルート app/api/routes/confirmations.py(アプリへの登録の確かめ)
 ドライバ: pytest のテスト関数
 スタブ不要 ── LLM を呼ばない経路(一覧の組み立て・欄の保存・採用)だけで、DB はテスト用の SQLite の
@@ -29,7 +30,11 @@ from app.repositories.hearing_point import HearingPointRepository
 from app.schemas.confirmation import ConfirmationUpdate
 from app.services.confirmation_service import ConfirmationService
 from app.services.doc_generator_service import DocGeneratorService, parse_requirements_model
-from app.services.errors import ConfirmationItemNotFoundError, DesignStagesNotAvailableError
+from app.services.errors import (
+    ConfirmationItemNotFoundError,
+    ConfirmationItemSettledError,
+    DesignStagesNotAvailableError,
+)
 
 
 def _model() -> RequirementsModel:
@@ -162,6 +167,33 @@ async def test_confirming_requirement_adopts_and_records_agreement(
     assert [(r.key, r.origin, r.recorded_by) for r in current] == [
         ("req:FR-002", "adopt", project.user_id)
     ]
+
+
+async def test_settled_item_keeps_status_but_accepts_memo(db_session: AsyncSession) -> None:
+    """採用にして一覧から消えた項目は、状態を戻せない(文書と合意の記録はもう変わっている)。
+    メモと決める機会は変えられ、同じ状態を送るのは変えたことにならない。"""
+    project = await _project(db_session)
+    service = ConfirmationService(db_session)
+    await service.update(
+        project, "req:FR-002", ConfirmationUpdate(status="confirmed"), updated_by=project.user_id
+    )
+    for status in ("unconfirmed", "rejected"):
+        with pytest.raises(ConfirmationItemSettledError):
+            await service.update(
+                project, "req:FR-002", ConfirmationUpdate(status=status), updated_by=None
+            )
+    view = await service.update(
+        project,
+        "req:FR-002",
+        ConfirmationUpdate(status="confirmed", memo="定例で確かめた", opportunity="email"),
+        updated_by=None,
+    )
+    item = next(i for i in view.items if i.key == "req:FR-002")
+    assert (item.present, item.status, item.memo, item.opportunity) == (
+        False, "confirmed", "定例で確かめた", "email",
+    )
+    model = await _current_model(db_session, project)
+    assert model.rows[1].source == "adopted"
 
 
 async def test_confirming_user_adopts_scene_and_records_whole_users(

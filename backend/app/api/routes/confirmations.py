@@ -26,7 +26,8 @@ async def update_confirmation(
     current_user: CurrentUserDep,
 ) -> ConfirmationListRead:
     """確認事項1件の決める機会・状態・メモを変え、作り直した一覧を返す。推測の要件・推測の利用者
-    を確認済みにすると、採用にして合意を記録する。項目が無ければ404、簡易ドキュメントモードは409。"""
+    を確認済みにすると、採用にして合意を記録する。項目が無ければ404、簡易ドキュメントモードと、今の
+    一覧に無い項目の状態を変えるときは409。"""
     return await ConfirmationService(session).update(
         current_project, key, payload, updated_by=current_user.id
     )

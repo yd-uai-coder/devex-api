@@ -14,7 +14,7 @@ from app.schemas.confirmation import (
 )
 from app.services.detailed_mode import require_detailed
 from app.services.doc_generator_service import DocGeneratorService, parse_requirements_model
-from app.services.errors import ConfirmationItemNotFoundError
+from app.services.errors import ConfirmationItemNotFoundError, ConfirmationItemSettledError
 
 
 class ConfirmationService:
@@ -45,9 +45,10 @@ class ConfirmationService:
         """項目1件の欄を変え、作り直した一覧を返す。
 
         今の一覧にある推測の要件・推測の利用者を確認済みにすると、「採用にする」と同じく文書の
-        行を採用にし、合意を記録する(同じトランザクション)。観点・却下・今の一覧に無い項目は
-        欄だけ変える(観点の状態はチャットと観点の表で決める)。キーが今の一覧にも保存した行にも
-        無ければ ConfirmationItemNotFoundError。"""
+        行を採用にし、合意を記録する(同じトランザクション)。観点・却下は欄だけ変える(観点の状態は
+        チャットと観点の表で決める)。今の一覧に無い項目は、メモと決める機会だけを変えられ、状態を
+        変えると ConfirmationItemSettledError。キーが今の一覧にも保存した行にも無ければ
+        ConfirmationItemNotFoundError。"""
         require_detailed(project, "Confirmations")
         items = {item.key: item for item in await self._items(project)}
         item = items.get(key)
@@ -55,6 +56,9 @@ class ConfirmationService:
             record = await self._records.find_one(project_id=project.id, key=key)
             if record is None:
                 raise ConfirmationItemNotFoundError(f"Confirmation item {key} not found")
+            status = payload.model_dump(exclude_unset=True).get("status")
+            if status is not None and status != record.status:
+                raise ConfirmationItemSettledError(f"Confirmation item {key} is settled")
             item = ConfirmationItem(record.key, record.kind, record.label)  # type: ignore[arg-type]
         fields = payload.model_dump(exclude_unset=True)
         if fields.get("status") == "confirmed" and key in items:
