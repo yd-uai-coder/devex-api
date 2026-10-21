@@ -541,6 +541,8 @@ class TraceEntryRead(BaseModel):
     baseline_number: int | None
     # 直した(edit)の行の、直した項目の名前(タイトル・対象…)。ほかの行と、項目を残す前の行は空
     edited_fields: list[str]
+    # 段階の承認で印を結んだ行の、結んだ印の数。ほかの行は null
+    mark_count: int | None = None
 
     @classmethod
     def from_entry(cls, entry: TraceEntry) -> "TraceEntryRead":
@@ -578,6 +580,7 @@ class TraceEntryRead(BaseModel):
             ],
             baseline_number=entry.baseline_number,
             edited_fields=list(entry.edited_fields),
+            mark_count=entry.mark_count,
         )
 
 

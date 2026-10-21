@@ -119,6 +119,8 @@ class TraceEntry:
     reviews: tuple[ReviewFacts, ...] = ()
     baseline_number: int | None = None
     edited_fields: tuple[str, ...] = ()
+    # 段階の承認で印を結んだ(approve_stage)の行の、結んだ印の数。ほかの行は None
+    mark_count: int | None = None
 
 
 def trace_entries(
@@ -177,7 +179,13 @@ def _entry(
         ),
         baseline_number=baseline if isinstance(baseline, int) else None,
         edited_fields=_edited_fields(refs) if event.action == "edit" else (),
+        mark_count=_mark_count(refs) if event.action == "approve_stage" else None,
     )
+
+
+def _mark_count(refs: Mapping[str, Any]) -> int | None:
+    count = refs.get("mark_count")
+    return count if isinstance(count, int) and not isinstance(count, bool) else None
 
 
 def _edited_fields(refs: Mapping[str, Any]) -> tuple[str, ...]:

@@ -129,6 +129,23 @@ def test_edit_rows_show_the_edited_fields() -> None:
     assert TraceEntryRead.from_entry(entries[0]).edited_fields == ["タイトル", "対象"]
 
 
+def test_approve_stage_rows_show_the_mark_count() -> None:
+    """段階の承認で印を結んだ行は、段階の版と結んだ印の数を出す。形の悪い数・ほかの操作の行は
+    None。"""
+    events = [
+        _event("approve_stage", {"stage": 3, "version": 2, "mark_count": 4}),
+        _event("approve_stage", {"stage": 3, "version": 3, "mark_count": "4"}),
+        _event("apply", {"stage": 3, "version": 1, "mark_count": 4}),
+    ]
+
+    entries = trace_entries(events, {}, {})
+
+    assert [e.mark_count for e in entries] == [4, None, None]
+    assert entries[0].stage == TraceStage(3, 2)
+    assert TraceEntryRead.from_entry(entries[0]).mark_count == 4
+    assert TraceEntryRead.from_entry(entries[2]).mark_count is None
+
+
 def test_decision_note_skips_missing_values_and_keeps_row_note() -> None:
     assert decision_note("", DecisionFacts(None, "", "合意")) == "理由: 合意"
     assert decision_note("行のメモ", DecisionFacts("相手", None, None)) == "行のメモ / 相手: 相手"
