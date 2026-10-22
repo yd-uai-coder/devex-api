@@ -447,6 +447,15 @@ def test_facts_of_reads_the_row() -> None:
         targets=[{"requirement_id": "FR-001", "kind": "delete"}],
         adds_requirement=True,
         origins=[{"key": "screen:SCR-001", "label": "SCR-001 予約画面"}],
+        options={
+            "items": [
+                {"name": "A", "targets": [], "outcome": "x"},
+                {"name": "B", "targets": [], "outcome": "y"},
+            ],
+            "recommended": None,
+            "reason": "",
+        },
+        decision_option=2,
     )
 
     facts = facts_of(row, 2)  # type: ignore[arg-type]
@@ -454,6 +463,8 @@ def test_facts_of_reads_the_row() -> None:
     assert (facts.number, facts.baseline_number, facts.adds_requirement) == (3, 2, True)
     assert facts.targets == (Target("FR-001", "delete"),)
     assert facts.origin_labels == ("SCR-001 予約画面",)
+    assert [o.name for o in facts.options.items] == ["A", "B"]
+    assert facts.decision_option == 2
 
 
 async def test_withdrawn_impact_is_not_saved(db_session: AsyncSession) -> None:

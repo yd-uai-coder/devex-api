@@ -36,6 +36,7 @@ def test_messages_pass_only_the_explanation() -> None:
     messages = build_summary_messages("# 変更の説明書 CR-1\n\n## 1. 変更の内容と背景")
 
     assert isinstance(messages[0], SystemMessage) and "クライアント" in str(messages[0].content)
+    assert "選択肢の節があれば" in str(messages[0].content)
     assert isinstance(messages[1], HumanMessage)
     assert messages[1].content == "# 変更の説明書 CR-1\n\n## 1. 変更の内容と背景"
 

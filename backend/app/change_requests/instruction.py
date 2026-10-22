@@ -8,6 +8,7 @@ docs/external_design.md 2.14節「反映」。設計レビューの採用した�
 from collections.abc import Iterable
 
 from app.change_requests.explanation import ChangeRequestFacts
+from app.change_requests.options import option_label
 from app.change_requests.targets import TARGET_KIND_LABEL
 
 CR_INSTRUCTION_HEAD = (
@@ -16,16 +17,28 @@ CR_INSTRUCTION_HEAD = (
 )
 ADDS_REQUIREMENT_LINE = "- 新しい要件を足す(内容は上の「内容」のとおり。ID は既存の要件と重ねない)"
 ORIGIN_LINE = "  - 新しい要件が関わる既存の要素(予測の起点): {origins}"
+OPTION_LINE = "合意した案: {label} {name}(結果: {outcome})"
 
 
 def build_cr_instruction(facts: ChangeRequestFacts) -> str:
-    """指示の文(頭の1文 + タイトル・内容 + 対象1件1行 + 新しい要件を足すなら1行と、起点があれば
-    その1行)。"""
+    """指示の文(頭の1文 + タイトル・内容 + 合意した案があればその1行 + 対象1件1行 + 新しい要件を
+    足すなら1行と、起点があればその1行)。案のある CR では、合意で選んだ案の対象が CR の対象に
+    なっている。"""
     lines = [
         CR_INSTRUCTION_HEAD.format(number=facts.number),
         f"タイトル: {facts.title}",
         f"内容: {facts.content.strip() or '—'}",
     ]
+    number = facts.decision_option
+    if number is not None and 1 <= number <= len(facts.options.items):
+        option = facts.options.option(number)
+        lines.append(
+            OPTION_LINE.format(
+                label=option_label(number),
+                name=option.name,
+                outcome=" ".join(option.outcome.split()),
+            )
+        )
     if facts.targets:
         lines.append("対象の要件:")
     for target in facts.targets:

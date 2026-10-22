@@ -1,6 +1,7 @@
 """合意した CR からの再生成の指示のテスト。
 
-SUT: app.change_requests(build_cr_instruction / join_instructions)
+SUT: app.change_requests(build_cr_instruction / join_instructions。合意した案の1行は
+     options_from_rows で組んだ案)
 ドライバ: pytest のテスト関数
 スタブ不要 ── 対象が純粋(副作用なし)で外部依存を呼ばないため
 """
@@ -12,8 +13,9 @@ from app.change_requests import (
     Target,
     build_cr_instruction,
     join_instructions,
+    options_from_rows,
 )
-from app.change_requests.instruction import ADDS_REQUIREMENT_LINE, ORIGIN_LINE
+from app.change_requests.instruction import ADDS_REQUIREMENT_LINE, OPTION_LINE, ORIGIN_LINE
 
 
 def _facts(targets: tuple[Target, ...], **overrides: object) -> ChangeRequestFacts:
@@ -85,3 +87,23 @@ def test_instruction_lists_new_requirement_origins() -> None:
 def test_join_instructions_skips_empty() -> None:
     assert join_instructions(["指摘の指示", "", "CR の指示"]) == "指摘の指示\n\nCR の指示"
     assert join_instructions(["", ""]) == ""
+
+
+def test_instruction_names_the_agreed_option() -> None:
+    """合意で選んだ案があれば、タイトル・内容の後ろに案の名前と結果の1行を置く(対象は CR の対象。
+    合意で選んだ案の対象になっている)。選んでいなければ置かない。"""
+    options = options_from_rows(
+        [
+            ("5つまで", [Target("FR-005")], "画面を直す"),
+            ("10まで", [Target("FR-005")], "保存の\n容量が増える"),
+        ]
+    )
+    text = build_cr_instruction(
+        _facts((Target("FR-005"),), options=options, decision_option=2)
+    )
+
+    lines = text.splitlines()
+    assert lines[3] == "合意した案: 案2 10まで(結果: 保存の 容量が増える)"
+    assert lines[4] == "対象の要件:"
+    assert "合意した案" not in build_cr_instruction(_facts((Target("FR-005"),), options=options))
+    assert OPTION_LINE.startswith("合意した案")

@@ -41,6 +41,7 @@ EDITED_FIELD_LABEL: dict[str, str] = {
     "targets": "対象",
     "adds_requirement": "新しい要件を足す",
     "origins": "予測の起点",
+    "options": "選択肢",
 }
 
 
@@ -59,11 +60,13 @@ class EventFacts:
 
 @dataclass(frozen=True)
 class DecisionFacts:
-    """CR に残した合意の記録(相手・メモ・理由。無いものは None か空)。"""
+    """CR に残した合意の記録(相手・メモ・理由。無いものは None か空)。`option`は合意で選んだ案の
+    表示名(`案2 メールだけ`。案の無い CR は None)。"""
 
     counterpart: str | None
     memo: str | None
     reason: str | None
+    option: str | None = None
 
 
 DECISION_ACTIONS: frozenset[str] = frozenset({"agree", "reject"})
@@ -136,9 +139,10 @@ def trace_entries(
 
 
 def decision_note(note: str, decision: DecisionFacts) -> str:
-    """合意・却下の行のメモ。行のメモに、相手・メモ・理由(あるものだけ)を続ける。"""
+    """合意・却下の行のメモ。行のメモに、選んだ案・相手・メモ・理由(あるものだけ)を続ける。"""
     parts = [note] if note else []
     for label, value in (
+        ("選んだ案", decision.option),
         ("相手", decision.counterpart),
         ("メモ", decision.memo),
         ("理由", decision.reason),

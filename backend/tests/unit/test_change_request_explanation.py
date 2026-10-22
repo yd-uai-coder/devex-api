@@ -1,9 +1,9 @@
-"""変更要求(CR)の説明書(5節の md)と要約の照合のテスト。
+"""変更要求(CR)の説明書(5節の md。案のある CR は6節)と要約の照合のテスト。
 
 SUT: app.change_requests の build_explanation / with_summary / check_summary /
      explanation_filename と、
-     Explanation(markdown・fingerprint・scale)・ChangeRequestFacts(新しい要件の起点の
-     `origin_labels`も)・SummaryCheck
+     Explanation(markdown・fingerprint・scale・option_scales)・ChangeRequestFacts(新しい要件の
+     起点の`origin_labels`も。選択肢の`options`・`decision_option`も)・SummaryCheck
 ドライバ: pytest のテスト関数
 スタブ不要 ── 対象が純粋(副作用なし)で外部依存を呼ばないため。入力は、要件 FR-001・FR-002・
 NFR-001 と段階1〜8 を持つ fixture の model を束の写しの形に並べ、要件定義書に観点の状態と推測の
@@ -15,11 +15,13 @@ from datetime import date
 from tests.fixtures.change_impact import impact_documents, impact_stages
 
 from app.change_requests import (
+    ChangeOptions,
     ChangeRequestFacts,
     Target,
     build_explanation,
     check_summary,
     explanation_filename,
+    options_from_rows,
     predict_from_snapshots,
     with_summary,
 )
@@ -242,3 +244,75 @@ def test_check_summary_finds_unknown_ids_and_numbers() -> None:
     assert not bad.ok
     # 英字に続く数字は名前の一部とみなす
     assert check_summary("[E2E Fake] S3 に置きます。", explanation).ok
+
+
+def _options() -> ChangeOptions:
+    return options_from_rows(
+        [
+            ("登録だけ", [Target("FR-001", "content", "備考を付けて登録できる")], "小さく\n済む"),
+            ("登録と一覧", [Target("FR-001"), Target("FR-002", "delete")], "一覧も直す"),
+        ],
+        recommended=1,
+        reason="早く出せる",
+    )
+
+
+def test_options_add_a_section_and_compare_scale_by_option() -> None:
+    """案のある CR は2節の後に「選択肢」を入れて6節。規模は種類 × 案の表で、影響の一覧はすべての
+    案を合わせた範囲。2節の空の案は3節を参照させる。"""
+    explanation = _build((Target("FR-001"), Target("FR-002")), options=_options())
+    md = explanation.markdown
+    lines = md.splitlines()
+
+    assert [line for line in lines if line.startswith("## ")] == [
+        "## 1. 変更の内容と背景",
+        "## 2. 対象の要件",
+        "## 3. 選択肢",
+        "## 4. 変更の規模",
+        "## 5. 影響の一覧",
+        "## 6. 合意の前に確かめたい点",
+    ]
+    assert "| FR-001 | 内容の変更 | 予約を登録できる | (3節の案を参照) |" in md
+    assert "おすすめは案1です。理由: 早く出せる。" in md
+    assert "### 案1 登録だけ(おすすめ)" in lines
+    assert "### 案2 登録と一覧" in lines
+    assert "| FR-001 | 内容の変更 | 備考を付けて登録できる |" in md
+    assert "| FR-002 | 削除 | (削除) |" in md
+    assert "結果: 小さく 済む" in lines
+    assert "| 種類 | 案1 登録だけ | 案2 登録と一覧 |" in lines
+    units = [s.scale.of("unit").count for s in explanation.option_scales]
+    assert f"| 作業単位 | {units[0]}件 | {units[1]}件 |" in lines
+    assert "すべての案を合わせた範囲です。" in md
+
+
+def test_after_agreement_the_chosen_option_is_shown() -> None:
+    """合意で案を選んだ後は、選択肢の節に合意した案を示し、規模は今の表に戻る。"""
+    explanation = _build(
+        (Target("FR-001", "content", "備考を付けて登録できる"),),
+        options=_options(),
+        decision_option=1,
+        status="agreed",
+    )
+    md = explanation.markdown
+
+    assert "合意した案: 案1 登録だけ。" in md
+    assert "### 案1 登録だけ(おすすめ・合意した案)" in md
+    assert "| 種類 | 数 | 内訳 |" in md
+    assert explanation.option_scales == ()
+    assert "すべての案を合わせた範囲" not in md
+
+
+def test_option_without_targets_says_so() -> None:
+    """対象の無い案(新しい要件を足すだけ)は、既存の要件を変えないと書く。"""
+    options = options_from_rows([("足すだけ", [], "x"), ("直す", [Target("FR-001")], "y")])
+    md = _build((Target("FR-001"),), options=options, adds_requirement=True).markdown
+
+    assert "既存の要件は変えません(新しい要件を足すだけです)。" in md
+    assert "おすすめは" not in md
+
+
+def test_no_options_keeps_the_five_sections() -> None:
+    """案の無い CR は、案の空の値を渡しても今の5節の md と同じ(要約を古くしない)。"""
+    targets = (Target("FR-001"),)
+
+    assert _build(targets, options=ChangeOptions()).markdown == _build(targets).markdown

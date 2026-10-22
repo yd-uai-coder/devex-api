@@ -1,9 +1,20 @@
 from langchain_core.messages import HumanMessage, SystemMessage
+from tests.fixtures.change_impact import impact_documents, impact_stages
 from tests.fixtures.external_design import e2e_fake_external_design_md
 from tests.fixtures.simple_documents import e2e_fake_simple_documents
 
 from app.ai.llm.fake import E2eFakeLLM
-from app.change_requests import build_summary_messages
+from app.change_requests import (
+    ChangeRequestFacts,
+    OptionDraftOut,
+    Target,
+    build_explanation,
+    build_option_draft_messages,
+    build_summary_messages,
+    check_option_draft,
+    draft_to_options,
+    predict_from_snapshots,
+)
 from app.detailed_design.plan import unit_ids
 from app.detailed_design.simple_procedure import parse_internal_design, parse_wbs
 from app.documents.requirements import build_model, render_requirements
@@ -106,6 +117,41 @@ async def test_change_request_summary_prompt_produces_summary_reply() -> None:
     assert "[E2E Fake]" in str(reply.content) and "説明書" in str(reply.content)
     body = str(reply.content).removeprefix("[E2E Fake]")
     assert not any(ch.isdigit() for ch in body)  # 照合で印が付かない
+
+
+async def test_change_request_option_draft_uses_the_targets_of_the_explanation() -> None:
+    """選択肢の下書き(本物のプロンプトと説明書)には、2節の対象の要件から2つの案を返し、照合を
+    通る(取り込める・説明書に無い要件 ID・数字が無い)。説明書の書式を変えたときの契約テスト。"""
+    snapshots = {
+        **impact_documents(),
+        **{f"stage:{n}": model for n, model in impact_stages().items()},
+    }
+    targets = [Target("FR-001"), Target("FR-002")]
+    facts = ChangeRequestFacts(
+        number=1,
+        title="題",
+        status="draft",
+        content="内容",
+        background_source="meeting",
+        background_date=None,
+        background_memo="",
+        targets=tuple(targets),
+        adds_requirement=False,
+        baseline_number=1,
+    )
+    prediction = predict_from_snapshots(snapshots, targets, adds_requirement=False)
+    explanation = build_explanation(facts, prediction, snapshots, [], {})
+
+    structured = E2eFakeLLM().with_structured_output(OptionDraftOut)
+    result = await structured.ainvoke(build_option_draft_messages(explanation.markdown))
+
+    assert isinstance(result, OptionDraftOut)
+    options = draft_to_options(result)
+    assert [[t.requirement_id for t in o.targets] for o in options.items] == [
+        ["FR-001"],
+        ["FR-001", "FR-002"],
+    ]
+    assert check_option_draft(options, explanation, targets, False).ok
 
 
 async def test_hearing_reply_is_returned_for_ordinary_chat_turn() -> None:

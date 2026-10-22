@@ -5,11 +5,14 @@ SUT: ルート create_change_request / list_change_requests / get_change_request
      withdraw_change_request / copy_change_request / get_change_request_impact /
      get_change_request_explanation / download_change_request_explanation /
      generate_change_request_summary / edit_change_request_summary /
-     confirm_change_request_summary(→ ChangeRequestService)と、api_router への登録
+     confirm_change_request_summary / generate_change_request_option_draft /
+     get_change_request_option_draft / adopt_change_request_option_draft
+     (→ ChangeRequestService)と、api_router への登録
 ドライバ: pytest のテスト関数(ルートは関数を直接呼ぶ)
 スタブ: ルートがサービスの結果を応答の形に詰めることが検証対象のため、テスト用の SQLite の
 セッションと、合意済みの版を作った fixture(`create_impact_project`)を使う。要約だけは LLM の
-解決(LlmResolver.resolve)を、固定の文を返すフェイクに差し替える(stub_llm_resolver)
+解決(LlmResolver.resolve)を、固定の文を返すフェイクに差し替える(stub_llm_resolver)。選択肢の
+下書きも同じ差し替えで、決まった構造化出力を返すフェイクを使う
 """
 
 from datetime import UTC, datetime
@@ -24,6 +27,7 @@ from tests.fixtures.llm_resolver import stub_llm_resolver
 from app.ai.llm.catalog import Purpose
 from app.api.routes import api_router
 from app.api.routes.change_requests import (
+    adopt_change_request_option_draft,
     confirm_change_request_summary,
     copy_change_request,
     create_change_request,
@@ -31,20 +35,24 @@ from app.api.routes.change_requests import (
     download_change_request_explanation,
     edit_change_request_summary,
     explain_change_request,
+    generate_change_request_option_draft,
     generate_change_request_summary,
     get_change_request,
     get_change_request_explanation,
     get_change_request_impact,
+    get_change_request_option_draft,
     list_change_requests,
     update_change_request,
     withdraw_change_request,
 )
+from app.change_requests import OptionDraftItemOut, OptionDraftOut, OptionDraftTargetOut
 from app.models.project import Project
 from app.models.user import User
 from app.schemas.baseline import BaselineCreate
 from app.schemas.change_request import (
     ChangeRequestCreate,
     ChangeRequestDecision,
+    ChangeRequestOptionsIn,
     ChangeRequestUpdate,
     ChangeRequestWithdraw,
     SummaryEdit,
@@ -209,6 +217,94 @@ async def test_summary_routes(db_session: AsyncSession, monkeypatch: pytest.Monk
     assert "## 要約\n\nFR-002 の一覧を直します。" in bytes(download.body).decode()
 
 
+async def test_option_routes(db_session: AsyncSession) -> None:
+    """作成・更新・合意のルートが案を受け取り、詳細に案と選んだ番号を出す。説明書の応答は、合意の
+    前に案ごとの規模を出し、案を選んだ後は出さない。"""
+    project, user = await _setup(db_session)
+    options = {
+        "items": [
+            {"name": "日付だけ", "targets": [{"requirement_id": "FR-002"}], "outcome": "小さい"},
+            {"name": "日付と備品", "targets": [{"requirement_id": "FR-002"}], "outcome": "大きい"},
+        ]
+    }
+
+    created = await create_change_request(
+        _CREATE.model_copy(update={"options": ChangeRequestOptionsIn.model_validate(options)}),
+        db_session,
+        project,
+        user,
+    )
+    edited = await update_change_request(
+        1,
+        ChangeRequestUpdate.model_validate(
+            {"options": {**options, "recommended": 2, "reason": "漏れが無い"}}
+        ),
+        db_session,
+        project,
+        user,
+    )
+    choosing = await get_change_request_explanation(1, db_session, project)
+    await explain_change_request(1, db_session, project, user)
+    agreed = await decide_change_request(
+        1,
+        ChangeRequestDecision(decision="agreed", decided_at=_AT, reason="合う", option=2),
+        db_session,
+        project,
+        user,
+    )
+    chosen = await get_change_request_explanation(1, db_session, project)
+
+    assert [(o.label, o.name, o.recommended) for o in choosing.option_scales] == [
+        ("案1", "日付だけ", False),
+        ("案2", "日付と備品", True),
+    ]
+    assert choosing.option_scales[0].scale[0].kind == "unit"
+    assert "## 3. 選択肢" in choosing.markdown
+    assert chosen.option_scales == []
+    assert "合意した案: 案2 日付と備品。" in chosen.markdown
+    assert created.options is not None
+    assert [o.label for o in created.options.items] == ["案1", "案2"]
+    assert edited.options is not None and edited.options.recommended == 2
+    assert agreed.decision is not None and agreed.decision.option == 2
+
+
+async def test_option_draft_routes(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """下書きは利用者の生成の用途で解決した LLM で作り、照合の結果を返す。取り込むと CR の案に
+    なる。"""
+    draft = OptionDraftOut(
+        options=[
+            OptionDraftItemOut(
+                name=name,
+                targets=[OptionDraftTargetOut(requirement_id="FR-002")],
+                outcome=outcome,
+            )
+            for name, outcome in (("日付だけ", "小さい"), ("日付と備品", "40日かかる"))
+        ],
+        recommended=1,
+        reason="早い",
+    )
+    stub = stub_llm_resolver(monkeypatch, FakeLLM(structured=draft))
+    project, user = await _setup(db_session)
+    await create_change_request(_CREATE, db_session, project, user)
+
+    generated = await generate_change_request_option_draft(1, db_session, project, user)
+    read = await get_change_request_option_draft(1, db_session, project)
+    adopted = await adopt_change_request_option_draft(1, db_session, project, user)
+    after = await get_change_request_option_draft(1, db_session, project)
+
+    assert stub.calls == [(user.id, Purpose.GENERATION)]
+    assert (generated.status, generated.status_label) == ("unconfirmed", "未確認")
+    assert generated.generated_model == "gemini-3.5-flash-lite"
+    assert [o.label for o in read.options.items] == ["案1", "案2"]
+    assert read.unknown_numbers == ["40"]
+    assert read.adoptable is True and read.problems == []
+    assert read.stale is False
+    assert adopted.options is not None and adopted.options.recommended == 1
+    assert (after.status, after.stale) == ("adopted", True)
+
+
 def test_router_is_registered() -> None:
     """api_router(app/api/routes/__init__.py)に CR のルーターを登録したこと。"""
     app = FastAPI()
@@ -224,6 +320,8 @@ def test_router_is_registered() -> None:
     assert "/projects/{project_id}/change-requests/{number}/explanation/summary" in paths
     assert "/projects/{project_id}/change-requests/{number}/explanation/summary/confirm" in paths
     assert "/projects/{project_id}/change-requests/{number}/comparison" in paths
+    assert "/projects/{project_id}/change-requests/{number}/options/draft" in paths
+    assert "/projects/{project_id}/change-requests/{number}/options/draft/adopt" in paths
     assert "/projects/{project_id}/change-requests/{number}/verification" in paths
     assert "/projects/{project_id}/change-requests/{number}/document-checks" in paths
     assert "/projects/{project_id}/change-requests/{number}/verify" in paths

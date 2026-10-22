@@ -19,6 +19,11 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel
 
+from app.change_requests.option_drafting import (
+    OptionDraftItemOut,
+    OptionDraftOut,
+    OptionDraftTargetOut,
+)
 from app.detailed_design.data_flow_drafting import (
     GeneratedGroupProcess,
     GeneratedSummary,
@@ -97,6 +102,8 @@ _TURNS_UNTIL_SUFFICIENT = 4
 
 # 判定のLLMに見せる発言の番号([#n])。根拠の番号として返す
 _MESSAGE_NUMBER = re.compile(r"^\[#(\d+)\] ")
+# 説明書の「2. 対象の要件」の表の行の要件 ID(選択肢の下書きの偽物が案の対象にする)
+_TARGET_ROW = re.compile(r"^\| ((?:FR|NFR|CON)-\d+) \|", re.MULTILINE)
 
 # 返信のシステムプロンプトにある「カードにしてよい観点」の行(- キー: 観点(例: ...))
 _CARD_TARGET = re.compile(r"^- ([a-z_]+): ", re.MULTILINE)
@@ -647,6 +654,30 @@ _SELF_DIAGNOSIS_REPLY = "[E2E Fake] 自己診断: 特に致命的な不足点は
 _CR_SUMMARY_REPLY = "[E2E Fake] 今回の変更の内容と、見直しが要る設計の範囲を説明書にまとめました。"
 
 
+def _option_draft(messages: list[Any]) -> OptionDraftOut:
+    """選択肢の下書きの偽物。説明書の2節の対象の要件から、先頭の要件だけを変える案と、すべてを
+    変える案の2つを作り、1つ目をおすすめにする(文に要件 ID・数字を書かず、照合で印が付かない)。"""
+    text = "\n".join(str(m.content) for m in messages if isinstance(m, HumanMessage))
+    section = text.split("## 2. ", 1)[-1].split("\n## ", 1)[0]
+    ids = list(dict.fromkeys(_TARGET_ROW.findall(section)))
+    return OptionDraftOut(
+        options=[
+            OptionDraftItemOut(
+                name="[E2E Fake] 小さく直す",
+                targets=[OptionDraftTargetOut(requirement_id=i) for i in ids[:1]],
+                outcome="[E2E Fake] 手間は小さいが、残りの要件は今のまま。",
+            ),
+            OptionDraftItemOut(
+                name="[E2E Fake] まとめて直す",
+                targets=[OptionDraftTargetOut(requirement_id=i) for i in ids],
+                outcome="[E2E Fake] 手間は大きいが、関わる要件をそろえて直せる。",
+            ),
+        ],
+        recommended=1,
+        reason="[E2E Fake] 早く確かめられる。",
+    )
+
+
 class _FakeChunk:
     """`astream()`が返すストリーミングチャンクを模した最小オブジェクト(`.content`のみ持つ)。"""
 
@@ -791,6 +822,8 @@ class _FakeStructuredE2e:
             return _REVIEW_OUTPUT
         if self._schema is FixCheckOut:
             return _FIX_CHECK_OUTPUT
+        if self._schema is OptionDraftOut:
+            return _option_draft(messages)
         # ヒアリング・UML生成スキーマ以外のスキーマが追加された場合は
         # 「対応漏れ」に気づけるよう黙って汎用値を返さず例外にする。
         raise NotImplementedError(f"E2eFakeLLMが未対応のスキーマ: {self._schema}")

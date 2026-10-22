@@ -1,6 +1,7 @@
 """変更要求(CR)の状態・遷移・重なりの判定と、対象(要件 ID・変更の種類・変更後の案)の扱い・
-影響の予測・変更の規模・説明書の組み立てと、任意の要約の入力・照合・状態・反映の指示・予測と実際の比較・
-検証の条件・CR で作り直した段階の承認・レビューを結ぶ条件・たどる記録(純粋関数)。
+影響の予測・変更の規模・選択肢とその LLM の下書き・説明書の組み立てと、任意の要約の入力・照合・
+状態・反映の指示・予測と実際の比較・検証の条件・CR で作り直した段階の承認・レビューを結ぶ条件・
+たどる記録(純粋関数)。
 
 docs/internal_design.md 3.3節「11. 合意と変更の一巡」。
 """
@@ -28,6 +29,35 @@ from app.change_requests.explanation import (
     with_summary,
 )
 from app.change_requests.instruction import build_cr_instruction, join_instructions
+from app.change_requests.option_drafting import (
+    OPTION_DRAFT_STATUS_LABEL,
+    OptionDraftCheck,
+    OptionDraftItemOut,
+    OptionDraftOut,
+    OptionDraftStatus,
+    OptionDraftTargetOut,
+    build_option_draft_messages,
+    check_option_draft,
+    draft_to_json,
+    draft_to_options,
+)
+from app.change_requests.options import (
+    OPTION_NAME_MAX,
+    OPTION_OUTCOME_MAX,
+    OPTIONS_MAX,
+    OPTIONS_MIN,
+    RECOMMEND_REASON_MAX,
+    ChangeOption,
+    ChangeOptions,
+    OptionScale,
+    normalize_options,
+    option_label,
+    option_scales,
+    option_target_problems,
+    options_from_json,
+    options_from_rows,
+    options_to_json,
+)
 from app.change_requests.prediction import (
     ORIGIN_KINDS,
     ORIGIN_REASON,
@@ -256,4 +286,29 @@ __all__ = [
     "verification_of",
     "with_confirmations",
     "with_summary",
+    "OPTIONS_MAX",
+    "OPTIONS_MIN",
+    "OPTION_NAME_MAX",
+    "OPTION_OUTCOME_MAX",
+    "RECOMMEND_REASON_MAX",
+    "ChangeOption",
+    "ChangeOptions",
+    "OptionScale",
+    "normalize_options",
+    "option_label",
+    "option_scales",
+    "option_target_problems",
+    "options_from_json",
+    "options_from_rows",
+    "options_to_json",
+    "OPTION_DRAFT_STATUS_LABEL",
+    "OptionDraftCheck",
+    "OptionDraftItemOut",
+    "OptionDraftOut",
+    "OptionDraftStatus",
+    "OptionDraftTargetOut",
+    "build_option_draft_messages",
+    "check_option_draft",
+    "draft_to_json",
+    "draft_to_options",
 ]

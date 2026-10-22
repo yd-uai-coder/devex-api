@@ -10,6 +10,11 @@ docs/external_design.md 2.14節「変更の説明書」・2.16節「説明とす
 4. 影響の一覧(置き場ごと・理由・届いた対象と新しい要件の起点)
 5. 合意の前に確かめたい点(対象の要件の根拠の観点のうち未決のもの・推測の要件を問いの形で)
 
+案(options.py)のある CR は、2節の後に「選択肢」の節を入れて6節にする(3 選択肢 / 4 規模 /
+5 影響 / 6 確かめたい点)。合意の前は、規模の表を種類 × 案にして案を手間で比べられるようにし、
+影響の一覧はすべての案を合わせた範囲を示す。合意で案を選んだ後は、選んだ案の対象が CR の対象に
+なるので、規模は今の表に戻し、選択肢の節に合意した案を示す。案の無い CR の md は変えない。
+
 - 読み手はクライアント。各節の頭に、その節が何かを言う決まった1文を置く。要素は名前を先に書き
   (`トップページ(SCR-001)`)、要件の文は合意の対象なので変えない。
 - 5節は、今の観点の表でなく束の要件定義書の写し(`point_statuses`・`rows[].source`)から読む
@@ -26,6 +31,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
+from app.change_requests.options import ChangeOptions, OptionScale, option_label, option_scales
 from app.change_requests.prediction import PredictedItem, Prediction, origin_name
 from app.change_requests.scale import (
     Scale,
@@ -73,6 +79,7 @@ DOCUMENT_LABEL: dict[str, str] = {
 REQUIREMENTS_KEY = "requirements"
 DELETED_PROPOSAL = "(削除)"
 NO_PROPOSAL = "(1節の内容を参照)"
+NO_PROPOSAL_WITH_OPTIONS = "(3節の案を参照)"
 SUMMARY_HEADING = "## 要約"
 NO_COUNT = "数えられない"
 
@@ -92,6 +99,10 @@ SECTION_LEAD: dict[str, str] = {
         "この節は、変更で手を入れる量の目安です。合意済みの版の設計から決まった規則で"
         "数えたもので、工数や費用ではありません。"
     ),
+    "options": (
+        "この節は、変更の進め方の案です。案ごとに変える要件と結果が違います。1つを選んで"
+        "合意してください。"
+    ),
     "impact": "この節は、合意済みの版の設計のうち、見直しが要る部分です。",
     "questions": "この節は、合意の前にお答えいただきたい点です。",
 }
@@ -104,7 +115,8 @@ _NUMBER = re.compile(r"(?<![A-Za-z\d.])\d+(?:\.\d+)?(?![A-Za-z\d])")
 @dataclass(frozen=True)
 class ChangeRequestFacts:
     """説明書の1節・2節に載る CR の値(DB の行から写したもの)。`origin_labels`は新しい要件の
-    予測の起点の表示名(選んだ順)。"""
+    予測の起点の表示名(選んだ順)。`options`は選択肢(案が無ければ空)、`decision_option`は
+    合意で選んだ案の番号(選んでいなければ None)。"""
 
     number: int
     title: str
@@ -117,16 +129,20 @@ class ChangeRequestFacts:
     adds_requirement: bool
     baseline_number: int
     origin_labels: tuple[str, ...] = ()
+    options: ChangeOptions = ChangeOptions()
+    decision_option: int | None = None
 
 
 @dataclass(frozen=True)
 class Explanation:
-    """説明書の5節。`header`は題・読み手向けの1文・基準の行、`body`は1〜5節、`scale`は3節の
-    規模。"""
+    """説明書の5節(案のある CR は6節)。`header`は題・読み手向けの1文・基準の行、`body`は各節、
+    `scale`は CR の対象の規模(合意の前の案のある CR では、すべての案を合わせた範囲)。
+    `option_scales`は合意の前の案ごとの規模(案の無い CR・案を選んだ後は空)。"""
 
     header: str
     body: str
     scale: Scale
+    option_scales: tuple[OptionScale, ...] = ()
 
     @property
     def markdown(self) -> str:
@@ -173,14 +189,31 @@ def build_explanation(
             f"- CR の状態: {STATUS_LABEL[facts.status]}",
         ]
     )
-    sections = [
-        _section_request(facts),
-        _section_targets(facts, rows),
-        _section_scale(scale),
-        _section_impact(prediction, excluded),
-        _section_questions(facts.targets, rows, requirements.get("point_statuses", {})),
+    options = facts.options
+    choosing = not options.empty and facts.decision_option is None
+    scales: tuple[OptionScale, ...] = ()
+    if choosing:
+        scales = option_scales(
+            options,
+            snapshots,
+            stage_states or {},
+            adds_requirement=facts.adds_requirement,
+            origins=[o.key for o in prediction.origins],
+        )
+    sections = [_section_request(facts), _section_targets(facts, rows, choosing=choosing)]
+    if not options.empty:
+        sections.append(_section_options(facts))
+    first = len(sections) + 1
+    sections += [
+        _section_option_scale(scales, first) if choosing else _section_scale(scale, first),
+        _section_impact(prediction, excluded, first + 1, all_options=choosing),
+        _section_questions(
+            facts.targets, rows, requirements.get("point_statuses", {}), first + 2
+        ),
     ]
-    return Explanation(header=header, body="\n\n".join(sections), scale=scale)
+    return Explanation(
+        header=header, body="\n\n".join(sections), scale=scale, option_scales=scales
+    )
 
 
 def explanation_filename(number: int) -> str:
@@ -237,7 +270,9 @@ def _section_request(facts: ChangeRequestFacts) -> str:
     )
 
 
-def _section_targets(facts: ChangeRequestFacts, rows: Mapping[str, Mapping[str, Any]]) -> str:
+def _section_targets(
+    facts: ChangeRequestFacts, rows: Mapping[str, Mapping[str, Any]], *, choosing: bool = False
+) -> str:
     lines = ["## 2. 対象の要件", "", SECTION_LEAD["targets"], ""]
     if facts.targets:
         lines += [
@@ -249,7 +284,9 @@ def _section_targets(facts: ChangeRequestFacts, rows: Mapping[str, Mapping[str, 
             if target.kind == "delete":
                 proposal = DELETED_PROPOSAL
             else:
-                proposal = _cell(target.proposed_text) or NO_PROPOSAL
+                proposal = _cell(target.proposed_text) or (
+                    NO_PROPOSAL_WITH_OPTIONS if choosing else NO_PROPOSAL
+                )
             lines.append(
                 f"| {target.requirement_id} | {TARGET_KIND_LABEL[target.kind]} | "
                 f"{agreed} | {proposal} |"
@@ -264,8 +301,56 @@ def _section_targets(facts: ChangeRequestFacts, rows: Mapping[str, Mapping[str, 
     return "\n".join(lines)
 
 
-def _section_impact(prediction: Prediction, excluded: Sequence[tuple[str, str]]) -> str:
-    lines = ["## 4. 影響の一覧", "", SECTION_LEAD["impact"], ""]
+def _section_options(facts: ChangeRequestFacts) -> str:
+    """選択肢の節(案ごとに名前・おすすめ・変える要件と変更後の案・結果。合意の後は合意した案)。"""
+    options = facts.options
+    lines = ["## 3. 選択肢", "", SECTION_LEAD["options"]]
+    if facts.decision_option is not None:
+        chosen = options.option(facts.decision_option)
+        lines.append(f"合意した案: {option_label(facts.decision_option)} {_line(chosen.name)}。")
+    elif options.recommended is not None:
+        lines.append(
+            f"おすすめは{option_label(options.recommended)}です。理由: "
+            f"{_sentence(_line(options.reason))}"
+        )
+    for number, option in enumerate(options.items, start=1):
+        marks = []
+        if options.recommended == number:
+            marks.append("おすすめ")
+        if facts.decision_option == number:
+            marks.append("合意した案")
+        suffix = f"({'・'.join(marks)})" if marks else ""
+        lines += ["", f"### {option_label(number)} {_line(option.name)}{suffix}", ""]
+        if option.targets:
+            lines += ["| 要件 ID | 変更の種類 | 変更後の案 |", "|---|---|---|"]
+            for target in option.targets:
+                if target.kind == "delete":
+                    proposal = DELETED_PROPOSAL
+                else:
+                    proposal = _cell(target.proposed_text) or NO_PROPOSAL
+                lines.append(
+                    f"| {target.requirement_id} | {TARGET_KIND_LABEL[target.kind]} | "
+                    f"{proposal} |"
+                )
+        else:
+            lines.append("既存の要件は変えません(新しい要件を足すだけです)。")
+        lines += ["", f"結果: {_line(option.outcome)}"]
+    return "\n".join(lines)
+
+
+def _section_impact(
+    prediction: Prediction,
+    excluded: Sequence[tuple[str, str]],
+    number: int = 4,
+    *,
+    all_options: bool = False,
+) -> str:
+    lines = [f"## {number}. 影響の一覧", "", SECTION_LEAD["impact"]]
+    if all_options:
+        lines.append(
+            "すべての案を合わせた範囲です。どの案の要件から届いたかは「届いた対象」で分かります。"
+        )
+    lines.append("")
     if prediction.items:
         lines.append(
             f"合意済みの版の設計から、見直しが要る要素を{len(prediction.items)}件と予測しました"
@@ -311,8 +396,8 @@ def _reached_by(item: PredictedItem) -> str:
     return _cell("・".join(names))
 
 
-def _section_scale(scale: Scale) -> str:
-    lines = ["## 3. 変更の規模", "", SECTION_LEAD["scale"]]
+def _section_scale(scale: Scale, number: int = 3) -> str:
+    lines = [f"## {number}. 変更の規模", "", SECTION_LEAD["scale"]]
     uncountable = [c.label for c in scale.counts if c.uncountable]
     if uncountable:
         lines.append(
@@ -321,8 +406,8 @@ def _section_scale(scale: Scale) -> str:
         )
     lines += ["", "| 種類 | 数 | 内訳 |", "|---|---|---|"]
     for count in scale.counts:
-        number = NO_COUNT if count.count is None else f"{count.count}件"
-        lines.append(f"| {count.label} | {number} | {_cell(_breakdown(count, scale))} |")
+        value = NO_COUNT if count.count is None else f"{count.count}件"
+        lines.append(f"| {count.label} | {value} | {_cell(_breakdown(count, scale))} |")
     # 同じ理由・注記は種類をまとめて1行にする(現れた順)
     remarks: dict[ScaleRemark, list[str]] = {}
     for count in scale.counts:
@@ -333,6 +418,38 @@ def _section_scale(scale: Scale) -> str:
         lines += [
             f"- {'・'.join(kinds)}: {_remark_text(remark)}" for remark, kinds in remarks.items()
         ]
+    return "\n".join(lines)
+
+
+def _section_option_scale(scales: Sequence[OptionScale], number: int) -> str:
+    """案ごとの規模の節(種類 × 案の表。数えられない理由と注記は、案ごとに種類をまとめて1行)。"""
+    lines = [f"## {number}. 変更の規模", "", SECTION_LEAD["scale"]]
+    lines.append("案ごとに、その案で変える要件から数えました。")
+    if any(s.scale.uncountable_kinds for s in scales):
+        lines.append(
+            "数えられない種類がある案があります(理由は表の下)。この部分の手間の見込みは、"
+            "開発者に別に確かめてください。"
+        )
+    head = " | ".join(f"{option_label(s.number)} {_cell(s.name)}" for s in scales)
+    lines += ["", f"| 種類 | {head} |", f"|---|{'---|' * len(scales)}"]
+    for kind_index, count in enumerate(scales[0].scale.counts if scales else ()):
+        cells = []
+        for option in scales:
+            value = option.scale.counts[kind_index].count
+            cells.append(NO_COUNT if value is None else f"{value}件")
+        lines.append(f"| {count.label} | {' | '.join(cells)} |")
+    notes = []
+    for option in scales:
+        remarks: dict[ScaleRemark, list[str]] = {}
+        for count in option.scale.counts:
+            for remark in (*count.uncountable, *count.notes):
+                remarks.setdefault(remark, []).append(count.label)
+        notes += [
+            f"- {option_label(option.number)}の{'・'.join(kinds)}: {_remark_text(remark)}"
+            for remark, kinds in remarks.items()
+        ]
+    if notes:
+        lines += ["", *notes]
     return "\n".join(lines)
 
 
@@ -362,6 +479,7 @@ def _section_questions(
     targets: Sequence[Target],
     rows: Mapping[str, Mapping[str, Any]],
     statuses: Mapping[str, str],
+    number: int = 5,
 ) -> str:
     open_points: dict[str, list[str]] = {}
     assumed: list[tuple[str, str]] = []
@@ -376,7 +494,7 @@ def _section_questions(
                     ids.append(target.requirement_id)
         if row.get("source") == "assumed":
             assumed.append((target.requirement_id, str(row.get("text", ""))))
-    lines = ["## 5. 合意の前に確かめたい点", "", SECTION_LEAD["questions"], ""]
+    lines = [f"## {number}. 合意の前に確かめたい点", "", SECTION_LEAD["questions"], ""]
     if not open_points and not assumed:
         lines.append("合意の前に確かめたい点はありません。")
         return "\n".join(lines)

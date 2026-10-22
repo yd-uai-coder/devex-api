@@ -558,6 +558,14 @@ class ChangeRequestTargetUnknownError(UnprocessableEntityError):
     code: ClassVar[str | None] = "CR_TARGET_UNKNOWN"
 
 
+class ChangeRequestOptionInvalidError(UnprocessableEntityError):
+    """CR の選択肢(案)が CR と合わない場合に送出する。案の対象が CR の対象に無い・対象の無い案
+    (新しい要件を足さない CR)・合意で案を選ばない(案のある CR)・案の無い CR や却下で案を選んだ・
+    番号の案が無い。"""
+
+    code: ClassVar[str | None] = "CR_OPTION_INVALID"
+
+
 class ChangeRequestInvalidTransitionError(ConflictError):
     """CR の今の状態では許されない操作(合意の後の編集・却下の後の説明など)をしようとした場合に
     送出する(画面が古いまま押したときに起きうる)。"""
@@ -569,6 +577,12 @@ class ChangeRequestSummaryNotFoundError(NotFoundError):
     """説明書の要約をまだ作っていない CR で、要約を直す・確かめる操作をした場合に送出する。"""
 
     code: ClassVar[str | None] = "CR_SUMMARY_NOT_FOUND"
+
+
+class ChangeRequestOptionDraftNotFoundError(NotFoundError):
+    """選択肢の下書きをまだ作っていない CR で、下書きを読む・取り込む操作をした場合に送出する。"""
+
+    code: ClassVar[str | None] = "CR_OPTION_DRAFT_NOT_FOUND"
 
 
 class ChangeRequestNotReflectableError(ConflictError):

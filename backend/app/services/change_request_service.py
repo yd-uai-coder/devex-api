@@ -17,6 +17,7 @@ from app.change_requests import (
     DOCUMENT_REFLECTABLE_STATUSES,
     INITIAL_STATUS,
     STAGE_REFLECTABLE_STATUSES,
+    ChangeOptions,
     ChangeRequestAction,
     ChangeRequestFacts,
     ChangeRequestStatus,
@@ -24,6 +25,8 @@ from app.change_requests import (
     DecisionFacts,
     EventFacts,
     Explanation,
+    OptionDraftCheck,
+    OptionDraftOut,
     Overlap,
     Prediction,
     ReviewFacts,
@@ -39,17 +42,26 @@ from app.change_requests import (
     applied_marks_from_json,
     build_cr_instruction,
     build_explanation,
+    build_option_draft_messages,
     build_summary_messages,
+    check_option_draft,
     checked_documents,
     clip_summary,
     compare,
     compare_scale,
     count_scale,
     document_items,
+    draft_to_json,
+    draft_to_options,
     first_applied_at,
     merge_applied_marks,
     needs_reconfirm,
     next_status,
+    normalize_options,
+    option_label,
+    option_target_problems,
+    options_from_json,
+    options_to_json,
     origin_candidates_from_snapshots,
     overlaps,
     pending_stages,
@@ -73,11 +85,13 @@ from app.detailed_design.plan import PlanModel
 from app.detailed_design.procedure_doc import ProcedureDocModel
 from app.models.baseline import Baseline
 from app.models.change_request import ChangeRequest
+from app.models.change_request_option_draft import ChangeRequestOptionDraft
 from app.models.change_request_summary import ChangeRequestSummary
 from app.models.project import Project
 from app.models.review import ReviewRun
 from app.repositories.baseline import BaselineRepository
 from app.repositories.change_request import ChangeRequestRepository
+from app.repositories.change_request_option_draft import ChangeRequestOptionDraftRepository
 from app.repositories.change_request_summary import ChangeRequestSummaryRepository
 from app.repositories.design_stage import DesignStageRepository
 from app.repositories.generated_document import GeneratedDocumentRepository
@@ -85,6 +99,7 @@ from app.repositories.review import ReviewRunRepository
 from app.schemas.change_request import (
     ChangeRequestCreate,
     ChangeRequestDecision,
+    ChangeRequestOptionsIn,
     ChangeRequestUpdate,
     ChangeRequestVerify,
     ChangeRequestWithdraw,
@@ -104,13 +119,15 @@ from app.services.errors import (
     ChangeRequestNotFoundError,
     ChangeRequestNotReflectableError,
     ChangeRequestNotVerifiableError,
+    ChangeRequestOptionDraftNotFoundError,
+    ChangeRequestOptionInvalidError,
     ChangeRequestReviewNotLinkableError,
     ChangeRequestSummaryNotFoundError,
     ChangeRequestTargetUnknownError,
     ReviewRunNotFoundError,
 )
 from app.services.llm_resolver import LlmResolver, ResolvedLlm, injected_llm
-from app.services.llm_retry import invoke_with_retry
+from app.services.llm_retry import invoke_structured, invoke_with_retry
 
 logger = structlog.get_logger(__name__)
 
@@ -127,6 +144,20 @@ class ChangeRequestView:
     derived_from_number: int | None
     derived_numbers: list[int]
     allowed_actions: list[ChangeRequestAction]
+
+
+@dataclass(frozen=True)
+class OptionDraftView:
+    """選択肢の下書きと、照合の結果・今の説明書の fingerprint(作った後に変わったかを見る)。"""
+
+    change_request: ChangeRequest
+    draft: ChangeRequestOptionDraft
+    check: OptionDraftCheck
+    current_fingerprint: str
+
+    @property
+    def options(self) -> ChangeOptions:
+        return options_from_json(self.draft.options)
 
 
 @dataclass(frozen=True)
@@ -242,6 +273,7 @@ class ChangeRequestService:
         self._change_requests = ChangeRequestRepository(session)
         self._baselines = BaselineRepository(session)
         self._summaries = ChangeRequestSummaryRepository(session)
+        self._option_drafts = ChangeRequestOptionDraftRepository(session)
 
     async def create(
         self, project: Project, payload: ChangeRequestCreate, *, created_by: uuid.UUID | None
@@ -256,6 +288,11 @@ class ChangeRequestService:
             baseline,
         )
         origins = checked_origins(payload.origins, payload.adds_requirement, baseline)
+        options = checked_options(
+            payload.options.to_options() if payload.options is not None else ChangeOptions(),
+            targets,
+            payload.adds_requirement,
+        )
         change_request = await self._change_requests.create(
             project_id=project.id,
             number=await self._change_requests.next_number(project.id),
@@ -268,6 +305,7 @@ class ChangeRequestService:
             targets=targets_to_json(targets),
             adds_requirement=payload.adds_requirement,
             origins=origins,
+            options=options_to_json(options),
             status=INITIAL_STATUS,
             action="create",
             created_by=created_by,
@@ -297,7 +335,8 @@ class ChangeRequestService:
     ) -> ChangeRequestView:
         """CR の中身を直す(送った項目だけ)。下書き・説明済みだけで、説明済みで直すと下書きに
         戻る。対象を変えたら、基準の束の要件定義書で確かめ直す。予測の起点は、送ったときと新しい
-        要件を足す印を変えたときに、基準の束で確かめ直す。値の変わった項目があれば
+        要件を足す印を変えたときに、基準の束で確かめ直す。選択肢(案)は、送ったときと対象・新しい
+        要件を足す印を変えたときに、CR の対象で確かめ直す。値の変わった項目があれば
         (下書きのままでも)時系列に「直した」の1行を足し、`refs`に直した項目の名前を残す
         (前後の値は持たない)。値の変わらない保存は行を足さない。"""
         change_request = await self._load(project, number)
@@ -305,17 +344,17 @@ class ChangeRequestService:
         changes = payload.model_dump(exclude_unset=True)
         adds = changes.get("adds_requirement")
         adds_requirement = change_request.adds_requirement if adds is None else adds
+        targets = targets_from_json(change_request.targets)
         if "targets" in changes or "adds_requirement" in changes:
             targets = (
                 targets_from_json(change_request.targets)
                 if payload.targets is None
                 else [Target(t.requirement_id, t.kind, t.proposed_text) for t in payload.targets]
             )
-            changes["targets"] = targets_to_json(
-                checked_targets(
-                    targets, adds_requirement, await self._baseline_with_items(change_request)
-                )
+            targets = checked_targets(
+                targets, adds_requirement, await self._baseline_with_items(change_request)
             )
+            changes["targets"] = targets_to_json(targets)
         if payload.origins is None:
             changes.pop("origins", None)  # null は変えない(下の確かめ直しでだけ入る)
         if payload.origins is not None or "adds_requirement" in changes:
@@ -323,11 +362,22 @@ class ChangeRequestService:
             changes["origins"] = checked_origins(
                 keys, adds_requirement, await self._baseline_with_items(change_request)
             )
+        if payload.options is None:
+            changes.pop("options", None)  # null は変えない(下の確かめ直しでだけ入る)
+        if payload.options is not None or "targets" in changes or "adds_requirement" in changes:
+            options = (
+                options_from_json(change_request.options)
+                if payload.options is None
+                else payload.options.to_options()
+            )
+            changes["options"] = options_to_json(
+                checked_options(options, targets, adds_requirement)
+            )
         edited: list[str] = []
         for field, value in changes.items():
-            # 必須の項目に null を送ったときは、変えない(背景の日付は null で消せる。起点は
-            # 確かめた結果が None = 起点なし)
-            if value is None and field not in ("background_date", "origins"):
+            # 必須の項目に null を送ったときは、変えない(背景の日付は null で消せる。起点・案は
+            # 確かめた結果が None = 起点なし・案なし)
+            if value is None and field not in ("background_date", "origins", "options"):
                 continue
             if getattr(change_request, field) != value:
                 edited.append(field)
@@ -368,10 +418,18 @@ class ChangeRequestService:
         actor_id: uuid.UUID | None,
     ) -> ChangeRequestView:
         """説明済みの CR を合意か却下にし、合意の記録(相手・日時・メモ・理由・記録した人)と、
-        その時点の影響の予測を残す。"""
+        その時点の影響の予測を残す。案のある CR の合意では選んだ案の対象を CR の対象にし
+        (前の対象は時系列の行に残す)、予測はその対象で求める。"""
         change_request = await self._load(project, number)
         action = DECISION_ACTIONS[payload.decision]
         to_status = self._next(change_request, action)
+        refs = None
+        chosen = chosen_option(change_request, payload)
+        if chosen is not None:
+            refs = {"option": chosen, "targets": list(change_request.targets)}
+            option = options_from_json(change_request.options).option(chosen)
+            change_request.targets = targets_to_json(option.targets)
+        change_request.decision_option = chosen
         # 判断のときに示した影響の範囲を残す(後でたどり方の規則を直しても変わらないように)
         baseline = await self._baseline_with_items(change_request)
         change_request.predicted_impact = predict_for(change_request, baseline).to_dict()
@@ -381,7 +439,7 @@ class ChangeRequestService:
         change_request.decision_reason = payload.reason
         change_request.decision_recorded_by = actor_id
         await self._change_requests.add_event(
-            change_request, action=action, to_status=to_status, actor_id=actor_id
+            change_request, action=action, to_status=to_status, actor_id=actor_id, refs=refs
         )
         await self._session.commit()
         logger.info(
@@ -415,7 +473,7 @@ class ChangeRequestService:
     async def copy_rejected(
         self, project: Project, number: int, *, created_by: uuid.UUID | None
     ) -> ChangeRequestView:
-        """却下した CR を写して、新しい番号の CR を下書きで作る(中身・背景・対象・基準の束)。
+        """却下した CR を写して、新しい番号の CR を下書きで作る(中身・背景・対象・案・基準の束)。
         元の CR は却下と合意の記録のまま残し、時系列に写した先を1行足す。"""
         source = await self._load(project, number)
         if source.status not in COPYABLE_STATUSES:
@@ -434,6 +492,7 @@ class ChangeRequestService:
             targets=list(source.targets),
             adds_requirement=source.adds_requirement,
             origins=list(source.origins) if source.origins else None,
+            options=dict(source.options) if source.options else None,
             status=INITIAL_STATUS,
             action="copy",
             derived_from_id=source.id,
@@ -524,6 +583,58 @@ class ChangeRequestService:
         summary.confirmed_at = datetime.now(UTC)
         await self._session.commit()
         return ExplanationView(change_request, explanation, summary)
+
+    async def generate_option_draft(
+        self, project: Project, number: int, *, user_id: uuid.UUID
+    ) -> OptionDraftView:
+        """説明書から、LLM(要約と同じ生成の用途)で選択肢の下書きを作る。下書きは未確認ででき、
+        前の下書き(取り込んだ記録も)は上書きする。案を直せる状態(下書き・説明済み)だけ。"""
+        change_request = await self._load(project, number)
+        self._next(change_request, "edit")
+        explanation = await self._explanation(change_request)
+        resolved = await self._summary_llm(user_id)
+        out = await invoke_structured(
+            resolved.llm, OptionDraftOut, build_option_draft_messages(explanation.markdown)
+        )
+        await self._option_drafts.replace(
+            change_request_id=change_request.id,
+            options=draft_to_json(draft_to_options(out)),
+            fingerprint=explanation.fingerprint,
+            status="unconfirmed",
+            generated_model=resolved.model,
+            generated_by=user_id,
+        )
+        await self._session.commit()
+        logger.info(
+            "change_request_option_draft_generated",
+            project_id=str(project.id),
+            number=number,
+            model=resolved.model,
+        )
+        return await self._option_draft_view(change_request)
+
+    async def option_draft(self, project: Project, number: int) -> OptionDraftView:
+        """選択肢の下書きと照合の結果。下書きが無ければ ChangeRequestOptionDraftNotFoundError。"""
+        return await self._option_draft_view(await self._load(project, number))
+
+    async def adopt_option_draft(
+        self, project: Project, number: int, *, actor_id: uuid.UUID | None
+    ) -> ChangeRequestView:
+        """下書きの案を CR の案に写す(案を直す更新と同じく、時系列に「直した」を残し、説明済みなら
+        下書きに戻る)。下書きは取り込み済みにする。案の規則か CR の対象に合わなければ
+        ChangeRequestOptionInvalidError。"""
+        view = await self._option_draft_view(await self._load(project, number))
+        if not view.check.adoptable:
+            raise ChangeRequestOptionInvalidError(" / ".join(view.check.problems))
+        view.draft.status = "adopted"
+        view.draft.adopted_by = actor_id
+        view.draft.adopted_at = datetime.now(UTC)
+        payload = ChangeRequestUpdate(
+            options=ChangeRequestOptionsIn.model_validate(
+                options_to_json(normalize_options(view.options))
+            )
+        )
+        return await self.update(project, number, payload, actor_id=actor_id)
 
     async def comparison(self, project: Project, number: int) -> ComparisonView:
         """反映した CR の、影響の予測(判断の時点で保存したもの)と反映で付いた印の比較。反映の前は
@@ -708,6 +819,7 @@ class ChangeRequestService:
             change_request.decision_counterpart,
             change_request.decision_memo,
             change_request.decision_reason,
+            chosen_option_name(change_request),
         )
         return TraceView(change_request, trace_entries(events, available, reviews, decision))
 
@@ -837,6 +949,25 @@ class ChangeRequestService:
                 f"CR-{change_request.number} has no summary yet"
             )
         return summary
+
+    async def _option_draft_view(self, change_request: ChangeRequest) -> OptionDraftView:
+        draft = await self._option_drafts.get_for(change_request.id)
+        if draft is None:
+            raise ChangeRequestOptionDraftNotFoundError(
+                f"CR-{change_request.number} has no option draft yet"
+            )
+        explanation = await self._explanation(change_request)
+        return OptionDraftView(
+            change_request=change_request,
+            draft=draft,
+            check=check_option_draft(
+                options_from_json(draft.options),
+                explanation,
+                targets_from_json(change_request.targets),
+                change_request.adds_requirement,
+            ),
+            current_fingerprint=explanation.fingerprint,
+        )
 
     async def _summary_llm(self, user_id: uuid.UUID) -> ResolvedLlm:
         if self._llm is not None:
@@ -976,6 +1107,8 @@ def facts_of(change_request: ChangeRequest, baseline_number: int) -> ChangeReque
         adds_requirement=change_request.adds_requirement,
         baseline_number=baseline_number,
         origin_labels=tuple(str(o.get("label", "")) for o in change_request.origins or []),
+        options=options_from_json(change_request.options),
+        decision_option=change_request.decision_option,
     )
 
 
@@ -1012,6 +1145,43 @@ def checked_origins(
             f"{', '.join(unknown)}"
         )
     return [{"key": key, "label": candidates[key].label} for key in wanted]
+
+
+def checked_options(
+    options: ChangeOptions, targets: Sequence[Target], adds_requirement: bool
+) -> ChangeOptions:
+    """案(整えたもの。スキーマが規則を確かめる)の対象が CR の対象の中にあるかを確かめる。
+    合わなければ ChangeRequestOptionInvalidError。"""
+    problems = option_target_problems(options, targets, adds_requirement)
+    if problems:
+        raise ChangeRequestOptionInvalidError(" / ".join(problems))
+    return options
+
+
+def chosen_option(change_request: ChangeRequest, payload: ChangeRequestDecision) -> int | None:
+    """合意で選んだ案の番号(案の無い CR・却下は None)。案のある CR の合意で選ばない・番号の案が
+    無い・案の無い CR や却下で選んだときは ChangeRequestOptionInvalidError。"""
+    options = options_from_json(change_request.options)
+    if payload.decision != "agreed" or options.empty:
+        if payload.option is not None:
+            raise ChangeRequestOptionInvalidError(
+                "案を選べるのは、案のある CR の合意だけです。"
+            )
+        return None
+    if payload.option is None:
+        raise ChangeRequestOptionInvalidError("合意する案を選んでください。")
+    if payload.option > len(options.items):
+        raise ChangeRequestOptionInvalidError(f"{option_label(payload.option)}はありません。")
+    return payload.option
+
+
+def chosen_option_name(change_request: ChangeRequest) -> str | None:
+    """合意で選んだ案の表示名(`案2 メールだけ`。選んでいなければ None)。"""
+    number = change_request.decision_option
+    options = options_from_json(change_request.options)
+    if number is None or not 1 <= number <= len(options.items):
+        return None
+    return f"{option_label(number)} {options.option(number).name}"
 
 
 def checked_targets(

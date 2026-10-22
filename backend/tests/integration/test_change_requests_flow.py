@@ -8,16 +8,19 @@ SUT: POST・GET /api/v1/projects/{id}/change-requests、GET・PATCH .../{number}
      GET .../{number}/comparison、GET .../{number}/verification・PUT .../document-checks・
      POST .../verify、GET .../review-candidates・POST .../reviews、束の作成の
      change_request_numbers、GET .../{number}/trace、新しい要件の予測の起点
-     (GET /api/v1/projects/{id}/baselines/{number}/origins と CR の`origins`)
+     (GET /api/v1/projects/{id}/baselines/{number}/origins と CR の`origins`)、選択肢
+     (CR の`options`・合意の`option`、POST・GET .../{number}/options/draft・
+     POST .../options/draft/adopt)
      (ルート → ChangeRequestService・
      DocGeneratorService・BaselineService → ChangeRequestRepository・
-     ChangeRequestSummaryRepository・GeneratedDocumentRepository・ReviewRunRepository)と、
-     プロジェクトの削除での CR・時系列・要約・結んだレビューの CASCADE
+     ChangeRequestSummaryRepository・ChangeRequestOptionDraftRepository・
+     GeneratedDocumentRepository・ReviewRunRepository)と、プロジェクトの削除での CR・時系列・
+     要約・選択肢の下書き・結んだレビューの CASCADE
 ドライバ: httpx の AsyncClient(ASGITransport)
-スタブ: 要約と文書の生成の LLM だけ、解決(LlmResolver.resolve)を固定の文・構造化出力の見本を
-返すフェイクに差し替える(stub_llm_resolver)。ほかは LLM を呼ばない。利用者・プロジェクト・
-文書はセッションで直接作り、アクセストークンも直接発行する(API で登録すると、スイート全体で
-登録・ログインの IP ごとの上限に当たるため)
+スタブ: 要約・選択肢の下書きと文書の生成の LLM だけ、解決(LlmResolver.resolve)を固定の文・
+構造化出力の見本を返すフェイクに差し替える(stub_llm_resolver)。ほかは LLM を呼ばない。
+利用者・プロジェクト・文書はセッションで直接作り、アクセストークンも直接発行する(API で登録
+すると、スイート全体で登録・ログインの IP ごとの上限に当たるため)
 """
 
 import uuid
@@ -31,9 +34,11 @@ from tests.fixtures.fake_llm import FakeLLM
 from tests.fixtures.llm_resolver import stub_llm_resolver
 from tests.fixtures.requirements import requirements_output
 
+from app.change_requests import OptionDraftItemOut, OptionDraftOut, OptionDraftTargetOut
 from app.core.database import AsyncSessionLocal
 from app.core.security import create_access_token
 from app.models.change_request import ChangeRequest, ChangeRequestEvent, ChangeRequestReview
+from app.models.change_request_option_draft import ChangeRequestOptionDraft
 from app.models.change_request_summary import ChangeRequestSummary
 from app.models.generated_document import GeneratedDocument
 from app.models.project import Project
@@ -328,6 +333,78 @@ async def test_explanation_summary_and_cascade(
     assert await _summaries(request_ids) == 1
     await client.delete(f"/api/v1/projects/{project_id}", headers=headers)
     assert await _summaries(request_ids) == 0
+
+
+async def test_options_draft_adopt_and_agree(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LLM の下書きを取り込んで案にし(JSONB)、説明書に選択肢の節と案ごとの規模が出る。合意は
+    案を選び、選んだ案の対象が CR の対象になり、予測もその対象で保存する。下書きはプロジェクトの
+    削除で消える。"""
+    draft = OptionDraftOut(
+        options=[
+            OptionDraftItemOut(
+                name="登録だけ",
+                targets=[OptionDraftTargetOut(requirement_id="FR-001")],
+                outcome="手間が小さい",
+            ),
+            OptionDraftItemOut(
+                name="登録と一覧",
+                targets=[
+                    OptionDraftTargetOut(requirement_id="FR-001"),
+                    OptionDraftTargetOut(requirement_id="FR-002"),
+                ],
+                outcome="一覧も直す",
+            ),
+        ],
+        recommended=1,
+        reason="早い",
+    )
+    stub_llm_resolver(monkeypatch, FakeLLM(structured=draft))
+    headers, user_id = await _login("cr-options@example.com")
+    project_id = await _project(user_id)
+    await client.post(f"/api/v1/projects/{project_id}/baselines", json=_BASELINE, headers=headers)
+    base = f"/api/v1/projects/{project_id}/change-requests"
+    targets = [{"requirement_id": "FR-001"}, {"requirement_id": "FR-002"}]
+    await client.post(base, json={**_CR, "targets": targets}, headers=headers)
+
+    missing = await client.get(f"{base}/1/options/draft", headers=headers)
+    assert (missing.status_code, missing.json()["code"]) == (404, "CR_OPTION_DRAFT_NOT_FOUND")
+    generated = await client.post(f"{base}/1/options/draft", headers=headers)
+    assert generated.status_code == 200
+    assert (generated.json()["status"], generated.json()["adoptable"]) == ("unconfirmed", True)
+    adopted = await client.post(f"{base}/1/options/draft/adopt", headers=headers)
+    assert adopted.status_code == 200
+    assert [o["name"] for o in adopted.json()["options"]["items"]] == ["登録だけ", "登録と一覧"]
+
+    preview = (await client.get(f"{base}/1/explanation", headers=headers)).json()
+    assert "## 3. 選択肢" in preview["markdown"]
+    assert [o["label"] for o in preview["option_scales"]] == ["案1", "案2"]
+
+    await client.post(f"{base}/1/explain", headers=headers)
+    agreed = {**_DECISION, "decision": "agreed"}
+    no_option = await client.post(f"{base}/1/decision", json=agreed, headers=headers)
+    assert (no_option.status_code, no_option.json()["code"]) == (422, "CR_OPTION_INVALID")
+    decided = await client.post(f"{base}/1/decision", json={**agreed, "option": 1}, headers=headers)
+    assert decided.status_code == 200
+    assert decided.json()["decision"]["option"] == 1
+    assert [t["requirement_id"] for t in decided.json()["targets"]] == ["FR-001"]
+    impact = (await client.get(f"{base}/1/impact", headers=headers)).json()
+    assert [t["requirement_id"] for t in impact["targets"]] == ["FR-001"]
+
+    request_ids = await _request_ids(project_id)
+    async with AsyncSessionLocal() as session:
+        row = await session.get(ChangeRequest, request_ids[0])
+        assert row is not None and row.decision_option == 1
+        assert row.options is not None and row.options["recommended"] == 1
+    await client.delete(f"/api/v1/projects/{project_id}", headers=headers)
+    async with AsyncSessionLocal() as session:
+        count = await session.scalar(
+            select(func.count())
+            .select_from(ChangeRequestOptionDraft)
+            .where(ChangeRequestOptionDraft.change_request_id.in_(request_ids))
+        )
+    assert count == 0
 
 
 async def test_reflection_records_versions_and_comparison(
