@@ -118,7 +118,7 @@ async def get_change_request_comparison(
     404、まだ反映していなければ409。"""
     view = await ChangeRequestService(session).comparison(current_project, number)
     return ChangeRequestComparisonRead.build(
-        view.change_request, view.comparison, saved=view.saved
+        view.change_request, view.comparison, saved=view.saved, scale=view.scale
     )
 
 

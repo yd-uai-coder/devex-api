@@ -1,6 +1,7 @@
 """変更の説明書の任意の要約の、純粋な部分(LLM の入力・文の整え・状態)と表・リポジトリのテスト。
 
-SUT: app.change_requests の build_summary_messages / clip_summary / summary_state と表示名、
+SUT: app.change_requests の build_summary_messages / clip_summary / summary_state /
+     needs_reconfirm と表示名、
      ChangeRequestSummaryRepository(get_for / replace)と ChangeRequestSummary の ORM 定義
 ドライバ: pytest のテスト関数
 スタブ: 純粋な部分は不要 ── 副作用が無く外部依存を呼ばないため。リポジトリは永続化そのものが
@@ -21,6 +22,7 @@ from app.change_requests import (
     SUMMARY_STATE_LABEL,
     build_summary_messages,
     clip_summary,
+    needs_reconfirm,
     summary_state,
 )
 from app.models.change_request_summary import ChangeRequestSummary
@@ -49,6 +51,21 @@ def test_summary_state_compares_fingerprints() -> None:
     assert summary_state("confirmed", "a", "b") == "stale"
     assert summary_state("unconfirmed", "a", "b") == "stale"
     assert set(SUMMARY_STATE_LABEL) == {"unconfirmed", "confirmed", "stale"}
+
+
+def test_needs_reconfirm_only_for_confirmed_and_stale() -> None:
+    """確認済みのまま説明書が変わったときだけ、確かめ直しを知らせる。"""
+    assert needs_reconfirm("confirmed", "a", "b") is True
+    assert needs_reconfirm("confirmed", "a", "a") is False
+    assert needs_reconfirm("unconfirmed", "a", "b") is False
+
+
+def test_prompt_asks_for_scale_and_questions() -> None:
+    """プロンプトは規模の節の数(数えられないものはそう書く)と、確かめたい点を書かせる。"""
+    system = str(build_summary_messages("x")[0].content)
+
+    assert "変更の規模" in system and "数えられない" in system
+    assert "5節" not in system
 
 
 async def _change_request_id(session: AsyncSession) -> tuple[uuid.UUID, uuid.UUID]:

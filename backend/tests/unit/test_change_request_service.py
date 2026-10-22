@@ -360,7 +360,8 @@ async def test_explanation_follows_the_request_and_prediction(db_session: AsyncS
     assert md.startswith("# 変更の説明書 CR-1: 一覧に絞り込みを足す")
     assert "| FR-002 | 内容の変更 | 予約の一覧を見られる | 日付で絞り込んで見られる |" in md
     assert "テスト仕様書(無い)" in md
-    assert "テスト仕様書が無いため、数えていません" in md
+    assert "| テスト | 数えられない |  |" in md
+    assert "- テスト: 合意済みの版に入っていない文書がある(テスト仕様書)" in md
 
     await service.update(project, 1, ChangeRequestUpdate(content="週で絞り込む"), actor_id=None)
     edited = await service.explanation(project, 1)
@@ -394,7 +395,7 @@ async def test_summary_generate_edit_confirm_and_stale(db_session: AsyncSession)
     assert summary.generated_model is not None
     assert generated.summary_state == "unconfirmed"
     assert "## 要約" not in generated.output
-    # LLM に渡したのは説明書の5節だけ
+    # LLM に渡したのは説明書だけ
     assert fake.invoke_messages[-1][1].content == generated.explanation.markdown
 
     edited = await service.edit_summary(project, 1, "  一覧を日付で絞り込めるようにします。 ")
@@ -412,8 +413,12 @@ async def test_summary_generate_edit_confirm_and_stale(db_session: AsyncSession)
     stale = await service.explanation(project, 1)
     assert stale.summary_state == "stale"
     assert "## 要約" not in stale.output
+    # 確認済みのまま古くなった要約は、確かめ直すよう知らせる
+    assert stale.summary_needs_reconfirm is True
+    assert confirmed.summary_needs_reconfirm is False
     again = await service.confirm_summary(project, 1, actor_id=None)
     assert again.summary_state == "confirmed"
+    assert again.summary_needs_reconfirm is False
 
     regenerated = await service.generate_summary(project, 1, user_id=project.user_id)
     assert regenerated.summary is not None and regenerated.summary.confirmed_at is None

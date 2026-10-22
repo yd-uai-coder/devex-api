@@ -31,6 +31,11 @@ from app.change_requests import (
     Overlap,
     PredictedOnlyReason,
     Prediction,
+    Scale,
+    ScaleComparisonRow,
+    ScaleCount,
+    ScaleKind,
+    ScaleRemark,
     SummaryState,
     Target,
     TargetKind,
@@ -38,6 +43,7 @@ from app.change_requests import (
     Verification,
     check_summary,
     explanation_filename,
+    needs_reconfirm,
     normalize_targets,
     targets_from_json,
 )
@@ -373,9 +379,31 @@ class ComparedItemRead(BaseModel):
     reviewed: bool | None
 
 
+class ScaleComparisonRead(BaseModel):
+    """規模の種類1つの、予測の数と実際の数(数えられなければ null)。`basis`は実際の数の出どころ
+    (`marks` = 反映の印から今の設計で数えた、`document_checks` = 文書の側の確認の一覧で確かめた
+    数)。"""
+
+    kind: ScaleKind
+    label: str
+    predicted: int | None
+    actual: int | None
+    basis: Literal["marks", "document_checks"]
+
+    @classmethod
+    def build(cls, row: ScaleComparisonRow) -> "ScaleComparisonRead":
+        return cls(
+            kind=row.kind,
+            label=row.label,
+            predicted=row.predicted,
+            actual=row.actual,
+            basis=row.basis,
+        )
+
+
 class ChangeRequestComparisonRead(BaseModel):
     """反映した CR の、影響の予測と反映で付いた印の比較。`counts`は分類ごとの件数、`saved`は予測が
-    判断の時点で保存したものか。"""
+    判断の時点で保存したものか、`scale`は規模の種類ごとの予測の数と実際の数。"""
 
     number: int
     label: str
@@ -383,16 +411,23 @@ class ChangeRequestComparisonRead(BaseModel):
     saved: bool
     counts: dict[ComparisonStatus, int]
     items: list[ComparedItemRead]
+    scale: list[ScaleComparisonRead] = []
 
     @classmethod
     def build(
-        cls, change_request: "ChangeRequest", comparison: Comparison, *, saved: bool
+        cls,
+        change_request: "ChangeRequest",
+        comparison: Comparison,
+        *,
+        saved: bool,
+        scale: tuple[ScaleComparisonRow, ...] = (),
     ) -> "ChangeRequestComparisonRead":
         return cls(
             number=change_request.number,
             label=change_request_label(change_request.number),
             status=change_request.status,  # type: ignore[arg-type]
             saved=saved,
+            scale=[ScaleComparisonRead.build(row) for row in scale],
             counts={status: comparison.count(status) for status in COMPARISON_STATUSES},
             items=[
                 ComparedItemRead(
@@ -688,7 +723,8 @@ class SummaryEdit(BaseModel):
 class ExplanationSummaryRead(BaseModel):
     """説明書の要約。`state`は今の5節と比べた状態(古い = 作った・確かめた後に5節が変わった)。
     `generated_text`は LLM の元の文、`text`は今の文。照合は、`text`に出る要件 ID・数字のうち
-    5節に無いもの。"""
+    説明書に無いもの。`needs_reconfirm`は、確認済みのまま説明書が変わって古くなったか(出力に
+    載らないので、共有の前に確かめ直す)。"""
 
     text: str
     generated_text: str
@@ -703,6 +739,7 @@ class ExplanationSummaryRead(BaseModel):
     confirmed_at: datetime | None
     unknown_requirement_ids: list[str]
     unknown_numbers: list[str]
+    needs_reconfirm: bool
 
     @classmethod
     def build(
@@ -723,13 +760,57 @@ class ExplanationSummaryRead(BaseModel):
             confirmed_at=summary.confirmed_at,
             unknown_requirement_ids=list(check.unknown_requirement_ids),
             unknown_numbers=list(check.unknown_numbers),
+            needs_reconfirm=needs_reconfirm(
+                summary.status, summary.fingerprint, explanation.fingerprint
+            ),
         )
+
+
+class ScaleRemarkRead(BaseModel):
+    """規模の数えられない理由、または注記1つ(`detail`は対象の段階・文書・要件 ID・単位)。"""
+
+    code: str
+    label: str
+    detail: str
+
+    @classmethod
+    def build(cls, remark: ScaleRemark) -> "ScaleRemarkRead":
+        return cls(code=remark.code, label=remark.label, detail=remark.detail)
+
+
+class ScaleCountRead(BaseModel):
+    """規模の種類1つ。`count`は数(数えられなければ null で、`uncountable`に理由)、`names`は
+    数えたもの(表示名)、`notes`は数えたうえでの注記。"""
+
+    kind: ScaleKind
+    label: str
+    count: int | None
+    names: list[str]
+    uncountable: list[ScaleRemarkRead]
+    notes: list[ScaleRemarkRead]
+
+    @classmethod
+    def build(cls, count: ScaleCount) -> "ScaleCountRead":
+        return cls(
+            kind=count.kind,
+            label=count.label,
+            count=count.count,
+            names=list(count.names),
+            uncountable=[ScaleRemarkRead.build(r) for r in count.uncountable],
+            notes=[ScaleRemarkRead.build(r) for r in count.notes],
+        )
+
+
+def scale_read(scale: Scale) -> list[ScaleCountRead]:
+    return [ScaleCountRead.build(count) for count in scale.counts]
 
 
 class ChangeRequestExplanationRead(BaseModel):
     """CR の説明書(プレビュー)。`markdown`は5節、`fingerprint`はその sha256、`output`は出力する
-    md(確認済みで古くない要約だけを載せる)。作業単位とテストは5節の数の内訳(`has_test_spec`が
-    偽なら、束にテスト仕様書が無くテストは数えていない)。`summary`は要約(作っていなければ null)。"""
+    md(確認済みで古くない要約だけを載せる)。`scale`は3節の規模(種類ごとの数と、数えられない
+    理由)。`units`・`integration_tests`・`system_tests`・`has_test_spec`は規模の作業単位と
+    テストの内訳(`has_test_spec`が偽なら、束にテスト仕様書が無くテストは数えていない)。
+    `summary`は要約(作っていなければ null)。"""
 
     number: int
     label: str
@@ -737,6 +818,7 @@ class ChangeRequestExplanationRead(BaseModel):
     markdown: str
     fingerprint: str
     output: str
+    scale: list[ScaleCountRead]
     units: list[str]
     integration_tests: list[str]
     system_tests: list[str]
@@ -753,7 +835,7 @@ class ChangeRequestExplanationRead(BaseModel):
         summary: "ChangeRequestSummary | None",
         summary_state: SummaryState | None,
     ) -> "ChangeRequestExplanationRead":
-        units = explanation.units
+        scale = explanation.scale
         return cls(
             number=change_request.number,
             label=change_request_label(change_request.number),
@@ -761,10 +843,11 @@ class ChangeRequestExplanationRead(BaseModel):
             markdown=explanation.markdown,
             fingerprint=explanation.fingerprint,
             output=output,
-            units=list(units.units),
-            integration_tests=list(units.integration_tests),
-            system_tests=list(units.system_tests),
-            has_test_spec=units.has_test_spec,
+            scale=scale_read(scale),
+            units=list(scale.of("unit").names),
+            integration_tests=list(scale.integration_tests),
+            system_tests=list(scale.system_tests),
+            has_test_spec=scale.has_test_spec,
             summary=(
                 ExplanationSummaryRead.build(summary, summary_state, explanation)
                 if summary is not None and summary_state is not None

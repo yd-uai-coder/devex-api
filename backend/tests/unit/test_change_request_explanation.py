@@ -1,9 +1,9 @@
 """変更要求(CR)の説明書(5節の md)と要約の照合のテスト。
 
-SUT: app.change_requests の build_explanation / with_summary / check_summary / affected_units /
+SUT: app.change_requests の build_explanation / with_summary / check_summary /
      explanation_filename と、
-     Explanation(markdown・fingerprint)・ChangeRequestFacts(新しい要件の起点の`origin_labels`も)・
-     AffectedUnits・SummaryCheck
+     Explanation(markdown・fingerprint・scale)・ChangeRequestFacts(新しい要件の起点の
+     `origin_labels`も)・SummaryCheck
 ドライバ: pytest のテスト関数
 スタブ不要 ── 対象が純粋(副作用なし)で外部依存を呼ばないため。入力は、要件 FR-001・FR-002・
 NFR-001 と段階1〜8 を持つ fixture の model を束の写しの形に並べ、要件定義書に観点の状態と推測の
@@ -16,9 +16,7 @@ from tests.fixtures.change_impact import impact_documents, impact_stages
 
 from app.change_requests import (
     ChangeRequestFacts,
-    Prediction,
     Target,
-    affected_units,
     build_explanation,
     check_summary,
     explanation_filename,
@@ -68,6 +66,7 @@ def _build(
     *,
     snapshots: dict[str, dict] | None = None,
     excluded: list[tuple[str, str]] | None = None,
+    stage_states: dict[int, str] | None = None,
     origins: tuple[str, ...] = (),
     **overrides: object,
 ):
@@ -76,24 +75,29 @@ def _build(
     prediction = predict_from_snapshots(
         snapshots, list(targets), adds_requirement=facts.adds_requirement, origins=origins
     )
-    return build_explanation(facts, prediction, snapshots, excluded or [])
+    return build_explanation(facts, prediction, snapshots, excluded or [], stage_states)
 
 
 def test_sections_are_built_in_order() -> None:
-    """題・基準の行と1〜5節が順に並び、1節は内容と背景(表のセルは改行・縦棒を逃がす)。"""
+    """題・読み手向けの1文・基準の行と1〜5節が順に並び、各節の見出しの次に読み手向けの1文を
+    置く。1節は内容と背景(表のセルは改行・縦棒を逃がす)。"""
     explanation = _build((Target("FR-001", "content", "予約に備考を付けて登録できる"),))
     md = explanation.markdown
+    lines = md.splitlines()
 
-    assert md.startswith("# 変更の説明書 CR-1: 予約の登録に 備考を足す\n")
-    assert "- 基準の合意済みの版: B-1" in md and "- CR の状態: 下書き" in md
-    headings = [line for line in md.splitlines() if line.startswith("## ")]
+    assert md.startswith("# 変更の説明書 CR-1: 予約の登録に 備考を足す\n\nこの文書は、")
+    assert "- 基準の合意済みの版: B-1(前回合意した要件と設計の一式)" in md
+    assert "- CR の状態: 下書き" in md
+    headings = [line for line in lines if line.startswith("## ")]
     assert headings == [
         "## 1. 変更の内容と背景",
         "## 2. 対象の要件",
-        "## 3. 影響の一覧",
-        "## 4. 関わる未決事項",
-        "## 5. 影響を受ける作業単位とテストの数",
+        "## 3. 変更の規模",
+        "## 4. 影響の一覧",
+        "## 5. 合意の前に確かめたい点",
     ]
+    leads = [lines[lines.index(h) + 2] for h in headings]
+    assert all(lead.startswith("この節は、") for lead in leads)
     assert "| 出どころ | 打ち合わせ |" in md
     assert "| 日付 | 2026-10-18 |" in md
     assert "| メモ | 定例で依頼\\|急ぎ |" in md
@@ -117,7 +121,8 @@ def test_targets_show_agreed_text_and_proposal() -> None:
 
 
 def test_impact_is_grouped_by_place_with_notes() -> None:
-    """3節は置き場ごとの表(理由・届いた対象)。束に入っていないものと新しい要件の注記。"""
+    """4節は置き場ごとの表(要素は名前を先に・理由・届いた対象)。束に入っていないものと新しい
+    要件の注記。"""
     explanation = _build(
         (Target("FR-001"),),
         excluded=[("stage:6", "reviewing"), ("test_spec", "absent")],
@@ -128,13 +133,14 @@ def test_impact_is_grouped_by_place_with_notes() -> None:
     assert "### 文書(要件・画面・API)" in md
     assert "### 段階8 実装手順書" in md
     assert "| 届いた対象 |" in md and "| FR-001 |" in md
+    assert "| 予約を登録する(F-01) | この要件を持つ | FR-001 |" in md
     assert "段階6 処理ロジック(レビュー中)・テスト仕様書(無い)" in md
     assert "新しい要件を足す分は、つながりの起点が無いため予測に入っていません。" in md
 
 
 def test_new_requirement_origins_are_shown_in_targets_and_impact() -> None:
-    """新しい要件の起点は、2節の「新しい要件を足します」の後と、3節の「届いた対象」に出る。
-    起点があれば「予測に入っていません」の注記は出ない。"""
+    """新しい要件の起点は、2節の「新しい要件を足します」の後と、4節の「届いた対象」に出る
+    (名前を先に)。起点があれば「予測に入っていません」の注記は出ない。"""
     md = _build(
         (Target("FR-002"),),
         adds_requirement=True,
@@ -142,53 +148,56 @@ def test_new_requirement_origins_are_shown_in_targets_and_impact() -> None:
         origin_labels=("SCR-001 予約画面",),
     ).markdown
 
-    assert "新しい要件の予測の起点: SCR-001 予約画面。" in md
+    assert "新しい要件の予測の起点: 予約画面(SCR-001)。" in md
     assert "(対象の要件と新しい要件の起点からのつながりをたどったもの)" in md
-    assert "| SCR-001 予約画面 | 新しい要件の起点 | FR-002・新しい要件(起点 SCR-001) |" in md
+    assert "| 予約画面(SCR-001) | 新しい要件の起点 | FR-002・新しい要件(起点 SCR-001) |" in md
     assert "起点が無いため予測に入っていません" not in md
 
 
 def test_no_impact_and_no_open_points() -> None:
-    """要素も未決事項も無ければ、その旨を1行で書く(新しい要件だけの CR)。"""
+    """要素も確かめたい点も無ければ、その旨を1行で書く(新しい要件だけの CR は、起点が無いので
+    規模を数えられない)。"""
     md = _build((), adds_requirement=True).markdown
 
     assert "既存の要件は変えません。" in md
     assert "見直しが要る要素は予測されませんでした。" in md
-    assert "対象の要件に関わる未決事項はありません。" in md
-    assert "- 作業単位: 0件" in md
+    assert "合意の前に確かめたい点はありません。" in md
+    assert "| 作業単位 | 数えられない |  |" in md
 
 
-def test_open_points_and_assumed_requirements() -> None:
-    """4節は対象の要件の根拠の観点のうち、束の写しで未決のもの(決まった観点は出さない)と、
-    推測の要件。"""
+def test_open_points_and_assumed_requirements_are_questions() -> None:
+    """5節は対象の要件の根拠の観点のうち束の写しで未決のもの(決まった観点は出さない。観点の
+    問いの例を添える)と、推測の要件(文は変えずに引く)を、問いの形で書く。"""
     md = _build((Target("FR-001"), Target("FR-002"))).markdown
 
-    assert "| MVP の範囲 | FR-001 |" in md
+    assert (
+        "- 「MVP の範囲」がまだ決まっていません(関わる要件: FR-001)。"
+        "最初の版で作らないと決めているものはありますか。"
+    ) in md
     assert "コア機能" not in md
-    assert "| FR-002 | 予約の一覧を見られる |" in md
+    assert (
+        "- FR-002 の文は、AI が補った推測で、まだ確かめていません。この文のとおりでよいですか。"
+        "「予約の一覧を見られる」"
+    ) in md
 
 
-def test_units_and_tests_are_counted() -> None:
-    """5節は予測の作業単位(段階7・8 を単位で1つに)と、処理か対象の要件に当たるテストの数。"""
-    explanation = _build((Target("FR-001"),))
+def test_scale_section_counts_and_explains_uncountable() -> None:
+    """3節は規模の表(種類・数・内訳)。数えられない種類は理由を表の下にまとめ、手間の見込みを
+    別に確かめるよう1文足す。古い段階の注記も表の下に出る。"""
+    explanation = _build((Target("FR-001"),), stage_states={7: "outdated"})
     md = explanation.markdown
 
-    assert explanation.units.units == ("M-01-T02",)
-    assert "- 作業単位: 1件(M-01-T02)" in md
-    assert explanation.units.integration_tests == ("IT-001",)
-    assert explanation.units.system_tests == ("ST-001",)
-    assert "- テスト: 2件(結合テスト 1件・総合テスト 1件)" in md
+    assert explanation.scale.of("unit").names == ("予約を登録する(M-01-T02)",)
+    assert "| 作業単位 | 1件 | 予約を登録する(M-01-T02) |" in md
+    assert "| テスト | 2件 | 結合テスト 1件(IT-001)・総合テスト 1件(ST-001) |" in md
+    assert "| 画面 | 1件 | 予約画面(SCR-001) |" in md
+    assert "- 作業単位・ファイル: 古いまま合意済みの版に写した段階から数えたため" in md
+    assert "数えられませんでした" not in md
 
-    without_spec = _build((Target("FR-001"),), snapshots=_snapshots(test_spec=False))
-    assert "テスト仕様書が無いため、数えていません" in without_spec.markdown
-
-
-def test_affected_units_without_prediction() -> None:
-    empty = Prediction(targets=(), items=(), unpredicted_new_requirement=False)
-
-    units = affected_units([Target("FR-009")], empty, {"integration": [], "system": []})
-
-    assert (units.units, units.integration_tests, units.has_test_spec) == ((), (), True)
+    without_spec = _build((Target("FR-001"),), snapshots=_snapshots(test_spec=False)).markdown
+    assert "| テスト | 数えられない |  |" in without_spec
+    assert "テストは数えられませんでした(理由は表の下)。" in without_spec
+    assert "- テスト: 合意済みの版に入っていない文書がある(テスト仕様書)" in without_spec
 
 
 def test_fingerprint_follows_the_markdown() -> None:
@@ -219,7 +228,7 @@ def test_with_summary_puts_summary_before_sections() -> None:
 
 
 def test_check_summary_finds_unknown_ids_and_numbers() -> None:
-    """要約の要件 ID・数字のうち、5節に無いものを返す(全角の数字も、ID の中の数字は除く)。"""
+    """要約の要件 ID・数字のうち、説明書に無いものを返す(全角の数字も、ID の中の数字は除く)。"""
     explanation = _build((Target("FR-001"),))
 
     ok = check_summary("FR-001 を直し、備考を3行まで書けるようにします。", explanation)

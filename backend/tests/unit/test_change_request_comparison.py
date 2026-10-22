@@ -1,8 +1,9 @@
 """変更要求(CR)の影響の予測と、反映で付いた印の比較のテスト。
 
 SUT: 純粋関数 compare・applied_marks_from_json と Comparison.count
-     (app/change_requests/comparison.py)、ChangeRequestService.comparison、
-     スキーマ ChangeRequestComparisonRead、ChangeRequestNotAppliedError、
+     (app/change_requests/comparison.py)、ChangeRequestService.comparison(規模の予測と実際の
+     数も)、スキーマ ChangeRequestComparisonRead・ScaleComparisonRead、
+     ChangeRequestNotAppliedError、
      ルート get_change_request_comparison(app/api/routes/change_requests.py)
 ドライバ: 各テスト関数
 スタブ: 純粋関数のテストはスタブ不要 ── 対象が純粋(副作用なし)で外部依存を呼ばないため。
@@ -178,3 +179,18 @@ async def test_comparison_after_reflection(db_session: AsyncSession) -> None:
     assert documents and all(i.predicted_only_reason == "document_side" for i in documents)
     assert documents[0].predicted_only_reason_label == "文書の側(印が付かない)"
     assert sum(read.counts.values()) == len(read.items)
+    # 規模: 作業単位・ファイル・テストは反映の印から今の設計で、画面・API は確認の一覧で数える
+    scale = {row.kind: row for row in read.scale}
+    assert list(scale) == ["unit", "file", "test", "screen", "api"]
+    assert {k: scale[k].basis for k in scale} == {
+        "unit": "marks",
+        "file": "marks",
+        "test": "marks",
+        "screen": "document_checks",
+        "api": "document_checks",
+    }
+    assert (scale["screen"].predicted, scale["screen"].actual) == (1, 0)
+    assert scale["test"].predicted is None  # 束にテスト仕様書が無い
+    assert (scale["unit"].predicted, scale["file"].predicted) == (1, 3)
+    assert scale["unit"].actual is not None and scale["unit"].actual >= 1
+    assert scale["file"].actual == 3  # 3層のファイルを共有するので、単位が増えても3件

@@ -297,10 +297,14 @@ async def test_explanation_summary_and_cascade(
     )
     assert "| FR-002 | 削除 | 予約の一覧を見られる | (削除) |" in preview["markdown"]
     assert preview["summary"] is None
+    # 3節の規模(種類の順。数えられないときは count が null で、理由が付く)
+    assert [s["kind"] for s in preview["scale"]] == ["unit", "file", "test", "screen", "api"]
+    assert all(s["count"] is not None or s["uncountable"] for s in preview["scale"])
 
     generated = await client.post(f"{base}/1/explanation/summary", headers=headers)
     assert generated.status_code == 200
     assert generated.json()["summary"]["state"] == "unconfirmed"
+    assert generated.json()["summary"]["needs_reconfirm"] is False
     assert generated.json()["summary"]["unknown_numbers"] == []
     edited = await client.patch(
         f"{base}/1/explanation/summary", json={"text": " "}, headers=headers
@@ -385,6 +389,7 @@ async def test_reflection_records_versions_and_comparison(
         "document_side",
         "unmarked_stage",
     }
+    assert [r["basis"] for r in comparison["scale"]] == ["marks"] * 3 + ["document_checks"] * 2
 
     await client.delete(f"/api/v1/projects/{project_id}", headers=headers)
     assert await _rows(project_id) == (0, 0)

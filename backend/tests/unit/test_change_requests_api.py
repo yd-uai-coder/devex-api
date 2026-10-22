@@ -166,7 +166,11 @@ async def test_explanation_routes(db_session: AsyncSession) -> None:
     assert preview.markdown.startswith("# 変更の説明書 CR-1: 一覧に絞り込みを足す")
     assert len(preview.fingerprint) == 64
     assert preview.has_test_spec is False
-    assert preview.units == ["M-01-T03"]
+    assert preview.units == ["予約の一覧を見る(M-01-T03)"]
+    scale = {s.kind: s for s in preview.scale}
+    assert (scale["unit"].label, scale["unit"].count) == ("作業単位", 1)
+    assert scale["test"].count is None
+    assert [r.code for r in scale["test"].uncountable] == ["document_missing"]
     assert download.media_type == "text/markdown"
     assert bytes(download.body).decode() == preview.markdown + "\n"
     assert "cr-1-explanation.md" in download.headers["content-disposition"]
@@ -177,7 +181,7 @@ async def test_explanation_routes(db_session: AsyncSession) -> None:
 async def test_summary_routes(db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """要約は利用者の生成の用途で解決した LLM で作り、照合の結果と状態を返す。確かめると
     ダウンロードに載る。"""
-    stub = stub_llm_resolver(monkeypatch, FakeLLM(content="FR-002 と FR-009 を3日で直します。"))
+    stub = stub_llm_resolver(monkeypatch, FakeLLM(content="FR-002 と FR-009 を40日で直します。"))
     project, user = await _setup(db_session)
     await create_change_request(_CREATE, db_session, project, user)
 
@@ -188,7 +192,8 @@ async def test_summary_routes(db_session: AsyncSession, monkeypatch: pytest.Monk
     assert generated.summary is not None
     assert (generated.summary.state, generated.summary.state_label) == ("unconfirmed", "未確認")
     assert generated.summary.unknown_requirement_ids == ["FR-009"]
-    assert generated.summary.unknown_numbers == ["3"]
+    assert generated.summary.unknown_numbers == ["40"]
+    assert generated.summary.needs_reconfirm is False
     assert generated.summary.generated_model == "gemini-3.5-flash-lite"
     assert generated.output == generated.markdown + "\n"
 

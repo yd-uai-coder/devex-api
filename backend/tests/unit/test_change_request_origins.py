@@ -116,7 +116,8 @@ async def test_create_saves_origins_and_predicts_from_them(db_session: AsyncSess
     screen = next(i for i in read.items if i.key == _SCREEN)
     assert (screen.reason, screen.origin_keys) == (ORIGIN_REASON, [_SCREEN, "req:FR-001"])
     explanation = await service.explanation(project, 1)
-    assert f"新しい要件の予測の起点: {_SCREEN_LABEL}・FR-001 予約を登録できる。" in (
+    # 説明書では名前を先に書く
+    assert "新しい要件の予測の起点: 予約画面(SCR-001)・予約を登録できる(FR-001)。" in (
         explanation.explanation.markdown
     )
 
