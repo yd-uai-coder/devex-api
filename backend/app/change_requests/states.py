@@ -6,8 +6,9 @@
 反映(apply)は、CR を渡した再生成が終わったときに記録する(反映済みの間もやり直せ、そのたびに
 時系列に1行足す)。検証(verify)は、反映で付いた印と文書の側の確認がすべて済んだときだけ
 (条件は verification.py)。レビューを結ぶ(link_review)・束に入れる(baseline)・CR で作り直した段階の
-承認で印を結ぶ(approve_stage。stage_approvals.py)は、状態を変えない記録だけの行(写しの copied と
-同じく、遷移の表には持たない)。
+承認で印を結ぶ(approve_stage。stage_approvals.py)と、共有リンクの作成(share。下書きの CR では
+説明済みにする explain の行になる)・取り消し(unshare)・期限の延長(extend_share)は、状態を変えない
+記録だけの行(写しの copied と同じく、遷移の表には持たない。sharing.py)。
 """
 
 from collections.abc import Iterable, Sequence
@@ -31,6 +32,9 @@ ChangeRequestAction = Literal[
     "link_review",
     "baseline",
     "approve_stage",
+    "share",
+    "unshare",
+    "extend_share",
 ]
 BackgroundSource = Literal["meeting", "email", "document", "other"]
 

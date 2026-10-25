@@ -10,12 +10,13 @@ SUT: POST・GET /api/v1/projects/{id}/change-requests、GET・PATCH .../{number}
      change_request_numbers、GET .../{number}/trace、新しい要件の予測の起点
      (GET /api/v1/projects/{id}/baselines/{number}/origins と CR の`origins`)、選択肢
      (CR の`options`・合意の`option`、POST・GET .../{number}/options/draft・
-     POST .../options/draft/adopt)
+     POST .../options/draft/adopt)、共有リンク(POST・GET .../{number}/share-links、
+     POST .../share-links/{id}/revoke・extend、ログインの要らない GET /api/v1/share/{token})
      (ルート → ChangeRequestService・
      DocGeneratorService・BaselineService → ChangeRequestRepository・
      ChangeRequestSummaryRepository・ChangeRequestOptionDraftRepository・
      GeneratedDocumentRepository・ReviewRunRepository)と、プロジェクトの削除での CR・時系列・
-     要約・選択肢の下書き・結んだレビューの CASCADE
+     要約・選択肢の下書き・共有リンク・結んだレビューの CASCADE
 ドライバ: httpx の AsyncClient(ASGITransport)
 スタブ: 要約・選択肢の下書きと文書の生成の LLM だけ、解決(LlmResolver.resolve)を固定の文・
 構造化出力の見本を返すフェイクに差し替える(stub_llm_resolver)。ほかは LLM を呼ばない。
@@ -39,6 +40,7 @@ from app.core.database import AsyncSessionLocal
 from app.core.security import create_access_token
 from app.models.change_request import ChangeRequest, ChangeRequestEvent, ChangeRequestReview
 from app.models.change_request_option_draft import ChangeRequestOptionDraft
+from app.models.change_request_share_link import ChangeRequestShareLink
 from app.models.change_request_summary import ChangeRequestSummary
 from app.models.generated_document import GeneratedDocument
 from app.models.project import Project
@@ -576,3 +578,64 @@ async def test_verify_review_baseline_and_trace(
     await client.delete(f"/api/v1/projects/{project_id}", headers=headers)
     assert await _rows(project_id) == (0, 0)
     assert await _links(project_id) == 0
+
+
+async def _share_links(project_id: uuid.UUID) -> int:
+    async with AsyncSessionLocal() as session:
+        count = await session.scalar(
+            select(func.count())
+            .select_from(ChangeRequestShareLink)
+            .join(ChangeRequest)
+            .where(ChangeRequest.project_id == project_id)
+        )
+        return count or 0
+
+
+async def test_share_link_flow(client: AsyncClient) -> None:
+    """共有リンクを作ると説明済みになり、ログインなしで読める。直すと止まり、説明し直すと前回から
+    変わった節を出す。取り消すと410、無いトークンは404。プロジェクトの削除でリンクも消える。"""
+    headers, user_id = await _login("cr-share@example.com")
+    project_id = await _project(user_id)
+    await client.post(f"/api/v1/projects/{project_id}/baselines", json=_BASELINE, headers=headers)
+    base = f"/api/v1/projects/{project_id}/change-requests"
+    await client.post(base, json=_CR, headers=headers)
+
+    created = await client.post(f"{base}/1/share-links", json={}, headers=headers)
+    assert created.status_code == 201
+    token = created.json()["token"]
+    assert created.json()["path"] == f"/share/{token}"
+    detail = (await client.get(f"{base}/1", headers=headers)).json()
+    assert detail["status"] == "explained"
+    assert "markdown" not in detail["events"][-1]["refs"]
+
+    opened = await client.get(f"/api/v1/share/{token}")
+    assert opened.status_code == 200
+    assert opened.json()["state"] == "open"
+    assert opened.json()["markdown"].startswith("# 変更の説明書 CR-1")
+
+    await client.patch(f"{base}/1", json={"content": "3つから10へ増やす"}, headers=headers)
+    paused = (await client.get(f"/api/v1/share/{token}")).json()
+    assert (paused["state"], paused["markdown"]) == ("paused", None)
+    await client.post(f"{base}/1/explain", headers=headers)
+    reopened = (await client.get(f"/api/v1/share/{token}")).json()
+    assert [c["name"] for c in reopened["changes"]] == ["変更の内容と背景"]
+
+    listed = (await client.get(f"{base}/1/share-links", headers=headers)).json()
+    assert listed[0]["last_viewed_at"] is not None
+    link_id = listed[0]["id"]
+    extended = await client.post(
+        f"{base}/1/share-links/{link_id}/extend", json={"expires_in_days": 30}, headers=headers
+    )
+    assert extended.status_code == 200
+    revoked = await client.post(f"{base}/1/share-links/{link_id}/revoke", headers=headers)
+    assert revoked.json()["state"] == "revoked"
+    gone = await client.get(f"/api/v1/share/{token}")
+    assert (gone.status_code, gone.json()["code"]) == (410, "SHARE_LINK_REVOKED")
+    missing = await client.get("/api/v1/share/no-such-token")
+    assert (missing.status_code, missing.json()["code"]) == (404, "SHARE_LINK_NOT_FOUND")
+    trace = (await client.get(f"{base}/1/trace", headers=headers)).json()
+    assert [e["action"] for e in trace["entries"]][-2:] == ["extend_share", "unshare"]
+
+    assert await _share_links(project_id) == 1
+    await client.delete(f"/api/v1/projects/{project_id}", headers=headers)
+    assert await _share_links(project_id) == 0

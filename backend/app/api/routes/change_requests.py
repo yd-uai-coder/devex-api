@@ -1,3 +1,4 @@
+import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Path, Response, status
@@ -25,6 +26,12 @@ from app.schemas.change_request import (
     ReviewRunBriefRead,
     SummaryEdit,
 )
+from app.schemas.share_link import (
+    ShareLinkCreate,
+    ShareLinkCreatedRead,
+    ShareLinkExtend,
+    ShareLinkRead,
+)
 from app.services.change_request_service import (
     ChangeRequestService,
     ChangeRequestView,
@@ -32,6 +39,7 @@ from app.services.change_request_service import (
     OptionDraftView,
     VerificationView,
 )
+from app.services.share_link_service import ShareLinkService
 
 # 束と同じく、プロジェクト配下の独立したサブツリーとしてprefixにproject_idを含める
 router = APIRouter(prefix="/projects/{project_id}/change-requests", tags=["change-requests"])
@@ -380,3 +388,63 @@ async def link_change_request_review(
         current_project, number, payload.review_run_id, actor_id=current_user.id
     )
     return _read(view)
+
+
+@router.post(
+    "/{number}/share-links",
+    response_model=ShareLinkCreatedRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_change_request_share_link(
+    number: ChangeRequestNumber,
+    payload: ShareLinkCreate,
+    session: SessionDep,
+    current_project: CurrentProjectDep,
+    current_user: CurrentUserDep,
+) -> ShareLinkCreatedRead:
+    """CR の共有リンクを作る(下書きは説明済みになる。有効なリンクがあれば取り消してから作る)。
+    トークンはこの応答でだけ返す。下書き・説明済みでなければ409。"""
+    created = await ShareLinkService(session).create(
+        current_project, number, payload, actor_id=current_user.id
+    )
+    return ShareLinkCreatedRead.from_created(created)
+
+
+@router.get("/{number}/share-links", response_model=list[ShareLinkRead])
+async def list_change_request_share_links(
+    number: ChangeRequestNumber, session: SessionDep, current_project: CurrentProjectDep
+) -> list[ShareLinkRead]:
+    """CR の共有リンク(新しい順。取り消したものも。トークンは含めない)。無ければ404。"""
+    views = await ShareLinkService(session).list_for(current_project, number)
+    return [ShareLinkRead.build(view) for view in views]
+
+
+@router.post("/{number}/share-links/{link_id}/revoke", response_model=ShareLinkRead)
+async def revoke_change_request_share_link(
+    number: ChangeRequestNumber,
+    link_id: uuid.UUID,
+    session: SessionDep,
+    current_project: CurrentProjectDep,
+    current_user: CurrentUserDep,
+) -> ShareLinkRead:
+    """共有リンクを取り消す(取り消し済みなら何もしない)。リンクが無ければ404。"""
+    view = await ShareLinkService(session).revoke(
+        current_project, number, link_id, actor_id=current_user.id
+    )
+    return ShareLinkRead.build(view)
+
+
+@router.post("/{number}/share-links/{link_id}/extend", response_model=ShareLinkRead)
+async def extend_change_request_share_link(
+    number: ChangeRequestNumber,
+    link_id: uuid.UUID,
+    payload: ShareLinkExtend,
+    session: SessionDep,
+    current_project: CurrentProjectDep,
+    current_user: CurrentUserDep,
+) -> ShareLinkRead:
+    """共有リンクの期限を、今から指定の日数後に置き直す。取り消したリンクは409、無ければ404。"""
+    view = await ShareLinkService(session).extend(
+        current_project, number, link_id, payload, actor_id=current_user.id
+    )
+    return ShareLinkRead.build(view)

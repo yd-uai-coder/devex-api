@@ -23,6 +23,7 @@ from app.change_requests import (
     OPTIONS_MAX,
     PREDICTED_ONLY_REASON_LABEL,
     RECOMMEND_REASON_MAX,
+    SNAPSHOT_MARKDOWN_KEY,
     STATUS_LABEL,
     SUMMARY_MAX,
     SUMMARY_STATE_LABEL,
@@ -223,7 +224,9 @@ class ChangeRequestWithdraw(BaseModel):
 class ChangeRequestEventRead(BaseModel):
     """CR の時系列の1行。`from_status`は作成・写しで null。`refs`は行が指すもの(反映: 作った文書の
     版とモデル名、段階の反映: 段階・版・モデル名、レビューを結ぶ: 回・区切り・モデル名、検証:
-    確かめた数と結んだレビュー、束に入れる: 束の番号)。指すものの無い行は null。"""
+    確かめた数と結んだレビュー、束に入れる: 束の番号、説明: その時点の説明書の指紋)。指すものの
+    無い行は null。説明の行に残した説明書の md の写しは、応答に出さない(共有リンクの「前回から
+    変わった点」だけが読む)。"""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -234,6 +237,13 @@ class ChangeRequestEventRead(BaseModel):
     actor_id: uuid.UUID | None
     note: str
     refs: dict[str, Any] | None = None
+
+    @field_validator("refs")
+    @classmethod
+    def _drop_snapshot(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None or SNAPSHOT_MARKDOWN_KEY not in value:
+            return value
+        return {k: v for k, v in value.items() if k != SNAPSHOT_MARKDOWN_KEY}
 
 
 class ReviewRunBriefRead(BaseModel):

@@ -5,6 +5,7 @@ from app.core.errors import (
     BadRequestError,
     ConflictError,
     ForbiddenError,
+    GoneError,
     NotFoundError,
     ServiceUnavailableError,
     TooManyRequestsError,
@@ -625,3 +626,30 @@ class ChangeRequestNotIncludableError(ConflictError):
     渡した場合に送出する。"""
 
     code: ClassVar[str | None] = "CR_NOT_INCLUDABLE"
+
+
+class ShareLinkNotFoundError(NotFoundError):
+    """共有リンクが無い場合に送出する。公開の入口では、トークンに当たるリンクが無いとき(取り消し・
+    期限切れとは分ける)と、簡易ドキュメントモードのプロジェクトの CR のリンクのとき。開発者の操作
+    では、その CR に番号のリンクが無いとき。"""
+
+    code: ClassVar[str | None] = "SHARE_LINK_NOT_FOUND"
+
+
+class ShareLinkExpiredError(GoneError):
+    """共有リンクの期限が切れている場合に送出する(トークンを持つのは正当な相手なので、開発者に
+    新しいリンクか延長を頼めるよう、取り消し・存在しないと分ける)。"""
+
+    code: ClassVar[str | None] = "SHARE_LINK_EXPIRED"
+
+
+class ShareLinkRevokedError(GoneError):
+    """共有リンクを開発者が取り消した(作り直した)場合に送出する。"""
+
+    code: ClassVar[str | None] = "SHARE_LINK_REVOKED"
+
+
+class ShareLinkNotExtendableError(ConflictError):
+    """取り消した共有リンクの期限を延ばそうとした場合に送出する(作り直す)。"""
+
+    code: ClassVar[str | None] = "SHARE_LINK_NOT_EXTENDABLE"

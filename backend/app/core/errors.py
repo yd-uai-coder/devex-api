@@ -48,6 +48,12 @@ class ConflictError(AppError):
     status_code: ClassVar[int] = 409
 
 
+class GoneError(AppError):
+    """リソースは在ったが、もう使えない(期限切れ・取り消し)場合に送出する例外（HTTP 410に対応）。"""
+
+    status_code: ClassVar[int] = 410
+
+
 class TooManyRequestsError(AppError):
     """レート制限の上限に達した場合に送出する例外（HTTP 429に対応）。"""
 

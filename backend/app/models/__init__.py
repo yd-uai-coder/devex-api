@@ -2,6 +2,7 @@ from app.models.agreement import AgreementRecord
 from app.models.baseline import Baseline, BaselineItem
 from app.models.change_request import ChangeRequest, ChangeRequestEvent, ChangeRequestReview
 from app.models.change_request_option_draft import ChangeRequestOptionDraft
+from app.models.change_request_share_link import ChangeRequestShareLink
 from app.models.change_request_summary import ChangeRequestSummary
 from app.models.chat_history import ChatHistory
 from app.models.confirmation import ConfirmationItemRecord
@@ -28,6 +29,7 @@ __all__ = [
     "ChangeRequestEvent",
     "ChangeRequestReview",
     "ChangeRequestOptionDraft",
+    "ChangeRequestShareLink",
     "ChangeRequestSummary",
     "ChatHistory",
     "ConfirmationItemRecord",

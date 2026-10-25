@@ -10,6 +10,7 @@ from app.api.routes.llm import router as llm_router
 from app.api.routes.projects import router as projects_router
 from app.api.routes.prompt_templates import router as prompt_templates_router
 from app.api.routes.reviews import router as reviews_router
+from app.api.routes.share import router as share_router
 from app.api.routes.uml import router as uml_router
 from app.api.routes.users import router as users_router
 
@@ -27,4 +28,5 @@ api_router.include_router(change_requests_router)
 api_router.include_router(agreements_router)
 api_router.include_router(confirmations_router)
 api_router.include_router(llm_router)
+api_router.include_router(share_router)
 
