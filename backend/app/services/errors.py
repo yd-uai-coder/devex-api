@@ -653,3 +653,35 @@ class ShareLinkNotExtendableError(ConflictError):
     """取り消した共有リンクの期限を延ばそうとした場合に送出する(作り直す)。"""
 
     code: ClassVar[str | None] = "SHARE_LINK_NOT_EXTENDABLE"
+
+
+class ShareLinkNotWritableError(ConflictError):
+    """開いていない共有リンク(直している・判断済み・閉じた CR)から、コメント・判断を書き込もうと
+    した場合に送出する(直している間は、見た説明書と合意する中身がずれるため)。"""
+
+    code: ClassVar[str | None] = "SHARE_LINK_NOT_WRITABLE"
+
+
+class ShareExplanationChangedError(ConflictError):
+    """共有リンクのクライアントが見た説明書の版(指紋)が、今の説明書と違う場合に送出する(開いた後に
+    開発者が直して説明し直した。読み直してもらう)。"""
+
+    code: ClassVar[str | None] = "SHARE_EXPLANATION_CHANGED"
+
+
+class ChangeRequestCommentNotFoundError(NotFoundError):
+    """CR のコメント欄に、指定したコメントが無い場合に送出する。"""
+
+    code: ClassVar[str | None] = "CR_COMMENT_NOT_FOUND"
+
+
+class ChangeRequestCommentNotRepliableError(ConflictError):
+    """返信できないコメント(開発者の返信。返信は1段)に返信しようとした場合に送出する。"""
+
+    code: ClassVar[str | None] = "CR_COMMENT_NOT_REPLIABLE"
+
+
+class ShareDecisionReasonRequiredError(UnprocessableEntityError):
+    """共有リンクから理由を書かずに却下しようとした場合に送出する(却下の理由は出し直しの材料)。"""
+
+    code: ClassVar[str | None] = "SHARE_DECISION_REASON_REQUIRED"

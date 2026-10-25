@@ -40,6 +40,9 @@ class ChangeRequest(Base):
     写して作ったときの元の CR。
     `decision_*`は合意・却下の記録(合意済みの版と同じ項目。判断の前は NULL)。`decision_option`は
     合意で選んだ案の番号(1始まり。案の無い CR・却下は NULL)。選んだ案の対象が`targets`になる。
+    `decision_source`は判断の出どころ(developer = 開発者が記録 / share_link = クライアントが共有
+    リンクで押した。app/change_requests/sharing.py)、`decision_fingerprint`は判断したときの説明書の
+    sha256(共有リンクではクライアントが見た版)。どちらもこの記録を足す前の判断は NULL。
     `predicted_impact`は判断の時点の影響の予測(app/change_requests/prediction.py の保存の形。
     判断の前と取り下げは NULL で、求めるたびに基準の束から作る)。`applied_impact`は反映(CR を
     渡した文書の再生成)のときに付いた印の写し(app/detailed_design/impact/marks.py の Mark の形の
@@ -82,6 +85,8 @@ class ChangeRequest(Base):
     decision_memo: Mapped[str | None] = mapped_column(Text, nullable=True)
     decision_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     decision_option: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    decision_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    decision_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     decision_recorded_by: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

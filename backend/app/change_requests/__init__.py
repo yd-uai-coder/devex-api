@@ -1,11 +1,19 @@
 """変更要求(CR)の状態・遷移・重なりの判定と、対象(要件 ID・変更の種類・変更後の案)の扱い・
 影響の予測・変更の規模・選択肢とその LLM の下書き・説明書の組み立てと、任意の要約の入力・照合・
 状態・反映の指示・予測と実際の比較・検証の条件・CR で作り直した段階の承認・レビューを結ぶ条件・
-たどる記録・共有リンクの規則(純粋関数)。
+たどる記録・共有リンクの規則・コメント欄の規則(純粋関数)。
 
 docs/internal_design.md 3.3節「11. 合意と変更の一巡」。
 """
 
+from app.change_requests.comments import (
+    COMMENT_BODY_MAX,
+    DEVELOPER_LABEL,
+    CommentFacts,
+    CommentThread,
+    can_reply,
+    comment_threads,
+)
 from app.change_requests.comparison import (
     COMPARISON_STATUS_LABEL,
     COMPARISON_STATUSES,
@@ -98,22 +106,30 @@ from app.change_requests.scale import (
     unlinked_requirements,
 )
 from app.change_requests.sharing import (
+    DECISION_SOURCE_LABEL,
     DEFAULT_EXPIRES_DAYS,
     MAX_EXPIRES_DAYS,
     READABLE_STATES,
+    SHARE_AGREE_REASON,
     SHARE_STATE_LABEL,
     SNAPSHOT_MARKDOWN_KEY,
+    WRITABLE_STATES,
+    DecisionSource,
     ExplainedSnapshot,
     SectionChange,
     ShareState,
+    WriteProblem,
+    decision_source_label,
     expires_at_from,
     explained_snapshots,
     explanation_changes,
     new_token,
     previous_snapshot,
+    share_decision_reason,
     share_state,
     snapshot_refs,
     token_hash,
+    write_problem,
 )
 from app.change_requests.stage_approvals import (
     APPROVE_STAGE_ACTION,
@@ -206,6 +222,20 @@ __all__ = [
     "explained_snapshots",
     "previous_snapshot",
     "snapshot_refs",
+    "DECISION_SOURCE_LABEL",
+    "SHARE_AGREE_REASON",
+    "WRITABLE_STATES",
+    "DecisionSource",
+    "WriteProblem",
+    "share_decision_reason",
+    "write_problem",
+    "decision_source_label",
+    "COMMENT_BODY_MAX",
+    "DEVELOPER_LABEL",
+    "CommentFacts",
+    "CommentThread",
+    "can_reply",
+    "comment_threads",
     "ACTION_LABEL",
     "ACTIVE_STATUSES",
     "APPROVE_STAGE_ACTION",

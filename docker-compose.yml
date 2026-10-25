@@ -55,6 +55,7 @@ services:
       REGISTER_RATE_LIMIT_PER_IP_PER_HOUR: "1000"
       GOOGLE_RATE_LIMIT_PER_IP_PER_HOUR: "1000"
       SHARE_RATE_LIMIT_PER_IP_PER_HOUR: "1000"
+      SHARE_WRITE_RATE_LIMIT_PER_IP_PER_HOUR: "1000"
     volumes:
       - ./backend:/app
       - backend_venv:/app/.venv

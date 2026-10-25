@@ -3,7 +3,8 @@
 SUT: app.change_requests の new_token / token_hash / expires_at_from / share_state /
      explanation_changes / snapshot_refs / explained_snapshots / previous_snapshot と、
      SectionChange・ExplainedSnapshot・READABLE_STATES・SHARE_STATE_LABEL・SNAPSHOT_MARKDOWN_KEY・
-     DEFAULT_EXPIRES_DAYS・MAX_EXPIRES_DAYS
+     DEFAULT_EXPIRES_DAYS・MAX_EXPIRES_DAYS、write_problem / share_decision_reason と
+     WRITABLE_STATES・DECISION_SOURCE_LABEL・SHARE_AGREE_REASON
 ドライバ: pytest のテスト関数
 スタブ不要 ── 対象が純粋(副作用なし)で外部依存を呼ばないため(トークンは乱数だが、形と
 重ならないことだけを確かめる)
@@ -14,11 +15,14 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.change_requests import (
+    DECISION_SOURCE_LABEL,
     DEFAULT_EXPIRES_DAYS,
     MAX_EXPIRES_DAYS,
     READABLE_STATES,
+    SHARE_AGREE_REASON,
     SHARE_STATE_LABEL,
     SNAPSHOT_MARKDOWN_KEY,
+    WRITABLE_STATES,
     ExplainedSnapshot,
     SectionChange,
     expires_at_from,
@@ -26,9 +30,11 @@ from app.change_requests import (
     explanation_changes,
     new_token,
     previous_snapshot,
+    share_decision_reason,
     share_state,
     snapshot_refs,
     token_hash,
+    write_problem,
 )
 
 NOW = datetime(2026, 10, 25, 9, 0, tzinfo=UTC)
@@ -152,3 +158,21 @@ def test_explained_snapshots_reads_only_explain_rows_with_snapshot() -> None:
     ]
     assert previous_snapshot(snapshots) == ExplainedSnapshot("# v1", "f1", NOW)
     assert previous_snapshot(snapshots[:1]) is None
+
+
+def test_write_problem_open_only_and_same_version() -> None:
+    """書き込めるのは開いているリンクで、見た版が今の版と同じときだけ。"""
+    assert "open" in WRITABLE_STATES and len(WRITABLE_STATES) == 1
+    assert write_problem("open", "f1", "f1") is None
+    assert write_problem("open", "f1", "f2") == "changed"
+    for state in ("paused", "decided", "closed", "expired", "revoked"):
+        assert write_problem(state, "f1", "f1") == "not_writable"  # type: ignore[arg-type]
+
+
+def test_share_decision_reason_required_only_for_reject() -> None:
+    """却下は理由が要り、合意は空なら決まった理由にする(前後の空白は除く)。"""
+    assert share_decision_reason("rejected", "  ") is None
+    assert share_decision_reason("rejected", " 予算が合わない ") == "予算が合わない"
+    assert share_decision_reason("agreed", "") == SHARE_AGREE_REASON == "共有リンクで合意"
+    assert share_decision_reason("agreed", "案2で") == "案2で"
+    assert DECISION_SOURCE_LABEL["share_link"] == "共有リンク"

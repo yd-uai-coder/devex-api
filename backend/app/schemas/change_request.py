@@ -53,6 +53,7 @@ from app.change_requests import (
     TraceEntry,
     Verification,
     check_summary,
+    decision_source_label,
     explanation_filename,
     needs_reconfirm,
     normalize_options,
@@ -287,7 +288,9 @@ class ChangeRequestReviewLink(BaseModel):
 
 
 class ChangeRequestDecisionRead(BaseModel):
-    """CR の合意・却下の記録(合意済みの版と同じ項目)。"""
+    """CR の合意・却下の記録(合意済みの版と同じ項目)。`source`は出どころ(developer = 開発者が
+    記録 / share_link = 共有リンク。記録を足す前の判断は null)、`fingerprint`は判断したときの
+    説明書の版。"""
 
     counterpart: str | None
     decided_at: datetime
@@ -295,6 +298,9 @@ class ChangeRequestDecisionRead(BaseModel):
     reason: str
     recorded_by: uuid.UUID | None
     option: int | None = None
+    source: str | None = None
+    source_label: str | None = None
+    fingerprint: str | None = None
 
 
 class ChangeRequestTargetRead(BaseModel):
@@ -1013,6 +1019,9 @@ def summary_fields(change_request: "ChangeRequest") -> dict[str, Any]:
             reason=change_request.decision_reason or "",
             recorded_by=change_request.decision_recorded_by,
             option=change_request.decision_option,
+            source=change_request.decision_source,
+            source_label=decision_source_label(change_request.decision_source),
+            fingerprint=change_request.decision_fingerprint,
         )
     included = change_request.included_baseline
     return {

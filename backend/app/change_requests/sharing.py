@@ -178,3 +178,44 @@ def explained_snapshots(
 def previous_snapshot(snapshots: Sequence[ExplainedSnapshot]) -> ExplainedSnapshot | None:
     """今の説明の前回の写し(説明済みにした行が2つ以上あるときの、最後から2つ目)。"""
     return snapshots[-2] if len(snapshots) >= 2 else None
+
+
+# リンクの状態のうち、書き込み(コメント・判断)を受けるもの。直している間は、見た説明書と合意する
+# 中身がずれるので受けない
+WRITABLE_STATES: frozenset[ShareState] = frozenset({"open"})
+
+WriteProblem = Literal["not_writable", "changed"]
+
+DecisionSource = Literal["developer", "share_link"]
+DECISION_SOURCE_LABEL: dict[DecisionSource, str] = {
+    "developer": "開発者が記録",
+    "share_link": "共有リンク",
+}
+# 共有リンクで理由を書かずに合意したときの、記録の理由
+SHARE_AGREE_REASON = "共有リンクで合意"
+
+
+def write_problem(
+    state: ShareState, seen_fingerprint: str, current_fingerprint: str
+) -> WriteProblem | None:
+    """共有リンクから書き込めない理由。リンクが開いていない(`not_writable`)か、クライアントが見た
+    説明書の版が今の版と違う(`changed`。読み直してもらう)。書き込めるなら None。"""
+    if state not in WRITABLE_STATES:
+        return "not_writable"
+    if seen_fingerprint != current_fingerprint:
+        return "changed"
+    return None
+
+
+def share_decision_reason(decision: str, reason: str) -> str | None:
+    """共有リンクの判断の、記録する理由。却下は理由が要る(出し直しの材料。空なら None)。合意は
+    任意で、空なら`SHARE_AGREE_REASON`。"""
+    text = reason.strip()
+    if text:
+        return text
+    return None if decision == "rejected" else SHARE_AGREE_REASON
+
+
+def decision_source_label(source: str | None) -> str | None:
+    """判断の出どころの表示名(出どころを残す前の判断・知らない値は None)。"""
+    return DECISION_SOURCE_LABEL.get(source)  # type: ignore[call-overload]

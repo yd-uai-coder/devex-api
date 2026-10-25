@@ -11,12 +11,14 @@ SUT: POST・GET /api/v1/projects/{id}/change-requests、GET・PATCH .../{number}
      (GET /api/v1/projects/{id}/baselines/{number}/origins と CR の`origins`)、選択肢
      (CR の`options`・合意の`option`、POST・GET .../{number}/options/draft・
      POST .../options/draft/adopt)、共有リンク(POST・GET .../{number}/share-links、
-     POST .../share-links/{id}/revoke・extend、ログインの要らない GET /api/v1/share/{token})
+     POST .../share-links/{id}/revoke・extend、ログインの要らない GET /api/v1/share/{token})、
+     コメント欄と共有リンクの判断(POST /api/v1/share/{token}/comments・decision、
+     GET .../{number}/comments・POST .../comments/{id}/replies)
      (ルート → ChangeRequestService・
      DocGeneratorService・BaselineService → ChangeRequestRepository・
      ChangeRequestSummaryRepository・ChangeRequestOptionDraftRepository・
      GeneratedDocumentRepository・ReviewRunRepository)と、プロジェクトの削除での CR・時系列・
-     要約・選択肢の下書き・共有リンク・結んだレビューの CASCADE
+     要約・選択肢の下書き・共有リンク・コメント・結んだレビューの CASCADE
 ドライバ: httpx の AsyncClient(ASGITransport)
 スタブ: 要約・選択肢の下書きと文書の生成の LLM だけ、解決(LlmResolver.resolve)を固定の文・
 構造化出力の見本を返すフェイクに差し替える(stub_llm_resolver)。ほかは LLM を呼ばない。
@@ -39,6 +41,7 @@ from app.change_requests import OptionDraftItemOut, OptionDraftOut, OptionDraftT
 from app.core.database import AsyncSessionLocal
 from app.core.security import create_access_token
 from app.models.change_request import ChangeRequest, ChangeRequestEvent, ChangeRequestReview
+from app.models.change_request_comment import ChangeRequestComment
 from app.models.change_request_option_draft import ChangeRequestOptionDraft
 from app.models.change_request_share_link import ChangeRequestShareLink
 from app.models.change_request_summary import ChangeRequestSummary
@@ -639,3 +642,71 @@ async def test_share_link_flow(client: AsyncClient) -> None:
     assert await _share_links(project_id) == 1
     await client.delete(f"/api/v1/projects/{project_id}", headers=headers)
     assert await _share_links(project_id) == 0
+
+
+
+async def _comments(project_id: uuid.UUID) -> int:
+    async with AsyncSessionLocal() as session:
+        count = await session.scalar(
+            select(func.count())
+            .select_from(ChangeRequestComment)
+            .join(ChangeRequest)
+            .where(ChangeRequest.project_id == project_id)
+        )
+        return count or 0
+
+
+async def test_share_comment_and_decision_flow(client: AsyncClient) -> None:
+    """ログインなしでコメントし、開発者が返信する。共有リンクで合意すると CR の判断になり(相手 =
+    書いた名前・出どころ・見た版)、開発者の判断は409。プロジェクトの削除でコメントも消える。"""
+    headers, user_id = await _login("cr-share-write@example.com")
+    project_id = await _project(user_id)
+    await client.post(f"/api/v1/projects/{project_id}/baselines", json=_BASELINE, headers=headers)
+    base = f"/api/v1/projects/{project_id}/change-requests"
+    await client.post(base, json=_CR, headers=headers)
+    token = (await client.post(f"{base}/1/share-links", json={}, headers=headers)).json()["token"]
+    fingerprint = (await client.get(f"/api/v1/share/{token}")).json()["fingerprint"]
+
+    commented = await client.post(
+        f"/api/v1/share/{token}/comments",
+        json={"name": "山田", "body": "5つで足ります", "fingerprint": fingerprint},
+    )
+    assert commented.status_code == 201
+    listed = (await client.get(f"{base}/1/comments", headers=headers)).json()
+    replied = await client.post(
+        f"{base}/1/comments/{listed[0]['id']}/replies",
+        json={"body": "承知しました"},
+        headers=headers,
+    )
+    assert replied.status_code == 201
+    stale = await client.post(
+        f"/api/v1/share/{token}/decision",
+        json={"decision": "agreed", "name": "山田", "fingerprint": "0" * 64},
+    )
+    assert (stale.status_code, stale.json()["code"]) == (409, "SHARE_EXPLANATION_CHANGED")
+    decided = await client.post(
+        f"/api/v1/share/{token}/decision",
+        json={"decision": "agreed", "name": "山田", "fingerprint": fingerprint},
+    )
+    assert decided.status_code == 200
+    body = decided.json()
+    assert body["state"] == "decided"
+    assert (body["decision"]["counterpart"], body["decision"]["source"]) == ("山田", "share_link")
+    assert [(c["author"], [r["author"] for r in c["replies"]]) for c in body["comments"]] == [
+        ("山田", ["開発者"])
+    ]
+
+    detail = (await client.get(f"{base}/1", headers=headers)).json()
+    assert detail["status"] == "agreed"
+    assert detail["decision"]["fingerprint"] == fingerprint
+    again = await client.post(f"{base}/1/decision", json=_DECISION, headers=headers)
+    assert (again.status_code, again.json()["code"]) == (409, "CR_INVALID_TRANSITION")
+    closed = await client.post(
+        f"/api/v1/share/{token}/comments",
+        json={"name": "山田", "body": "もう1つ", "fingerprint": fingerprint},
+    )
+    assert (closed.status_code, closed.json()["code"]) == (409, "SHARE_LINK_NOT_WRITABLE")
+
+    assert await _comments(project_id) == 2
+    await client.delete(f"/api/v1/projects/{project_id}", headers=headers)
+    assert await _comments(project_id) == 0

@@ -1,10 +1,16 @@
-"""CR の共有リンクのルート(開発者の作成・一覧・取り消し・延長と、ログインの要らない閲覧)のテスト。
+"""CR の共有リンクのルート(開発者の作成・一覧・取り消し・延長と、ログインの要らない閲覧・
+コメント、開発者のコメント欄)のテスト。
 
 SUT: ルート create_change_request_share_link / list_change_request_share_links /
      revoke_change_request_share_link / extend_change_request_share_link(app/api/routes/
      change_requests.py)・get_shared_change_request(app/api/routes/share.py)と api_router への
      登録、応答 ShareLinkRead・ShareLinkCreatedRead・SharedChangeRequestRead・SharedOptionRead・
-     SharedDecisionRead・SectionChangeRead、設定 SHARE_RATE_LIMIT_PER_IP_PER_HOUR
+     SharedDecisionRead・SectionChangeRead、設定 SHARE_RATE_LIMIT_PER_IP_PER_HOUR、
+     comment_on_shared_change_request(share.py)・list_change_request_comments /
+     reply_change_request_comment(change_requests.py)、応答 SharedCommentRead・
+     ChangeRequestCommentRead、設定 SHARE_WRITE_RATE_LIMIT_PER_IP_PER_HOUR、
+     decide_shared_change_request(share.py)、応答 SharedDecisionRead の出どころ・
+     ChangeRequestDecisionRead の出どころと指紋(get_change_request)
 ドライバ: pytest のテスト関数(ルートは関数を直接呼ぶ)
 スタブ: ルートがサービスの結果を応答の形に詰めることが検証対象のため、テスト用の SQLite の
 セッションと、合意済みの版を作った fixture(`create_impact_project`)を使う。公開の入口の回数の
@@ -26,11 +32,18 @@ from app.api.routes.change_requests import (
     create_change_request_share_link,
     decide_change_request,
     extend_change_request_share_link,
+    get_change_request,
+    list_change_request_comments,
     list_change_request_share_links,
+    reply_change_request_comment,
     revoke_change_request_share_link,
     update_change_request,
 )
-from app.api.routes.share import get_shared_change_request
+from app.api.routes.share import (
+    comment_on_shared_change_request,
+    decide_shared_change_request,
+    get_shared_change_request,
+)
 from app.core.config import settings
 from app.models.project import Project
 from app.models.user import User
@@ -40,10 +53,20 @@ from app.schemas.change_request import (
     ChangeRequestDecision,
     ChangeRequestUpdate,
 )
-from app.schemas.share_link import ShareLinkCreate, ShareLinkExtend
+from app.schemas.share_link import (
+    ChangeRequestReplyCreate,
+    SharedCommentCreate,
+    SharedDecisionCreate,
+    ShareLinkCreate,
+    ShareLinkExtend,
+)
 from app.services.baseline_service import BaselineService
 from app.services.change_request_service import ChangeRequestService
-from app.services.errors import RateLimitExceededError, ShareLinkRevokedError
+from app.services.errors import (
+    ChangeRequestOptionInvalidError,
+    RateLimitExceededError,
+    ShareLinkRevokedError,
+)
 
 _AT = datetime(2026, 10, 25, 10, 0, tzinfo=UTC)
 _CREATE = ChangeRequestCreate.model_validate(
@@ -195,3 +218,102 @@ def test_router_is_registered() -> None:
     assert "/share/{token}" in paths
     # 公開の入口には認証を付けない
     assert "security" not in paths["/share/{token}"]["get"]
+    assert "/share/{token}/comments" in paths
+    assert "security" not in paths["/share/{token}/comments"]["post"]
+    assert "/projects/{project_id}/change-requests/{number}/comments" in paths
+    assert (
+        "/projects/{project_id}/change-requests/{number}/comments/{comment_id}/replies" in paths
+    )
+    assert "/share/{token}/decision" in paths
+    assert "security" not in paths["/share/{token}/decision"]["post"]
+
+
+
+# --- 104-2: コメント欄のルート ---
+
+
+async def test_comment_routes(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """公開の入口でコメントし、開発者が返信する。クライアントには返信の書き手を「開発者」と出す。"""
+    project, user = await _setup(db_session)
+    created = await create_change_request_share_link(
+        1, ShareLinkCreate(), db_session, project, user
+    )
+    redis = cast(Redis, FakeRedis())
+    read = await get_shared_change_request(created.token, db_session, redis, "10.0.0.1")
+    assert read.fingerprint is not None
+
+    comment = await comment_on_shared_change_request(
+        created.token,
+        SharedCommentCreate(name="山田", body="案1で足りますか", fingerprint=read.fingerprint),
+        db_session,
+        redis,
+        "10.0.0.1",
+    )
+    listed = await list_change_request_comments(1, db_session, project)
+    replied = await reply_change_request_comment(
+        1, listed[0].id, ChangeRequestReplyCreate(body="足ります"), db_session, project, user
+    )
+    shared = await get_shared_change_request(created.token, db_session, redis, "10.0.0.1")
+
+    assert (comment.author, comment.from_developer, comment.replies) == ("山田", False, [])
+    assert (listed[0].author_name, listed[0].can_reply) == ("山田", True)
+    assert [(r.author_id, r.can_reply) for r in replied.replies] == [(user.id, False)]
+    assert [(c.author, [r.author for r in c.replies]) for c in shared.comments] == [
+        ("山田", ["開発者"])
+    ]
+    assert "author_id" not in shared.comments[0].model_dump()
+
+    monkeypatch.setattr(settings, "SHARE_WRITE_RATE_LIMIT_PER_IP_PER_HOUR", 1)
+    with pytest.raises(RateLimitExceededError):
+        await comment_on_shared_change_request(
+            created.token,
+            SharedCommentCreate(name="山田", body="もう1つ", fingerprint=read.fingerprint),
+            db_session,
+            redis,
+            "10.0.0.1",
+        )
+
+
+
+# --- 104-3: 共有リンクからの合意・却下のルート ---
+
+
+async def test_decision_route_with_options(db_session: AsyncSession) -> None:
+    """案のある CR は、案を選ばずに合意できない(開発者と同じ規則)。選んだ案で合意すると、判断の
+    結果に出どころが出て、開発者の CR の詳細にも出どころと見た版が残る。"""
+    project, user = await _setup(db_session)
+    created = await create_change_request_share_link(
+        1, ShareLinkCreate(), db_session, project, user
+    )
+    redis = cast(Redis, FakeRedis())
+    read = await get_shared_change_request(created.token, db_session, redis, "10.0.0.1")
+    assert read.fingerprint is not None
+
+    with pytest.raises(ChangeRequestOptionInvalidError):
+        await decide_shared_change_request(
+            created.token,
+            SharedDecisionCreate(decision="agreed", name="山田", fingerprint=read.fingerprint),
+            db_session,
+            redis,
+            "10.0.0.1",
+        )
+    decided = await decide_shared_change_request(
+        created.token,
+        SharedDecisionCreate(
+            decision="agreed", name="山田", fingerprint=read.fingerprint, option=2
+        ),
+        db_session,
+        redis,
+        "10.0.0.1",
+    )
+    detail = await get_change_request(1, db_session, project)
+
+    assert decided.state == "decided"
+    assert decided.decision is not None
+    assert (decided.decision.counterpart, decided.decision.option) == ("山田", "案2 登録と一覧")
+    assert (decided.decision.source, decided.decision.source_label) == ("share_link", "共有リンク")
+    assert detail.decision is not None
+    assert (detail.decision.source, detail.decision.option) == ("share_link", 2)
+    assert detail.decision.fingerprint == read.fingerprint

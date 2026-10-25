@@ -23,6 +23,7 @@ from app.change_requests import (
     ChangeRequestStatus,
     Comparison,
     DecisionFacts,
+    DecisionSource,
     EventFacts,
     Explanation,
     OptionDraftCheck,
@@ -433,16 +434,42 @@ class ChangeRequestService:
         *,
         actor_id: uuid.UUID | None,
     ) -> ChangeRequestView:
-        """説明済みの CR を合意か却下にし、合意の記録(相手・日時・メモ・理由・記録した人)と、
-        その時点の影響の予測を残す。案のある CR の合意では選んだ案の対象を CR の対象にし
-        (前の対象は時系列の行に残す)、予測はその対象で求める。"""
+        """説明済みの CR を合意か却下にする(開発者が記録する。中身は record_decision)。"""
         change_request = await self._load(project, number)
+        await self.record_decision(change_request, payload, actor_id=actor_id, source="developer")
+        await self._session.commit()
+        logger.info(
+            "change_request_decided",
+            project_id=str(project.id),
+            number=number,
+            decision=payload.decision,
+        )
+        return await self._view(change_request)
+
+    async def record_decision(
+        self,
+        change_request: ChangeRequest,
+        payload: ChangeRequestDecision,
+        *,
+        actor_id: uuid.UUID | None,
+        source: DecisionSource,
+        fingerprint: str | None = None,
+        refs: dict[str, Any] | None = None,
+    ) -> None:
+        """説明済みの CR を合意か却下にし、合意の記録(相手・日時・メモ・理由・記録した人・出どころ・
+        判断したときの説明書の指紋)と、その時点の影響の予測を残す。案のある CR の合意では選んだ案の
+        対象を CR の対象にし(前の対象は時系列の行に残す)、予測はその対象で求める。指紋を渡さなければ
+        今の説明書の指紋を残す。`refs`は時系列の行に足すもの(共有リンクの出どころなど)。説明済みで
+        なければ ChangeRequestInvalidTransitionError。共有リンクの判断と同じトランザクションで使う
+        ため、commitしない。"""
         action = DECISION_ACTIONS[payload.decision]
         to_status = self._next(change_request, action)
-        refs = None
+        if fingerprint is None:
+            fingerprint = (await self._explanation(change_request)).fingerprint
+        event_refs = dict(refs or {})
         chosen = chosen_option(change_request, payload)
         if chosen is not None:
-            refs = {"option": chosen, "targets": list(change_request.targets)}
+            event_refs |= {"option": chosen, "targets": list(change_request.targets)}
             option = options_from_json(change_request.options).option(chosen)
             change_request.targets = targets_to_json(option.targets)
         change_request.decision_option = chosen
@@ -454,17 +481,15 @@ class ChangeRequestService:
         change_request.decision_memo = payload.memo
         change_request.decision_reason = payload.reason
         change_request.decision_recorded_by = actor_id
+        change_request.decision_source = source
+        change_request.decision_fingerprint = fingerprint
         await self._change_requests.add_event(
-            change_request, action=action, to_status=to_status, actor_id=actor_id, refs=refs
+            change_request,
+            action=action,
+            to_status=to_status,
+            actor_id=actor_id,
+            refs=event_refs or None,
         )
-        await self._session.commit()
-        logger.info(
-            "change_request_decided",
-            project_id=str(project.id),
-            number=number,
-            decision=payload.decision,
-        )
-        return await self._view(change_request)
 
     async def withdraw(
         self,
@@ -845,6 +870,7 @@ class ChangeRequestService:
             change_request.decision_memo,
             change_request.decision_reason,
             chosen_option_name(change_request),
+            change_request.decision_source,
         )
         return TraceView(change_request, trace_entries(events, available, reviews, decision))
 
