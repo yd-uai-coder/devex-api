@@ -2,7 +2,13 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.confirmations import ConfirmationItem, confirmation_items, item_target
+from app.confirmations import (
+    ConfirmationItem,
+    confirmation_items,
+    item_target,
+    legacy_user_keys,
+)
+from app.documents.requirements import RequirementsModel
 from app.models.project import Project
 from app.repositories.confirmation import ConfirmationRepository
 from app.repositories.generated_document import GeneratedDocumentRepository
@@ -31,7 +37,10 @@ class ConfirmationService:
     async def view(self, project: Project) -> ConfirmationListRead:
         """確認事項の一覧と推測の採用率。簡易ドキュメントモードは DesignStagesNotAvailableError。"""
         require_detailed(project, "Confirmations")
-        items = await self._items(project)
+        model = await self._requirements_model(project)
+        if await self._rekey_legacy_users(project, model):
+            await self._session.commit()
+        items = await self._items(project, model)
         return confirmation_list_read(items, await self._records.list_for_project(project.id))
 
     async def update(
@@ -50,7 +59,9 @@ class ConfirmationService:
         変えると ConfirmationItemSettledError。キーが今の一覧にも保存した行にも無ければ
         ConfirmationItemNotFoundError。"""
         require_detailed(project, "Confirmations")
-        items = {item.key: item for item in await self._items(project)}
+        model = await self._requirements_model(project)
+        await self._rekey_legacy_users(project, model)
+        items = {item.key: item for item in await self._items(project, model)}
         item = items.get(key)
         if item is None:
             record = await self._records.find_one(project_id=project.id, key=key)
@@ -73,9 +84,30 @@ class ConfirmationService:
         await self._session.commit()
         return await self.view(project)
 
-    async def _items(self, project: Project) -> list[ConfirmationItem]:
+    async def _requirements_model(self, project: Project) -> RequirementsModel | None:
         document = await self._documents.get_current(
             project_id=project.id, doc_type="requirements"
         )
-        model = parse_requirements_model(document.model if document else None)
+        return parse_requirements_model(document.model if document else None)
+
+    async def _items(
+        self, project: Project, model: RequirementsModel | None
+    ) -> list[ConfirmationItem]:
         return confirmation_items(model, await self._hearing_points.load_states(project.id))
+
+    async def _rekey_legacy_users(self, project: Project, model: RequirementsModel | None) -> bool:
+        """利用者に ID を振る前の記録(`user:<名前>`)を、今の要件定義書の同じ名前の行の ID の
+        キーに付け直す(flush まで。新しいキーの行がすでにあれば付け直さない)。付け直したか。"""
+        legacy = legacy_user_keys(model)
+        records = await self._records.list_for_project(project.id)
+        keys = {record.key for record in records}
+        changed = False
+        for record in records:
+            new_key = legacy.get(record.key)
+            if record.kind == "user" and new_key is not None and new_key not in keys:
+                keys.add(new_key)
+                record.key = new_key
+                changed = True
+        if changed:
+            await self._session.flush()
+        return changed

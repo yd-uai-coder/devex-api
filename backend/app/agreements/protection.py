@@ -5,11 +5,14 @@ docs/external_design.md 2.15節「合意済みの行の保護」。LLM には合
 
 - 要件の行(`req:<ID>`): 中身(すべての欄)が合意と違えば合意の中身に置き換え、落ちていれば戻す。
   戻す位置は、前の版で同じ種別の直前にあった行の後(並びが再生成の前後で変わらないように)。
-- 利用者と使う場面(`users`): 1.2 全体を1つの要素として比べ、違えば合意の形に置き換える。
+- 利用者と使う場面(`users`): 1.2 全体を1つの要素として比べ、違えば合意の形に置き換える。行の
+  ID は合意した中身の ID を使い、無ければ(ID を振る前の合意)今の版・前の版の同じ名前の行から
+  引き継ぐ。
 - 合意済みの行と同じ文の新しい行(言い換えずに ID だけ変えた重複)は除く。
 - 画面(`screen:<ID>`)・API(`api:<メソッド> <パス>`)・外部連携(`integration:<サービス名>`):
   要件の行と同じく、すべての欄を比べて置き換え、落ちていれば前の版の位置に戻す。合意済みの画面と
-  同じ名前の新しい画面(ID だけを付け直した重複)は除く。
+  同じ名前の新しい画面(ID だけを付け直した重複)と、合意済みの外部連携と正規化したサービス名
+  (`service_match_key`)が同じ新しい外部連携(「X API」を「X」と言い換えた重複)は除く。
 - 書き換えてよい要素(反映する CR の対象の要件・保存した予測の画面と API)は`exempt`で受け、戻さない。
 """
 
@@ -19,7 +22,13 @@ from typing import Any, Literal, NamedTuple, get_args
 
 from pydantic import BaseModel
 
-from app.agreements.items import USERS_KEY, AgreedKind, body_of, integration_key
+from app.agreements.items import (
+    USERS_KEY,
+    AgreedKind,
+    body_of,
+    integration_key,
+    service_match_key,
+)
 from app.detailed_design.api_list import endpoint_key
 from app.documents.external_design.model import (
     SCREEN_PREFIX,
@@ -31,9 +40,11 @@ from app.documents.external_design.model import (
 from app.documents.ids import parse_seq_id
 from app.documents.requirements.model import (
     REQUIREMENT_KINDS,
+    USER_PREFIX,
     RequirementRow,
     RequirementsModel,
     UserScene,
+    number_users,
 )
 
 RestoreReason = Literal["changed", "dropped"]
@@ -88,17 +99,23 @@ def protect_requirements(
         duplicate_of=lambda row: row.text.strip(),
     )
 
-    users = model.users
+    users, next_user_seq = model.users, model.next_seq
     agreed_users = agreed.get(USERS_KEY)
     if agreed_users is not None and USERS_KEY not in exempt:
         current = {"users": [u.model_dump(mode="json") for u in model.users]}
         if body_of("users", current) != body_of("users", agreed_users):
-            users = [UserScene.model_validate(u) for u in agreed_users["users"]]
+            users, next_user_seq = number_users(
+                [UserScene.model_validate(u) for u in agreed_users["users"]],
+                model.next_seq,
+                [*model.users, *(previous.users if previous else [])],
+            )
             restored.append(Restored(USERS_KEY, "dropped" if not model.users else "changed"))
 
     if not restored and len(rows) == len(model.rows):
         return model, restored
     next_seq = _next_seq(model.next_seq, [row.id for row in dropped], REQUIREMENT_KINDS)
+    if USER_PREFIX in next_user_seq:
+        next_seq[USER_PREFIX] = next_user_seq[USER_PREFIX]
     update = {"rows": rows, "users": users, "next_seq": next_seq}
     return model.model_copy(update=update), restored
 
@@ -156,6 +173,7 @@ def protect_external_design(
         _agreed_rows(agreed, _INTEGRATION_PREFIX, IntegrationRow, exempt),
         "integration",
         key_of=lambda row: integration_key(row.service),
+        duplicate_of=lambda row: service_match_key(row.service),
     )
     restored = restored_screens + restored_apis + restored_integrations
     if not restored and (
@@ -206,7 +224,7 @@ def _protect_rows[Row: BaseModel](
     """1つの一覧の合意済みの行を合意の形に戻す(要件・画面・API・外部連携で共有)。
 
     すべての欄が合意と違う行は置き換え、無い行は前の版の位置に戻す。`duplicate_of`があれば、
-    合意済みの行と同じ値(要件の文・画面の名前)を持つ合意の無い行を除く。戻した要素の一覧と、
+    合意済みの行と同じ値(要件の文・画面の名前・正規化したサービス名)を持つ合意の無い行を除く。戻した要素の一覧と、
     戻した(落ちていた)行も返す。"""
     out = list(rows)
     index: dict[str, int] = {}

@@ -6,7 +6,9 @@ docs/external_design.md 2.15節。一覧は、今の要件定義書の model と
 (app/models/confirmation.py)。項目のキーは次のとおり。
 
 - 推測の要件: `req:<要件 ID>`(合意の記録のキーと同じ)
-- 推測の利用者(1.2 の行): `user:<利用者の名前>`(行に ID が無いため名前で指す)
+- 推測の利用者(1.2 の行): `user:<利用者の ID>`(`U-001`。名前を言い換えても同じ項目になる)。
+  ID を振る前の記録のキー(`user:<利用者の名前>`)は、`legacy_user_keys`で今の行の ID のキーに
+  付け直す
 - 根拠が未決の観点: `point:<観点のキー>`
 
 観点の状態はチャットと観点の表で決める。一覧は観点を読むだけで、観点が決まれば次の組み立てで
@@ -77,8 +79,8 @@ def requirement_item_key(req_id: str) -> str:
     return f"{_KEY_PREFIXES['requirement']}{req_id}"
 
 
-def user_item_key(user: str) -> str:
-    return f"{_KEY_PREFIXES['user']}{user.strip()}"
+def user_item_key(user_id: str) -> str:
+    return f"{_KEY_PREFIXES['user']}{user_id.strip()}"
 
 
 def point_item_key(point_key: str) -> str:
@@ -91,9 +93,21 @@ def requirement_item(row: RequirementRow) -> ConfirmationItem:
 
 
 def user_item(scene: UserScene) -> ConfirmationItem:
-    """推測の利用者の項目(表示名は利用者と使う場面)。"""
-    name = scene.user.strip()
-    return ConfirmationItem(user_item_key(name), "user", f"{name}: {scene.scene}")
+    """推測の利用者の項目(キーは行の ID、表示名は利用者と使う場面)。"""
+    return ConfirmationItem(user_item_key(scene.id), "user", f"{scene.user.strip()}: {scene.scene}")
+
+
+def legacy_user_keys(model: RequirementsModel | None) -> dict[str, str]:
+    """ID を振る前の利用者の記録のキー(`user:<名前>`)→ 今の行の ID のキー。同じ名前の行が
+    2つあれば先の行。model が無ければ空。"""
+    if model is None:
+        return {}
+    keys: dict[str, str] = {}
+    for scene in model.users:
+        name = scene.user.strip()
+        if name:
+            keys.setdefault(f"{_KEY_PREFIXES['user']}{name}", user_item_key(scene.id))
+    return keys
 
 
 def confirmation_kind_of(key: str) -> ConfirmationKind | None:
@@ -105,7 +119,7 @@ def confirmation_kind_of(key: str) -> ConfirmationKind | None:
 
 
 def item_target(key: str) -> str:
-    """項目のキーが指すもの(要件 ID・利用者の名前・観点のキー)。"""
+    """項目のキーが指すもの(要件 ID・利用者の ID・観点のキー)。"""
     kind = confirmation_kind_of(key)
     return key[len(_KEY_PREFIXES[kind]) :] if kind is not None else key
 
@@ -124,9 +138,8 @@ def confirmation_items(
     items = [requirement_item(row) for row in model.rows if row.source == "assumed"]
     seen_users: set[str] = set()
     for scene in model.users:
-        name = scene.user.strip()
-        if scene.source == "assumed" and name and name not in seen_users:
-            seen_users.add(name)
+        if scene.source == "assumed" and scene.user.strip() and scene.id not in seen_users:
+            seen_users.add(scene.id)
             items.append(user_item(scene))
     refs: dict[str, list[str]] = {}
     for row in model.rows:

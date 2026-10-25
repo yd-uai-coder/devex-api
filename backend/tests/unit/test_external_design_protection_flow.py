@@ -19,6 +19,7 @@ from tests.fixtures.external_design import external_design_output, upstream_outp
 from tests.fixtures.fake_llm import FakeLLM
 from tests.fixtures.requirements import requirements_output
 
+from app.ai.llm.paraphrase import paraphrase_external_design
 from app.change_requests import rewritable_keys, targets_from_json
 from app.documents.external_design.drafting import (
     ExternalDesignGenerationOutput,
@@ -118,6 +119,28 @@ async def test_smoke_rewritten_and_dropped_elements_go_back_to_the_baseline(
     prompt = str(llm.structured_messages[1][-1].content)
     assert "## 前の版の外部連携\nなし" in prompt
     assert sum(line.endswith(f"|{AGREED_MARK}") for line in prompt.splitlines()) == 3
+
+
+async def test_paraphrased_service_of_agreed_integration_goes_back_once(
+    db_session: AsyncSession,
+) -> None:
+    """束で合意した外部連携のサービス名を、再生成の LLM が言い換えても(偽の LLM の言い換えの
+    規則)、合意の名前の1行だけが残る。"""
+    project = await create_impact_project(db_session)
+    first = external_design_output()
+    first.integrations = [
+        GeneratedIntegration(service="地図 API", purpose="位置", auth="", timing="", req_ids=[])
+    ]
+    await _regenerate(db_session, project, first)
+    await BaselineService(db_session).create(
+        project, BaselineCreate(agreed_at=_AT, reason="合意"), recorded_by=None
+    )
+
+    await _regenerate(db_session, project, paraphrase_external_design(first))
+
+    current = await _current(db_session, project)
+    assert [i.service for i in _model(current).integrations] == ["地図 API"]
+    assert {"key": "integration:地図 API", "reason": "dropped"} in (current.protection or [])
 
 
 async def test_change_request_may_rewrite_only_predicted_elements(

@@ -12,15 +12,19 @@ AI には要件の中身・出どころ・観点だけを書かせ、ID は書�
   表で上限をかけ直す(観点が採用から未決に戻ったのに、写した行が「ユーザー」のまま残らないように)。
   ただし合意済みの行(`agreed_ids`)にはかけ直さない。合意の根拠は観点ではなく合意そのもので
   あるため(合意の形への戻しは app/agreements/protection.py)。
+- 利用者の ID(`assign_user_ids`): 要件と同じく、AI が`prev_id`で指した前の版の ID を引き継ぐ。
+  指していなければ、同じ名前、次に同じ場面の文の前の行が1つだけのとき、その行を引き継ぐ(名前を
+  言い換えても、確認事項の欄が別の項目に移らないように)。
 """
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
-from app.documents.ids import carry_over_ids, initial_next_seq
+from app.documents.ids import carry_over_ids, initial_next_seq, seq_id
 from app.documents.requirements.model import (
     PRIORITIES,
     REQUIREMENT_KINDS,
+    USER_PREFIX,
     Priority,
     RequirementKind,
     RequirementRow,
@@ -70,6 +74,7 @@ class UserSceneDraft:
     user: str
     scene: str
     source: str
+    prev_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -132,6 +137,39 @@ def assign_ids(
     return carry_over_ids(kinds_and_prev, {r.id: r.kind for r in rows}, next_seq)
 
 
+def assign_user_ids(
+    drafts: Sequence[UserSceneDraft], previous: RequirementsModel | None
+) -> tuple[list[str], int]:
+    """利用者の行ごとの ID と、次の番号を決める。
+
+    1段目で`prev_id`が前の版に在り、まだ使われていなければ引き継ぐ。2段目で、当たらなかった行は
+    前の版の使われていない行のうち、同じ名前の行、無ければ同じ場面の文の行が1つだけのとき引き継ぐ。
+    残りは次の番号(消えた番号は使い回さない)。"""
+    prev_users = previous.users if previous else []
+    seq = initial_next_seq(
+        (USER_PREFIX,), [u.id for u in prev_users], previous.next_seq if previous else {}
+    )[USER_PREFIX]
+    unused = {u.id: u for u in prev_users if u.id}
+    ids: list[str] = []
+    for draft in drafts:
+        prev_id = draft.prev_id.strip().upper()
+        ids.append(prev_id if unused.pop(prev_id, None) is not None else "")
+    for index, draft in enumerate(drafts):
+        if ids[index]:
+            continue
+        for value_of in (lambda u: u.user, lambda u: u.scene):
+            value = value_of(draft).strip()
+            found = [u for u in unused.values() if value and value_of(u).strip() == value]
+            if len(found) == 1:
+                ids[index] = unused.pop(found[0].id).id
+                break
+    for index, user_id in enumerate(ids):
+        if not user_id:
+            ids[index] = seq_id(USER_PREFIX, seq)
+            seq += 1
+    return ids, seq
+
+
 def _priority(value: str) -> Priority:
     return value if value in PRIORITIES else "Must"  # type: ignore[return-value]
 
@@ -187,15 +225,18 @@ def build_model(
                 points=points,
             )
         )
+    drafted_users = [u for u in draft.users if u.user.strip()]
+    user_ids, next_user_seq = assign_user_ids(drafted_users, previous)
     users = [
         UserScene(
+            id=user_id,
             user=u.user.strip(),
             scene=u.scene.strip(),
             source=cap_source(u.source, USER_POINTS, states),
         )
-        for u in draft.users
-        if u.user.strip()
+        for user_id, u in zip(user_ids, drafted_users, strict=True)
     ]
+    next_seq = {**next_seq, USER_PREFIX: next_user_seq}
     return RequirementsModel(
         purpose=draft.purpose.strip(),
         users=users,
@@ -217,11 +258,10 @@ def mark_adopted(model: RequirementsModel, req_id: str) -> RequirementsModel | N
     return model.model_copy(update={"rows": rows})
 
 
-def mark_user_adopted(model: RequirementsModel, user: str) -> RequirementsModel | None:
-    """推測の利用者と使う場面(1.2 の行。利用者の名前で指す)を「採用」にする。推測の行が無ければ
-    None。"""
+def mark_user_adopted(model: RequirementsModel, user_id: str) -> RequirementsModel | None:
+    """推測の利用者と使う場面(1.2 の行。ID で指す)を「採用」にする。推測の行が無ければ None。"""
     target = next(
-        (u for u in model.users if u.user == user.strip() and u.source == "assumed"), None
+        (u for u in model.users if u.id == user_id.strip() and u.source == "assumed"), None
     )
     if target is None:
         return None

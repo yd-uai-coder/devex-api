@@ -777,18 +777,18 @@ class DocGeneratorService:
         return document
 
     async def apply_adopt_user(
-        self, project: Project, user: str, *, recorded_by: uuid.UUID | None = None
+        self, project: Project, user_id: str, *, recorded_by: uuid.UUID | None = None
     ) -> GeneratedDocument:
-        """推測の利用者と使う場面(1.2 の行。利用者の名前で指す)を「採用」にする(commit は
+        """推測の利用者と使う場面(1.2 の行。ID で指す)を「採用」にする(commit は
         呼ぶ側。確認事項の一覧から使う)。要件の採用と同じく版は増やさず、詳細設計モードでは
         1.2 全体を合意として記録し、確認事項の一覧の項目を確認済みにする。生成中は409。要件定義書・
         その行が無ければ404、推測でない行は409。"""
         document, model = await self._requirements_for_adopt(project)
-        if model is None or all(u.user != user.strip() for u in model.users):
-            raise RequirementNotFoundError(f"User scene {user} not found")
-        adopted = mark_user_adopted(model, user)
+        if model is None or all(u.id != user_id.strip() for u in model.users):
+            raise RequirementNotFoundError(f"User scene {user_id} not found")
+        adopted = mark_user_adopted(model, user_id)
         if adopted is None:
-            raise RequirementNotAssumedError(f"User scene {user} is not assumed")
+            raise RequirementNotAssumedError(f"User scene {user_id} is not assumed")
         await self._documents.replace_model(
             document,
             content=render_requirements(adopted),
@@ -798,7 +798,7 @@ class DocGeneratorService:
             await AgreementService(self._session).record_adopt_users(
                 project, adopted.users, recorded_by=recorded_by
             )
-            scene = next(u for u in adopted.users if u.user == user.strip())
+            scene = next(u for u in adopted.users if u.id == user_id.strip())
             await ConfirmationRepository(self._session).mark_confirmed(
                 project.id, user_item(scene), updated_by=recorded_by
             )

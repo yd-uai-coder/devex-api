@@ -34,6 +34,7 @@ from app.agreements.items import (
     integration_key,
     kind_of,
     removed_keys,
+    service_match_key,
 )
 from app.agreements.origins import (
     ADOPT_LABEL,
@@ -109,4 +110,5 @@ __all__ = [
     "removed_keys",
     "requirement_key",
     "restored_elements",
+    "service_match_key",
 ]

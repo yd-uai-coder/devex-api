@@ -5,9 +5,10 @@ docs/external_design.md 2.15節。合意の記録は、変更影響分析の要�
 要素に無い2つは、次のキーにする。
 
 - 利用者と使う場面(1.2): 行に ID が無く、要件とも結ばないので、1.2 全体を1つの要素
-  (`users`)として合意する。
+  (`users`)として合意する。行の ID(確認事項のキーのための番号)は比べる値に入れない。
 - 外部連携(2.4): 要件と結ぶ(`req_ids`)ので行ごとにし、サービス名をキーにする
-  (`integration:<サービス名>`)。
+  (`integration:<サービス名>`)。サービス名の言い換え(「X API」→「X」)で同じ連携が2行に
+  ならないよう、保護は`service_match_key`で同じ連携かを見る。
 
 合意した中身(`content`)は行の model をそのまま写す(版は巡回で消えうるため、版を指さない)。
 比べる値(`body_of`)は、キーになる欄を除いて正規化した JSON で、変更影響分析の要素の`body`と
@@ -15,6 +16,8 @@ docs/external_design.md 2.15節。合意の記録は、変更影響分析の要�
 """
 
 import json
+import re
+import unicodedata
 from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, get_args
@@ -61,6 +64,19 @@ def integration_key(service: str) -> str:
     return f"integration:{service.strip()}"
 
 
+# サービス名の照合で除く文字(空白・記号)と、末尾の「api」
+_NON_WORD = re.compile(r"[\W_]+")
+_TRAILING_API = re.compile(r"api$")
+
+
+def service_match_key(service: str) -> str:
+    """外部連携が同じかを見るサービス名の正規形。NFKC で全角・半角をそろえ、小文字にし、空白・
+    記号を除き、末尾の「api」を除く(「Google Maps API」と「google maps」は同じ)。末尾の「api」を
+    除くと空になる名前(「API」だけ)は除かない。"""
+    name = _NON_WORD.sub("", unicodedata.normalize("NFKC", service).lower())
+    return _TRAILING_API.sub("", name) or name
+
+
 def agreement_items(
     requirements: RequirementsModel | None, external_design: ExternalDesignModel | None
 ) -> list[AgreedItem]:
@@ -100,7 +116,10 @@ def body_of(kind: AgreedKind, content: dict[str, Any]) -> str:
     """合意した中身の比べる値。行の model で読み直して既定値をそろえ(保存した形の欠けた欄で
     違いが出ないように)、キーになる欄を除いた正規化した JSON にする。"""
     if kind == "users":
-        users = [UserScene.model_validate(u).model_dump(mode="json") for u in content["users"]]
+        users = [
+            UserScene.model_validate(u).model_dump(mode="json", exclude={"id"})
+            for u in content["users"]
+        ]
         return _json({"users": users})
     row_type: type[BaseModel] = {
         "requirement": RequirementRow,

@@ -1,6 +1,7 @@
 """確認事項の一覧の組み立てと保存、「採用にする」との接続のテスト。
 
-SUT: ConfirmationService(view / update)と、DocGeneratorService の apply_adopt_requirement /
+SUT: ConfirmationService(view / update。ID を振る前の利用者のキーの付け直しを含む)と、
+     DocGeneratorService の apply_adopt_requirement /
      apply_adopt_user / adopt_requirement(確認済みと合意の記録)、
      AgreementService.record_adopt_users、
      schemas の confirmation_list_read・ConfirmationUpdate、エラー ConfirmationItemNotFoundError・
@@ -18,6 +19,7 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes.confirmations import router as confirmations_router
+from app.confirmations import ConfirmationItem
 from app.documents.requirements import RequirementRow, RequirementsModel, UserScene
 from app.hearing import PointState
 from app.main import app
@@ -113,7 +115,7 @@ async def test_view_builds_items_with_defaults(db_session: AsyncSession) -> None
     view = await ConfirmationService(db_session).view(project)
     assert [(i.key, i.present, i.status) for i in view.items] == [
         ("req:FR-002", True, "unconfirmed"),
-        ("user:管理者", True, "unconfirmed"),
+        ("user:U-002", True, "unconfirmed"),
         ("point:users", True, "unconfirmed"),
         ("point:daily_flow", True, "unconfirmed"),
         ("point:exceptions", True, "unconfirmed"),
@@ -201,15 +203,58 @@ async def test_confirming_user_adopts_scene_and_records_whole_users(
 ) -> None:
     project = await _project(db_session)
     view = await ConfirmationService(db_session).update(
-        project, "user:管理者", ConfirmationUpdate(status="confirmed"), updated_by=project.user_id
+        project, "user:U-002", ConfirmationUpdate(status="confirmed"), updated_by=project.user_id
     )
-    assert next(i for i in view.items if i.key == "user:管理者").present is False
+    assert next(i for i in view.items if i.key == "user:U-002").present is False
     model = await _current_model(db_session, project)
     assert [u.source for u in model.users] == ["user", "adopted"]
     current = await AgreementRepository(db_session).current(project.id)
     assert [r.key for r in current] == ["users"]
     assert current[0].content is not None
     assert [u["source"] for u in current[0].content["users"]] == ["user", "adopted"]
+
+
+async def test_renamed_user_keeps_its_memo(db_session: AsyncSession) -> None:
+    """再生成で推測の利用者の名前が言い換わっても(ID は引き継ぐ)、決める機会とメモが残る。"""
+    project = await _project(db_session)
+    service = ConfirmationService(db_session)
+    await service.update(
+        project, "user:U-002", ConfirmationUpdate(memo="役割を聞く"), updated_by=None
+    )
+    renamed = _model()
+    renamed.users[1] = renamed.users[1].model_copy(update={"user": "集計の担当"})
+    await GeneratedDocumentRepository(db_session).create_version(
+        project_id=project.id,
+        doc_type="requirements",
+        content="# r",
+        model=renamed.model_dump(mode="json"),
+    )
+    await db_session.commit()
+
+    view = await service.view(project)
+
+    item = next(i for i in view.items if i.kind == "user")
+    assert (item.key, item.label, item.memo) == (
+        "user:U-002", "集計の担当: 月末に集計する", "役割を聞く",
+    )
+
+
+async def test_record_with_legacy_name_key_moves_to_the_id_key(db_session: AsyncSession) -> None:
+    """ID を振る前の記録(`user:<名前>`)は、今の同じ名前の行の ID のキーに付け直す。"""
+    project = await _project(db_session)
+    await ConfirmationRepository(db_session).save(
+        project.id,
+        ConfirmationItem("user:管理者", "user", "管理者: 月末に集計する"),
+        memo="前のメモ",
+    )
+    await db_session.commit()
+
+    view = await ConfirmationService(db_session).view(project)
+
+    item = next(i for i in view.items if i.kind == "user")
+    assert (item.key, item.memo, item.present) == ("user:U-002", "前のメモ", True)
+    records = await ConfirmationRepository(db_session).list_for_project(project.id)
+    assert [r.key for r in records] == ["user:U-002"]
 
 
 async def test_preview_adopt_marks_item_confirmed(db_session: AsyncSession) -> None:

@@ -1,6 +1,7 @@
 """外部設計書の合意済みの要素を合意の形へ戻す純粋関数のテスト。
 
-SUT: app.agreements の protect_external_design / agreed_external_ids(AgreedExternalIds)
+SUT: app.agreements の protect_external_design / agreed_external_ids(AgreedExternalIds) /
+     service_match_key(外部連携の重複の照合)
 ドライバ: pytest のテスト関数
 スタブ不要 ── 対象が純粋(副作用なし)で外部依存を呼ばないため
 """
@@ -12,7 +13,9 @@ from app.agreements import (
     agreement_items,
     integration_key,
     protect_external_design,
+    service_match_key,
 )
+from app.ai.llm.paraphrase import paraphrase_service
 from app.documents.external_design.model import (
     ApiRow,
     ExternalDesignModel,
@@ -136,6 +139,41 @@ def test_renumbered_screen_with_same_name_is_removed() -> None:
     model, restored = protect_external_design(generated, _PREVIOUS, _agreed(_PREVIOUS))
     assert restored == [Restored("screen:SCR-002", "dropped")]
     assert [s.id for s in model.screens] == ["SCR-001", "SCR-002", "SCR-003"]
+
+
+def test_service_match_key_ignores_case_spaces_marks_and_trailing_api() -> None:
+    assert service_match_key("Google Maps API") == service_match_key("google maps")
+    assert service_match_key("［E2E Fake］ 予約通知API") == service_match_key("[E2E Fake] 予約通知")
+    assert service_match_key("Google Maps") != service_match_key("Google Calendar")
+    assert service_match_key("API") == "api"
+
+
+def test_paraphrased_service_of_agreed_integration_is_not_kept_twice() -> None:
+    """合意済みの外部連携のサービス名を言い換えた行(「X API」→「X」)は除き、合意の行に戻す。
+    正規化して違う名前の新しい行は残す。"""
+    previous = _model([], [], [_integration("地図 API"), _integration("決済")])
+    generated = _model(
+        [],
+        [],
+        [
+            _integration(paraphrase_service("地図 API")),
+            _integration("決済"),
+            _integration("メール配信"),
+        ],
+    )
+    model, restored = protect_external_design(generated, previous, _agreed(previous))
+    assert restored == [Restored(integration_key("地図 API"), "dropped")]
+    assert [i.service for i in model.integrations] == ["地図 API", "決済", "メール配信"]
+
+
+def test_integrations_without_agreement_are_not_merged() -> None:
+    """重複を除くのは、合意済みの行と同じ連携だけ(合意の無い行どうしは触らない)。"""
+    previous = _model([], [], [_integration("決済")])
+    services = ["決済", "地図", "地図 API"]
+    generated = _model([], [], [_integration(s) for s in services])
+    model, restored = protect_external_design(generated, previous, _agreed(previous))
+    assert restored == []
+    assert [i.service for i in model.integrations] == services
 
 
 def test_restored_screen_id_advances_next_seq() -> None:

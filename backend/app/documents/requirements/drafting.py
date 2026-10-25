@@ -1,7 +1,8 @@
 """要件定義書の AI の下書きの入出力(純粋関数)。
 
 AI には会話と観点の表から、要件の中身・出どころ・根拠の観点を書かせる。ID は書かせず、前の版の
-同じ要件の ID を`prev_id`で指させるだけにする(`assemble.assign_ids`が決める)。出どころは
+同じ要件の ID を`prev_id`で指させるだけにする(`assemble.assign_ids`が決める。利用者も同じく
+`assemble.assign_user_ids`)。出どころは
 観点の表の状態を上限に、`assemble.cap_source`が直す。再生成では、変えない要件を`unchanged`と
 答えさせ、前の版の行をそのまま使う(`app.documents.revision`)。
 """
@@ -59,6 +60,10 @@ class GeneratedRequirement(BaseModel):
 
 
 class GeneratedUserScene(BaseModel):
+    prev_id: str = Field(
+        default="",
+        description="【前の版の利用者】に同じ利用者がいれば、その ID(U-001 など)。新しい利用者は空",
+    )
     user: str = Field(description="利用者(誰が)")
     scene: str = Field(description="使う場面(いつ・何のために)")
     source: Literal["user", "adopted", "assumed"] = Field(description=_SOURCE_DESCRIPTION)
@@ -79,7 +84,7 @@ class RequirementsGenerationOutput(BaseModel):
 # 再生成のプロンプトの節の分け方(前の版・きっかけ)。節を足したら、ここにも分ける。観点の表の
 # 状態・規模の変化もきっかけ(聞き直し・対象外への変更の後の再生成)
 REVISION = RevisionInputs(
-    previous=("前の版の要件",),
+    previous=("前の版の要件", "前の版の利用者"),
     triggers={
         "観点の表": "決めたこと・状態・規模が前の版の要件と食い違う(値・方式が具体になった・"
         "変わった、対象外になった・戻った)。その観点を points に持つ要件を書き直し、決めたことの"
@@ -112,6 +117,8 @@ SYSTEM_PROMPT = (
     "ログイン)の機能要件を Must で書く。方法を利用者が言っていなければ、その要件は assumed\n"
     "- 要件ID は書かない(システムが振る)。【前の版の要件】に同じ要件があれば、"
     "その ID を prev_id に書く。中身を言い直しただけの要件も同じ要件として扱う\n"
+    "- 利用者(1.2)も同じく、【前の版の利用者】に同じ利用者がいれば、その ID を prev_id に書く。"
+    "呼び方を言い直しただけの利用者も同じ利用者として扱う\n"
     "- 【前の版の要件】で「合意済み」の印が付いた行は、クライアントと合意した行。【修正指示】が"
     "その ID を指していなければ、unchanged を true にして必ず残す(書き直さない・落とさない。"
     "同じ中身を別の要件として書かない)。合意済みの利用者と使う場面も、そのまま書く\n"
@@ -152,6 +159,13 @@ def previous_rows_text(
     return "\n".join(lines)
 
 
+def previous_users_text(previous: RequirementsModel | None) -> str:
+    """前の版の利用者と使う場面(`ID|利用者: 場面`の行。ID の引き継ぎに使う)。無ければ「なし」。"""
+    if previous is None or not previous.users:
+        return NONE_TEXT
+    return "\n".join(f"{u.id}|{u.user}: {u.scene}" for u in previous.users)
+
+
 def build_requirements_messages(
     transcript: str,
     states: Mapping[str, PointState],
@@ -168,6 +182,7 @@ def build_requirements_messages(
     human = (
         f"## 観点の表\nkey|名前|状態|決めたこと\n{points_table(states, scale)}\n\n"
         f"## 前の版の要件\n{previous_text}\n\n"
+        f"## 前の版の利用者\n{previous_users_text(previous)}\n\n"
         f"## 修正指示\n{instruction_text(instruction)}\n\n"
         f"## 会話\n{transcript}"
     )
@@ -177,7 +192,9 @@ def build_requirements_messages(
 def to_draft(output: RequirementsGenerationOutput) -> RequirementsDraft:
     return RequirementsDraft(
         purpose=output.purpose,
-        users=tuple(UserSceneDraft(u.user, u.scene, u.source) for u in output.users),
+        users=tuple(
+            UserSceneDraft(u.user, u.scene, u.source, prev_id=u.prev_id) for u in output.users
+        ),
         in_scope=tuple(output.in_scope),
         out_of_scope=tuple(output.out_of_scope),
         requirements=tuple(_requirement_draft(r) for r in output.requirements),

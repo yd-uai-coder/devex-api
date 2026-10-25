@@ -1,7 +1,7 @@
 """合意済みの要素を合意の形へ戻す純粋関数のテスト。
 
 SUT: app.agreements の protect_requirements / agreed_requirement_ids / requirement_key と
-     戻した理由の表(RESTORE_REASONS)
+     戻した理由の表(RESTORE_REASONS)、利用者の比べる値(body_of)と戻したときの ID
 ドライバ: pytest のテスト関数
 スタブ不要 ── 対象が純粋(副作用なし)で外部依存を呼ばないため
 """
@@ -173,10 +173,28 @@ def test_users_are_restored_as_a_whole() -> None:
     one = _model(*_PREVIOUS.rows, users=_USERS)
     changed, restored = protect_requirements(one, previous, agreed)
     assert restored == [Restored(USERS_KEY, "changed")]
-    assert changed.users == two
+    assert changed.users == previous.users
     dropped, restored = protect_requirements(_model(*_PREVIOUS.rows), previous, agreed)
     assert restored == [Restored(USERS_KEY, "dropped")]
-    assert dropped.users == two
+    assert dropped.users == previous.users
+
+
+def test_user_ids_are_not_compared_and_legacy_agreement_gets_ids_by_name() -> None:
+    """利用者の ID は比べる値に入らない(ID を振る前の合意も「合意と違う」にならない)。ID の無い
+    合意の形に戻すときは、前の版の同じ名前の行の ID を引き継ぐ。"""
+    previous = _model(*_PREVIOUS.rows, users=_USERS)  # 利用者 = U-001
+    legacy_user = {"user": "利用者", "scene": "スマホで予約する", "source": "adopted"}
+    legacy = {**_agreed(previous), USERS_KEY: {"users": [legacy_user]}}
+    _, restored = protect_requirements(previous, previous, legacy)
+    assert restored == []
+    renamed = _model(
+        *_PREVIOUS.rows,
+        users=[UserScene(id="U-002", user="お客様", scene="スマホで予約する", source="adopted")],
+    )
+    model, restored = protect_requirements(renamed, previous, legacy)
+    assert restored == [Restored(USERS_KEY, "changed")]
+    assert [(u.id, u.user) for u in model.users] == [("U-001", "利用者")]
+    assert model.next_seq["U"] == 3
 
 
 def test_next_seq_skips_restored_ids() -> None:

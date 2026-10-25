@@ -1,7 +1,9 @@
 """要件定義書の再生成で、合意済みの行と利用者(1.2)を守る流れのテスト。
 
 SUT: DocGeneratorService.generate の要件定義書の生成(`_generate_requirements`・`_agreed_elements`。
-     app/services/doc_generator_service.py)、GeneratedDocumentRepository.create_version の
+     app/services/doc_generator_service.py)、利用者の ID の引き継ぎと、1.2 を戻したときの ID
+     (app/agreements/protection.py・app/documents/requirements/drafting.py の前の版の利用者)、
+     GeneratedDocumentRepository.create_version の
      `protection`とモデルの列、スキーマ GeneratedDocumentRead・RestoredRead(document_read)
 ドライバ: 各テスト関数
 スタブ: DB はインメモリ SQLite(`db_session`)を本物のリポジトリで使う。設計は段階1〜8 を承認済みに
@@ -18,6 +20,7 @@ from tests.fixtures.external_design import upstream_outputs
 from tests.fixtures.fake_llm import FakeLLM
 from tests.fixtures.requirements import requirements_output
 
+from app.ai.llm.paraphrase import paraphrase_requirements
 from app.documents.requirements.drafting import AGREED_MARK, RequirementsGenerationOutput
 from app.documents.requirements.model import RequirementsModel
 from app.models.generated_document import GeneratedDocument
@@ -132,6 +135,28 @@ async def test_rewritten_and_dropped_rows_go_back_to_the_baseline(
     ]
     model = RequirementsModel.model_validate(current.model)
     assert model.next_seq["NFR"] == 3
+
+
+async def test_paraphrased_agreed_users_go_back_with_their_ids(db_session: AsyncSession) -> None:
+    """合意した 1.2 の利用者の名前を、再生成の LLM が言い換えても(偽の LLM の言い換えの規則)、
+    合意の形と、前の版の利用者の ID に戻る。前の版の利用者は ID 付きでプロンプトに渡る。"""
+    project = await create_impact_project(db_session)
+    output = requirements_output(prev_id="FR-001", text="予約を登録できる")
+    await _regenerate(db_session, project, output)
+    before = RequirementsModel.model_validate((await _current(db_session, project)).model)
+    await BaselineService(db_session).create(
+        project, BaselineCreate(agreed_at=_AT, reason="合意"), recorded_by=None
+    )
+
+    llm = await _regenerate(db_session, project, paraphrase_requirements(output))
+
+    current = await _current(db_session, project)
+    model = RequirementsModel.model_validate(current.model)
+    assert [(u.id, u.user) for u in model.users] == [(u.id, u.user) for u in before.users]
+    assert {"key": "users", "reason": "changed"} in (current.protection or [])
+    prompt = str(llm.structured_messages[0][-1].content)
+    users = before.users[0]
+    assert f"## 前の版の利用者\n{users.id}|{users.user}: {users.scene}" in prompt
 
 
 async def test_change_request_targets_may_change(db_session: AsyncSession) -> None:
