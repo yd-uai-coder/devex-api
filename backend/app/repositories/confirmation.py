@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Sequence
 
 from sqlalchemy import select
 
@@ -35,7 +36,8 @@ class ConfirmationRepository(CRUDRepository[ConfirmationItemRecord]):
         updated_by: uuid.UUID | None = None,
     ) -> ConfirmationItemRecord:
         """項目の欄を保存する(行が無ければ作る)。渡した欄だけを変え、表示名は今の項目で
-        書き直す。flushまで行う。"""
+        書き直す。状態を渡したときは、CR で戻した印を消す(利用者が決め直したため)。flushまで
+        行う。"""
         record = await self.find_one(project_id=project_id, key=item.key)
         if record is None:
             record = ConfirmationItemRecord(
@@ -53,6 +55,7 @@ class ConfirmationRepository(CRUDRepository[ConfirmationItemRecord]):
             record.opportunity = opportunity  # type: ignore[assignment]
         if status is not UNSET:
             record.status = status  # type: ignore[assignment]
+            record.changed_by_change_request_number = None
         if memo is not UNSET:
             record.memo = memo  # type: ignore[assignment]
         record.updated_by = updated_by
@@ -64,3 +67,24 @@ class ConfirmationRepository(CRUDRepository[ConfirmationItemRecord]):
     ) -> ConfirmationItemRecord:
         """項目を確認済みにする(「採用にする」から。決める機会・メモは変えない)。"""
         return await self.save(project_id, item, status="confirmed", updated_by=updated_by)
+
+    async def reopen(
+        self, project_id: uuid.UUID, keys: Sequence[str], *, change_request_number: int
+    ) -> list[str]:
+        """確認済みの項目を未確認に戻し、戻した CR の番号を残す(CR の反映で文が変わった行)。
+        確認済みでない行・行の無いキーは何もしない。決める機会・メモは変えない。戻したキーを
+        返す。flushまで行う。"""
+        if not keys:
+            return []
+        stmt = select(ConfirmationItemRecord).where(
+            ConfirmationItemRecord.project_id == project_id,
+            ConfirmationItemRecord.key.in_(keys),
+            ConfirmationItemRecord.status == "confirmed",
+        )
+        records = list((await self._session.execute(stmt)).scalars().all())
+        for record in records:
+            record.status = "unconfirmed"
+            record.changed_by_change_request_number = change_request_number
+        if records:
+            await self._session.flush()
+        return [record.key for record in records]

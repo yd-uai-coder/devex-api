@@ -1,7 +1,7 @@
 """変更の影響の記録(段階の承認・文書の版の切り替え)と、確認済み・承認し直しの条件のテスト。
 
 SUT: DesignStageService.approve(印の記録と承認を止める条件。生成したままの承認は前の段階へ
-     送らない)/ record_document_change /
+     送らない。段階の外の図を直した後は送る〈mark_edited〉)/ record_document_change /
      review_marks / impact / stage_impact(app/services/design_stage_service.py)、
      ルート get_design_impact・review_impact_marks(app/api/routes/design_stages.py)、
      応答の形(app/schemas/design_stage.py)、DocGeneratorService.generate・
@@ -153,6 +153,30 @@ async def test_regenerated_stage_approved_as_is_sends_no_marks_to_earlier_stages
     assert await _impacts(db_session, project, range(1, 4)) == [None] * 3
     assert (await _impact(db_session, project, 5)).marks
     assert (await _row(db_session, project, 4)).status == "approved"
+
+
+@pytest.mark.usefixtures("skip_stage_validation")
+async def test_regenerated_stage_with_edited_diagram_sends_marks_to_earlier_stages(
+    db_session: AsyncSession,
+) -> None:
+    """生成で作り直した後に段階の外の図(段階4 は構成図)だけを直したときは、人が直した段階と
+    同じく、承認で前の段階へも印を送る。"""
+    project = await create_impact_project(db_session)
+    row4 = await _row(db_session, project, 4)
+    row4.model = _changed_service_module()
+    row4.status = "regenerated"
+    row4.version += 1
+    await db_session.commit()
+    service = DesignStageService(db_session)
+
+    assert await service.mark_edited(project.id, 4)
+    await db_session.commit()
+    row4 = await _row(db_session, project, 4)
+    assert row4.status == "reviewing"
+    await service.approve(project, stage=4, expected_version=row4.version)
+
+    earlier = [s for s in range(1, 4) if (await _row(db_session, project, s)).impact]
+    assert earlier
 
 
 async def test_marks_are_recorded_only_on_stages_approved_once(db_session: AsyncSession) -> None:

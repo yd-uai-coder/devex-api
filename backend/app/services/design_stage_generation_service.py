@@ -97,6 +97,7 @@ from app.detailed_design.plan import (
     PLAN_STAGE,
     PlanModel,
     carry_over_unit_keys,
+    drop_unknown_functions,
     normalize_plan,
 )
 from app.detailed_design.plan_drafting import (
@@ -437,7 +438,8 @@ async def generate_plan(context: StageGenerationContext) -> dict:
 
     詳細設計書は 01〜06章だけを md にして渡す(07 横断事項は、この段階自身が作るため)。図は
     描かない(md の画像は入力に要らず、図を`exported`にもしない)。作り直しは全体を置き換える
-    (段階4と同じ)が、タスク名が同じ単位は前のキーを引き継ぐ(段階8の手順書を付けたままにする)。"""
+    (段階4と同じ)が、タスク名が同じ単位は前のキーを引き継ぐ(段階8の手順書を付けたままにする)。
+    AI が書いた処理ID のうち機能一覧に無いものは捨てる(段階2〜4の下書きと同じ)。"""
     project = await context.session.get(Project, context.project_id)
     if project is None:
         raise RuntimeError("project not found")
@@ -462,6 +464,7 @@ async def generate_plan(context: StageGenerationContext) -> dict:
         build_plan_messages(requirements, design, crosscutting, function_list.functions, paths),
     )
     model = normalize_plan(to_plan_model(crosscutting, plan_output), paths)
+    model = drop_unknown_functions(model, (row.id for row in function_list.functions))
     previous = PlanModel.model_validate(context.previous or {})
     return carry_over_unit_keys(model, previous).model_dump(mode="json")
 

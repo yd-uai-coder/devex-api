@@ -7,8 +7,9 @@
 - 変更の種類(内容の変更・削除)によらず、内容の変更としてたどる(反映の後の差分でも、消えた要素は
   内容の変更としてたどるため。予測と実際の印を同じ規則にそろえる)。
 - 画面・API(文書の側の要素)も入る(再生成の印は文書の側に付かないため、予測で示す)。
-- 新しい要件を足す分は、人が選んだ起点(既存の要件・画面・API。`origins`)からたどる。起点の画面・
-  API そのものも見直しが要る要素に入れる(新しい要件が載るため。反映で書き換えてよい要素になる)。
+- 新しい要件を足す分は、人が選んだ起点(既存の要件・画面・API・段階1 の処理。`origins`)から
+  たどる。起点の画面・API・処理そのものも見直しが要る要素に入れる(新しい要件が載るため。画面・API
+  は反映で書き換えてよい要素になる)。
   起点の要件は入れない(変えない要件で、合意のまま守る)。起点が無ければ予測に入らない
   (`unpredicted_new_requirement`で示す)。
 - 保存の形(`to_dict`・`from_dict`)は、判断(合意・却下)の時点で CR に残すときに使う。
@@ -38,7 +39,7 @@ DOCUMENT_KEYS: tuple[str, ...] = ("requirements", "external_design")
 # 束の写しの段階の key の接頭辞(`stage:3`)
 STAGE_PREFIX = "stage:"
 # 新しい要件の予測の起点に選べる要素の種類
-ORIGIN_KINDS: tuple[ElementKind, ...] = ("requirement", "screen", "api")
+ORIGIN_KINDS: tuple[ElementKind, ...] = ("requirement", "screen", "api", "function")
 # 起点の画面・API そのものを見直しが要る要素に入れるときの理由
 ORIGIN_REASON = "新しい要件の起点"
 
@@ -162,7 +163,8 @@ def requirement_texts(requirements: Mapping[str, Any] | None) -> dict[str, str]:
 
 
 def origin_candidates(elements: Sequence[Element]) -> list[PredictedOrigin]:
-    """新しい要件の予測の起点に選べる要素(要件・画面・API。要素を組んだ順 = 文書の並び)。"""
+    """新しい要件の予測の起点に選べる要素(要件・画面・API・段階1 の処理。要素を組んだ順 =
+    文書の並び → 機能一覧の並び。処理は束に段階1 が入っているときだけ)。"""
     return [
         PredictedOrigin(e.key, e.kind, e.label) for e in elements if e.kind in ORIGIN_KINDS
     ]
@@ -179,7 +181,7 @@ def predict(
     """対象の要件と新しい要件の起点(`origins`。要素のキー。要素に無いキーは飛ばす)ごとに影響を
     たどり、1つの一覧にまとめる。同じ要素に複数の起点から届いたら、短い道(同じ長さなら先の起点。
     対象が先)を残し、届いた対象・起点をすべて記録する。対象の要件そのものは一覧に入れない。
-    起点の画面・API は、それ自体も一覧に入れる。"""
+    起点の画面・API・処理は、それ自体も一覧に入れる。"""
     by_key = {e.key: e for e in elements}
     target_keys = {_requirement_key(t.requirement_id) for t in targets}
     chosen = [by_key[key] for key in dict.fromkeys(origins) if key in by_key]

@@ -140,6 +140,14 @@ class BaselineService:
         require_detailed(project, "Baselines")
         return await self._baselines.list_for_project(project.id)
 
+    async def included_change_requests(
+        self, baselines: list[Baseline]
+    ) -> dict[uuid.UUID, list[tuple[int, str]]]:
+        """束の id → その束に入れた CR の(番号, 題)(束の一覧・中身の応答に出す)。"""
+        return await ChangeRequestRepository(self._session).included_by_baselines(
+            [b.id for b in baselines]
+        )
+
     async def get(self, project: Project, number: int) -> Baseline:
         """番号の束(写し付き。詳細設計モードだけ)。無ければ BaselineNotFoundError。"""
         require_detailed(project, "Baselines")
@@ -154,7 +162,7 @@ class BaselineService:
         return baseline_requirement_rows(await self.get(project, number))
 
     async def origins(self, project: Project, number: int) -> list[PredictedOrigin]:
-        """番号の束で、新しい要件の予測の起点に選べる要素(要件・画面・API。CR の起点を選ぶ
+        """番号の束で、新しい要件の予測の起点に選べる要素(要件・画面・API・処理。CR の起点を選ぶ
         画面用)。無ければ BaselineNotFoundError。"""
         baseline = await self.get(project, number)
         return origin_candidates_from_snapshots(baseline_snapshots(baseline))

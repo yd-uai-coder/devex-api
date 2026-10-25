@@ -1,7 +1,8 @@
 """確認事項の一覧の項目と、推測の採用率(純粋関数)。
 
 SUT: app.confirmations の confirmation_items / adoption_counts / 項目とキーの関数 /
-     legacy_user_keys、app.documents.requirements の grounding_points / mark_user_adopted /
+     legacy_user_keys / changed_requirement_keys、app.documents.requirements の grounding_points /
+     mark_user_adopted /
      利用者の ID(UserScene.id・number_users・assign_user_ids・build_model の利用者)、
      言い換えた再生成の出力(app/ai/llm/paraphrase.py の paraphrase_requirements)
 ドライバ: 各テスト関数
@@ -16,6 +17,7 @@ from app.confirmations import (
     AdoptionCounts,
     ConfirmationItem,
     adoption_counts,
+    changed_requirement_keys,
     confirmation_items,
     confirmation_kind_of,
     item_target,
@@ -218,6 +220,23 @@ def test_mark_user_adopted_changes_only_assumed_user() -> None:
     assert [u.source for u in adopted.users] == ["user", "adopted"]
     assert mark_user_adopted(_model(), "U-001") is None  # 推測でない行は変えない
     assert mark_user_adopted(_model(), "U-009") is None
+
+
+def test_changed_requirement_keys_are_targets_whose_text_changed() -> None:
+    """CR の対象のうち、反映の前後で文が変わった行だけ(対象の順・重複なし)。対象でない行・
+    文が同じ行・新しい行・消えた行は含めない。"""
+    before = _model()
+    rows = list(before.rows)
+    rows[0] = rows[0].model_copy(update={"text": "記事を毎朝集める"})
+    rows[1] = rows[1].model_copy(update={"text": "通知を送る"})
+    new_row = rows[0].model_copy(update={"id": "FR-003", "text": "新しい"})
+    after = before.model_copy(update={"rows": [rows[1], rows[0], new_row]})
+
+    targets = ["FR-002", "FR-001", "FR-002", "CON-001", "FR-003"]
+    assert changed_requirement_keys(before, after, targets) == ["req:FR-002", "req:FR-001"]
+    assert changed_requirement_keys(before, after, ["FR-003"]) == []
+    assert changed_requirement_keys(before, before, targets) == []
+    assert changed_requirement_keys(None, after, targets) == []
 
 
 def test_adoption_counts_rate() -> None:

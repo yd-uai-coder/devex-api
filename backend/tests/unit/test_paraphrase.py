@@ -2,7 +2,8 @@
 
 SUT: app/ai/llm/paraphrase.py の paraphrase_name / base_name / paraphrase_service /
      paraphrase_requirements / paraphrase_external_design / paraphrase_function_list。
-     言い換えた出力の消費者として、段階1 の ID の引き継ぎ(merge_draft)と外部設計書の保護
+     言い換えた出力の消費者として、段階1 の ID の引き継ぎ(merge_draft)・段階2・3・4・7 の
+     処理 ID の参照の検証(validate_stage の UNKNOWN_FUNCTION)と外部設計書の保護
      (protect_external_design の画面)
 ドライバ: 各テスト関数
 スタブ不要 ── どれも純粋関数(副作用なし)で、外部依存を呼ばないため。言い換えた出力は、生成の
@@ -22,7 +23,21 @@ from app.ai.llm.paraphrase import (
     paraphrase_requirements,
     paraphrase_service,
 )
-from app.detailed_design import merge_draft
+from app.detailed_design import (
+    CrudCell,
+    CrudModel,
+    DataFlowModel,
+    FunctionListModel,
+    Milestone,
+    ModuleListModel,
+    ModuleRow,
+    PlanModel,
+    PlanTask,
+    ProcessSummaryRow,
+    StageSources,
+    merge_draft,
+    validate_stage,
+)
 from app.detailed_design.drafting import (
     FunctionListGenerationOutput,
     GeneratedFunction,
@@ -33,9 +48,8 @@ from app.documents.external_design.drafting import GeneratedIntegration, to_draf
 from app.documents.requirements.drafting import GeneratedUserScene
 
 
-def test_smoke_paraphrased_function_list_keeps_ids() -> None:
-    """統合スモーク: 段階1 の下書きを言い換えて組み立て直しても、処理 ID は変わらない(API は
-    トリガーで、画面の処理は関連画面で引き継ぐ)。"""
+def _paraphrase_twice() -> tuple[FunctionListModel, FunctionListModel]:
+    """段階1 を作り、言い換えた出力で作り直した2つの版。"""
     output = FunctionListGenerationOutput(
         functions=[
             GeneratedFunction(
@@ -55,13 +69,50 @@ def test_smoke_paraphrased_function_list_keeps_ids() -> None:
         ]
     )
     first = merge_draft(to_drafts(output))
-    second = merge_draft(to_drafts(paraphrase_function_list(output)), first)
+    return first, merge_draft(to_drafts(paraphrase_function_list(output)), first)
+
+
+def test_smoke_paraphrased_function_list_keeps_ids() -> None:
+    """統合スモーク: 段階1 の下書きを言い換えて組み立て直しても、処理 ID は変わらない(API は
+    トリガーで、画面の処理は関連画面で引き継ぐ)。"""
+    first, second = _paraphrase_twice()
 
     assert [f.id for f in second.functions] == [f.id for f in first.functions]
     assert [f.name for f in second.functions] == [
         f"予約を登録する{PARAPHRASE_SUFFIX}",
         f"トップページ表示{PARAPHRASE_SUFFIX}",
     ]
+
+
+def _unknown_function_targets(stage: int, model: dict, function_list: FunctionListModel) -> list:
+    sources = StageSources(stages={1: function_list.model_dump(mode="json")})
+    issues = validate_stage(stage, model, sources)
+    return [i.target for i in issues if i.code == "UNKNOWN_FUNCTION"]
+
+
+def test_downstream_stages_keep_references_after_paraphrased_function_list() -> None:
+    """段階1 を言い換えて作り直しても、前の版の ID で書いた段階2・3・4・7 の処理 ID は切れない
+    (段階1 の ID を引き継ぐため)。消えた ID だけが「機能一覧に無い処理」になる。"""
+    first, second = _paraphrase_twice()
+    ids = [f.id for f in first.functions]
+    models = {
+        2: DataFlowModel(summaries=[ProcessSummaryRow(function_id=i) for i in ids]),
+        3: CrudModel(cells=[CrudCell(function_id=i, table="予約", ops="C") for i in ids]),
+        4: ModuleListModel(
+            modules=[ModuleRow(path="app/api/routes/reservations.py", functions=ids)]
+        ),
+        7: PlanModel(
+            milestones=[
+                Milestone(name="M1", tasks=[PlanTask(title="予約", function_ids=ids)])
+            ]
+        ),
+    }
+    for stage, model in models.items():
+        assert _unknown_function_targets(stage, model.model_dump(mode="json"), second) == []
+
+    removed = second.model_copy(update={"functions": second.functions[:1]})
+    for stage, model in models.items():
+        assert _unknown_function_targets(stage, model.model_dump(mode="json"), removed) != []
 
 
 def test_paraphrase_name_adds_the_suffix_once() -> None:

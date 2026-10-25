@@ -196,7 +196,7 @@ def test_unknown_origins_are_skipped() -> None:
     assert (none.origins, none.items, none.unpredicted_new_requirement) == ((), (), True)
 
 
-def test_origin_candidates_are_requirements_screens_and_apis() -> None:
+def test_origin_candidates_are_requirements_screens_apis_and_functions() -> None:
     snapshots = _snapshots()
     elements = build_elements(baseline_models(snapshots))
 
@@ -206,9 +206,30 @@ def test_origin_candidates_are_requirements_screens_and_apis() -> None:
     assert {c.kind for c in candidates} == set(ORIGIN_KINDS)
     assert [c.key for c in candidates][:3] == ["req:FR-001", "req:FR-002", "req:NFR-001"]
     assert "api:POST /api/v1/reservations" in {c.key for c in candidates}
+    # 段階1 の処理は文書の要素の後ろ(機能一覧の並び)
+    kinds = [c.kind for c in candidates]
+    assert kinds.index("function") > max(i for i, k in enumerate(kinds) if k != "function")
+    assert "fn:F-01" in {c.key for c in candidates}
+    assert origin_name("fn:F-01") == "F-01"
     assert origin_name("screen:SCR-001") == "SCR-001"
     assert origin_name("api:POST /api/v1/reservations") == "POST /api/v1/reservations"
     assert origin_name("plain") == "plain"
+
+
+def test_function_origin_is_an_item_and_reaches_later_stages() -> None:
+    """段階1 の処理を起点にすると、処理そのものが「新しい要件の起点」として入り、その先の段階の
+    要素に届く。処理は文書の要素でないので、反映で書き換えてよい要素には入らない。"""
+    prediction = predict_from_snapshots(
+        _snapshots(), [], adds_requirement=True, origins=["fn:F-01"]
+    )
+
+    items = {i.key: i for i in prediction.items}
+    assert (items["fn:F-01"].reason, items["fn:F-01"].stage) == (ORIGIN_REASON, 1)
+    assert [o.kind for o in prediction.origins] == ["function"]
+    assert prediction.unpredicted_new_requirement is False
+    later = [i for i in prediction.items if i.stage > 1]
+    assert later and all(i.origin_keys == ("fn:F-01",) for i in later)
+    assert rewritable_keys([], prediction.to_dict()) == frozenset()
 
 
 def test_prediction_with_origins_round_trips_and_reads_old_form() -> None:

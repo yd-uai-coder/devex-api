@@ -254,16 +254,17 @@ class DesignStageService:
         return await self._read_one(project, stage)
 
     async def mark_edited(self, project_id: uuid.UUID, stage: int) -> bool:
-        """段階の内容のうち、段階の外に正本を持つもの(段階2の DFD・データ辞書)が直されたとき、
-        承認済みの段階を人の編集と同じ扱いで差し戻す(`reviewing`へ戻し、versionを増やす)。
-        差し戻したらTrue。
+        """段階の内容のうち、段階の外に正本を持つもの(段階2の DFD・データ辞書など)が直されたとき、
+        承認済みの段階と生成で作り直したままの段階を、人の編集と同じ扱いにする(`reviewing`へ戻し、
+        versionを増やす)。変えたらTrue。
 
         段階の`model`の保存を経ずに内容が変わっても、承認をやり直させ、後ろの段階に「古い」を
-        伝えるため(後ろの段階は、承認した版の番号で陳腐化を判定する)。承認済みでない段階は何も
-        しない。行の無いプロジェクト(簡易ドキュメントモード)も何もしない。呼び出し元の保存と同じ
-        トランザクションで使うため、commitしない。"""
+        伝えるため(後ろの段階は、承認した版の番号で陳腐化を判定する)。生成で作り直したまま
+        (`regenerated`)の段階も、人が直したので、承認で前の段階へ印を送るようにする。それ以外の
+        段階(下書き・レビュー中)は何もしない。行の無いプロジェクト(簡易ドキュメントモード)も
+        何もしない。呼び出し元の保存と同じトランザクションで使うため、commitしない。"""
         row = await self._stages.get(project_id=project_id, stage=stage)
-        if row is None or row.status != "approved":
+        if row is None or row.status not in ("approved", "regenerated"):
             return False
         row.status = STATUS_AFTER_EDIT
         row.version += 1
@@ -283,7 +284,8 @@ class DesignStageService:
 
         生成で作り直したまま(人が保存していない`regenerated`のまま)承認したときは、前の段階へ
         印を送らない(後の段階は前の段階から作るので、生成の結果が前の段階を直す必要を生むことは
-        まれで、毎回の見直しが手間になるため)。人が直して保存した後の承認は、前の段階にも送る。
+        まれで、毎回の見直しが手間になるため)。人が直して保存した後の承認は、前の段階にも送る
+        (段階の外の DFD・データ辞書・ER・構成図だけを直したときも`mark_edited`で同じ扱い)。
 
         反映済みの CR を渡して作り直した後の最初の承認なら、承認で付く印の出どころに`cr:<番号>`を
         足し、CR の印の写しに重ねて、CR の時系列に記録だけの1行を足す(app/change_requests/

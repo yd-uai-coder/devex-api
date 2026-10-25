@@ -160,6 +160,22 @@ class ChangeRequestRepository(CRUDRepository[ChangeRequest]):
         )
         return list((await self._session.execute(stmt)).scalars().all())
 
+    async def included_by_baselines(
+        self, baseline_ids: Collection[uuid.UUID]
+    ) -> dict[uuid.UUID, list[tuple[int, str]]]:
+        """束の id → その束に入れた CR の(番号, 題)の一覧(番号の順。時系列は読まない)。"""
+        if not baseline_ids:
+            return {}
+        stmt = (
+            select(ChangeRequest.included_baseline_id, ChangeRequest.number, ChangeRequest.title)
+            .where(ChangeRequest.included_baseline_id.in_(baseline_ids))
+            .order_by(ChangeRequest.number)
+        )
+        found: dict[uuid.UUID, list[tuple[int, str]]] = {}
+        for baseline_id, number, title in (await self._session.execute(stmt)).all():
+            found.setdefault(baseline_id, []).append((number, title))
+        return found
+
     async def numbers_by_id(self, ids: Collection[uuid.UUID]) -> dict[uuid.UUID, int]:
         """CR の id → 番号。文書の版の応答に、反映した CR の番号を出すため(時系列は読まない)。"""
         if not ids:

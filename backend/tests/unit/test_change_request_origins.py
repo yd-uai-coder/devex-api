@@ -87,7 +87,7 @@ async def test_baseline_lists_origin_candidates(db_session: AsyncSession) -> Non
     origins = await list_baseline_origins(1, db_session, project)
 
     assert all(isinstance(o, BaselineOriginRead) for o in origins)
-    assert {o.kind for o in origins} == {"requirement", "screen", "api"}
+    assert {o.kind for o in origins} == {"requirement", "screen", "api", "function"}
     assert BaselineOriginRead(key=_SCREEN, kind="screen", label=_SCREEN_LABEL) in origins
     with pytest.raises(BaselineNotFoundError):
         await list_baseline_origins(9, db_session, project)
@@ -133,13 +133,33 @@ async def test_origins_are_checked_against_the_baseline(db_session: AsyncSession
         )
     with pytest.raises(ChangeRequestTargetUnknownError, match="screen:SCR-404"):
         await service.create(project, _create(origins=["screen:SCR-404"]), created_by=None)
-    with pytest.raises(ChangeRequestTargetUnknownError):  # 起点に選べない種類(機能)
-        await service.create(project, _create(origins=["fn:F-01"]), created_by=None)
+    with pytest.raises(ChangeRequestTargetUnknownError):  # 起点に選べない種類(処理概要)
+        await service.create(project, _create(origins=["summary:F-01"]), created_by=None)
     with pytest.raises(ValidationError):
         _create(origins=[f"req:FR-{n:03}" for n in range(ORIGINS_MAX + 1)])
     baseline = await BaselineService(db_session).get(project, 1)
     assert checked_origins([" ", ""], True, baseline) is None
     assert set(baseline_snapshots(baseline)) >= {"requirements", "external_design"}
+
+
+async def test_function_origin_is_saved_and_named_in_the_explanation(
+    db_session: AsyncSession,
+) -> None:
+    """段階1 の処理も起点に選べる。説明書では画面と同じく名前を先に書く。"""
+    project = await _project(db_session)
+    service = ChangeRequestService(db_session)
+    label = next(
+        o.label for o in await BaselineService(db_session).origins(project, 1) if o.key == "fn:F-01"
+    )
+
+    view = await service.create(project, _create(origins=["fn:F-01"]), created_by=None)
+
+    assert view.change_request.origins == [{"key": "fn:F-01", "label": label}]
+    impact = await service.impact(project, 1)
+    assert "fn:F-01" in {i.key for i in impact.prediction.items}
+    explanation = await service.explanation(project, 1)
+    name, function_id = label.split(" ", 1)[1], label.split(" ", 1)[0]
+    assert f"新しい要件の予測の起点: {name}({function_id})。" in explanation.explanation.markdown
 
 
 async def test_update_rechecks_and_clears_origins(db_session: AsyncSession) -> None:

@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Self
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, computed_field, field_validator
 
@@ -43,6 +43,13 @@ class BaselineItemRead(BaselineItemSummaryRead):
     model: dict[str, Any] | None
 
 
+class BaselineChangeRequestRead(BaseModel):
+    """束に入れた CR 1つ(番号と題)。"""
+
+    number: int
+    title: str
+
+
 class _BaselineRecordRead(BaseModel):
     """合意済みの版1つの番号と合意の記録(写しは継承先で持つ)。`label`は画面に出す名前(B-1…)。"""
 
@@ -55,6 +62,18 @@ class _BaselineRecordRead(BaseModel):
     reason: str
     recorded_by: uuid.UUID | None
     created_at: datetime
+    # 束に入れた CR(番号の順)。ORM の行には無いので、ルートが`with_included`で足す
+    included_change_requests: list[BaselineChangeRequestRead] = Field(default_factory=list)
+
+    def with_included(self, included: list[tuple[int, str]]) -> Self:
+        """束に入れた CR(`(番号, 題)`の一覧)を足した写し。"""
+        return self.model_copy(
+            update={
+                "included_change_requests": [
+                    BaselineChangeRequestRead(number=n, title=t) for n, t in included
+                ]
+            }
+        )
 
     @computed_field
     @property
@@ -76,7 +95,7 @@ class BaselineRead(_BaselineRecordRead):
 
 class BaselineOriginRead(BaseModel):
     """束で、新しい要件の予測の起点に選べる要素1つ(CR の起点を選ぶ画面用)。`kind`は
-    requirement / screen / api。"""
+    requirement / screen / api / function。"""
 
     key: str
     kind: str

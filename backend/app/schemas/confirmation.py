@@ -21,7 +21,9 @@ CONFIRMATION_MEMO_MAX = 2000
 class ConfirmationItemRead(BaseModel):
     """確認事項1件。`present`は今の一覧にあるか(False は、利用者が状態を決めた後に一覧から消えた
     項目。採用にして推測でなくなった行など)。`refs`は観点に頼っている要件の ID(1.2 は`1.2`)。
-    決める機会・状態・メモは、利用者が決めていなければ 未設定・未確認・空。"""
+    決める機会・状態・メモは、利用者が決めていなければ 未設定・未確認・空。
+    `changed_by_change_request_number`は、CR の反映で文が変わり確認済みから未確認に戻した
+    CR の番号(利用者が状態を決め直すまで出す)。"""
 
     key: str
     kind: ConfirmationKind
@@ -33,6 +35,7 @@ class ConfirmationItemRead(BaseModel):
     opportunity: Opportunity | None
     opportunity_label: str | None
     memo: str
+    changed_by_change_request_number: int | None = None
     updated_at: datetime | None
 
 
@@ -114,5 +117,8 @@ def _item_read(
         opportunity=opportunity,
         opportunity_label=OPPORTUNITY_LABEL[opportunity] if opportunity else None,
         memo=record.memo if record else "",
+        changed_by_change_request_number=(
+            record.changed_by_change_request_number if record else None
+        ),
         updated_at=record.updated_at if record else None,
     )

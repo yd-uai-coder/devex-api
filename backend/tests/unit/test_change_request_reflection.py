@@ -7,7 +7,8 @@ SUT: DocGeneratorService.request_generation・generate の`cr_number`
      DesignStageService.record_document_change の`extra_sources`、marks.cr_source・record、
      リポジトリ create_version(change_request_id)・add_event(refs)とモデルの列、
      スキーマ GenerationRequest・ChangeRequestEventRead、ChangeRequestNotReflectableError、
-     ルート trigger_generation(app/api/routes/projects.py)
+     ルート trigger_generation(app/api/routes/projects.py)、反映で文が変わった要件の確認事項を
+     未確認に戻す`_reopen_confirmations`(ConfirmationRepository.reopen・changed_requirement_keys)
 ドライバ: 各テスト関数
 スタブ: DB はインメモリ SQLite(`db_session`)を本物のリポジトリで使う。設計は段階1〜8 を承認済みに
 した fixture(`create_impact_project`)から合意済みの版を作る。文書の生成の LLM は FakeLLM
@@ -28,6 +29,7 @@ from tests.fixtures.requirements import requirements_output
 from app.api.routes.projects import trigger_generation
 from app.change_requests import merge_applied_marks
 from app.change_requests.instruction import CR_INSTRUCTION_HEAD
+from app.confirmations import ConfirmationItem
 from app.detailed_design.impact import Mark, StageImpact
 from app.detailed_design.impact.marks import cr_source
 from app.models.change_request import ChangeRequestEvent
@@ -36,6 +38,7 @@ from app.models.generated_document import GeneratedDocument
 from app.models.project import Project
 from app.models.user import User
 from app.repositories.change_request import ChangeRequestRepository
+from app.repositories.confirmation import ConfirmationRepository
 from app.repositories.design_stage import DesignStageRepository
 from app.repositories.generated_document import GeneratedDocumentRepository
 from app.schemas.baseline import BaselineCreate
@@ -45,11 +48,13 @@ from app.schemas.change_request import (
     ChangeRequestEventRead,
 )
 from app.schemas.document import GenerationRequest
+from app.schemas.share_link import SharedDecisionCreate, ShareLinkCreate
 from app.services.baseline_service import BaselineService
 from app.services.change_request_service import ChangeRequestService
 from app.services.design_stage_service import DesignStageService
 from app.services.doc_generator_service import DocGeneratorService, generate_documents
 from app.services.errors import ChangeRequestNotFoundError, ChangeRequestNotReflectableError
+from app.services.share_link_service import ShareLinkService
 
 _AT = datetime(2026, 10, 19, 10, 0, tzinfo=UTC)
 _NEW_TEXT = "予約を登録し、確認メールを送る"
@@ -168,6 +173,58 @@ async def test_reapply_adds_a_row_and_keeps_applied(db_session: AsyncSession) ->
         ("agreed", "applied"),
         ("applied", "applied"),
     ]
+
+
+async def _confirm(session: AsyncSession, project: Project, *req_ids: str) -> None:
+    repo = ConfirmationRepository(session)
+    for req_id in req_ids:
+        item = ConfirmationItem(f"req:{req_id}", "requirement", req_id)
+        await repo.save(project.id, item, status="confirmed", memo="打ち合わせで聞いた")
+
+
+async def _statuses(session: AsyncSession, project: Project) -> dict[str, tuple]:
+    records = await ConfirmationRepository(session).list_for_project(project.id)
+    return {
+        r.key: (r.status, r.changed_by_change_request_number, r.memo) for r in records
+    }
+
+
+async def test_apply_reopens_confirmed_items_of_rewritten_targets(
+    db_session: AsyncSession,
+) -> None:
+    """反映で文が変わった対象の要件の確認事項は、確認済みから未確認に戻り、CR の番号が残る
+    (メモは残す)。対象でない要件は確認済みのまま。"""
+    project = await _project_with_cr(db_session)
+    await _confirm(db_session, project, "FR-001", "FR-002")
+
+    await _generate(db_session, project, _llm())
+
+    assert await _statuses(db_session, project) == {
+        "req:FR-001": ("unconfirmed", 1, "打ち合わせで聞いた"),
+        "req:FR-002": ("confirmed", None, "打ち合わせで聞いた"),
+    }
+
+
+async def test_share_link_agreement_also_reopens(db_session: AsyncSession) -> None:
+    """クライアントが共有リンクで合意した CR でも、反映で文が変われば未確認に戻す(再生成の
+    文は案の文と同じとは限らないため)。"""
+    project = await _project_with_cr(db_session, agree=False)
+    created = await ShareLinkService(db_session).create(
+        project, 1, ShareLinkCreate(), actor_id=None
+    )
+    service = ChangeRequestService(db_session)
+    explanation = await service.explanation_of(await service.load(project, 1))
+    await ShareLinkService(db_session).decide(
+        created.token,
+        SharedDecisionCreate(
+            decision="agreed", name="山田", fingerprint=explanation.explanation.fingerprint
+        ),
+    )
+    await _confirm(db_session, project, "FR-001")
+
+    await _generate(db_session, project, _llm())
+
+    assert (await _statuses(db_session, project))["req:FR-001"][:2] == ("unconfirmed", 1)
 
 
 async def test_request_validates_the_change_request(db_session: AsyncSession) -> None:

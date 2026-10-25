@@ -18,7 +18,7 @@ from app.agreements import (
 from app.ai.llm.catalog import Purpose
 from app.ai.llm.content import extract_text_content
 from app.change_requests import join_instructions, rewritable_keys, targets_from_json
-from app.confirmations import requirement_item, user_item
+from app.confirmations import changed_requirement_keys, requirement_item, user_item
 from app.core.database import AsyncSessionLocal
 from app.core.errors import AppError
 from app.detailed_design.function_list import FunctionListModel
@@ -583,6 +583,13 @@ class DocGeneratorService:
                 await AgreementService(self._session).record_change_request(
                     project, reflection.change_request, new_models, recorded_by=user_id
                 )
+                if "requirements" in designed:
+                    await self._reopen_confirmations(
+                        project,
+                        reflection.change_request,
+                        previous_models.get("requirements"),
+                        new_models.get("requirements"),
+                    )
 
             if designed and not reviewing:
                 diagnosis = await self._self_diagnose(generated, llm=llm)
@@ -803,6 +810,32 @@ class DocGeneratorService:
                 project.id, user_item(scene), updated_by=recorded_by
             )
         return document
+
+    async def _reopen_confirmations(
+        self,
+        project: Project,
+        change_request: ChangeRequest,
+        previous: dict | None,
+        new: dict | None,
+    ) -> None:
+        """CR の反映で文が変わった対象の要件の確認事項を、確認済みから未確認に戻す(戻した CR の
+        番号を残す。共有リンクで合意した CR も同じ。再生成の文は案の文と同じとは限らないため)。
+        生成と同じトランザクションで、commit しない。"""
+        keys = changed_requirement_keys(
+            parse_requirements_model(previous),
+            parse_requirements_model(new),
+            [target.requirement_id for target in targets_from_json(change_request.targets)],
+        )
+        reopened = await ConfirmationRepository(self._session).reopen(
+            project.id, keys, change_request_number=change_request.number
+        )
+        if reopened:
+            logger.info(
+                "confirmations_reopened",
+                project_id=str(project.id),
+                change_request=change_request.number,
+                keys=reopened,
+            )
 
     async def _requirements_for_adopt(
         self, project: Project

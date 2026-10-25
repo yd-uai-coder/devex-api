@@ -1177,8 +1177,9 @@ def checked_origins(
     keys: Sequence[str], adds_requirement: bool, baseline: Baseline
 ) -> list[dict[str, str]] | None:
     """新しい要件の予測の起点(要素のキー)を確かめ、保存の形(`[{key, label}]`。選んだ順・重なりを
-    除く)にする。起点が無ければ None。新しい要件を足さない CR の起点と、基準の束の要件・画面・API に
-    無いキーは ChangeRequestTargetUnknownError。表示名は束の写しから写す(束は凍結されている)。"""
+    除く)にする。起点が無ければ None。新しい要件を足さない CR の起点と、基準の束の要件・画面・API・
+    段階1 の処理に無いキーは ChangeRequestTargetUnknownError。表示名は束の写しから写す(束は
+    凍結されている)。"""
     wanted = list(dict.fromkeys(key.strip() for key in keys if key.strip()))
     if not wanted:
         return None
@@ -1192,7 +1193,7 @@ def checked_origins(
     unknown = [key for key in wanted if key not in candidates]
     if unknown:
         raise ChangeRequestTargetUnknownError(
-            f"基準の合意済みの版(B-{baseline.number})に無い要件・画面・API です: "
+            f"基準の合意済みの版(B-{baseline.number})に無い要件・画面・API・処理です: "
             f"{', '.join(unknown)}"
         )
     return [{"key": key, "label": candidates[key].label} for key in wanted]

@@ -35,7 +35,7 @@ class ChangeRequest(Base):
     (日の粒度。任意)・メモ。対象は基準の束の要件定義書にある要件 ID と変更の種類の組の一覧
     (`targets`。`[{requirement_id, kind}]`、app/change_requests/targets.py)と、新しい要件を足すかの
     印(`adds_requirement`)。`origins`は新しい要件を足す CR の予測の起点(`[{key, label}]`。基準の
-    束の要件・画面・API。NULL は起点なし)。`options`は選択肢(2〜3の案とおすすめ。
+    束の要件・画面・API・段階1 の処理。NULL は起点なし)。`options`は選択肢(2〜3の案とおすすめ。
     app/change_requests/options.py の保存の形。NULL は案なし)。`derived_from_id`は、却下した CR を
     写して作ったときの元の CR。
     `decision_*`は合意・却下の記録(合意済みの版と同じ項目。判断の前は NULL)。`decision_option`は
