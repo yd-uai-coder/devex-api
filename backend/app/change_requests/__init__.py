@@ -1,7 +1,7 @@
 """変更要求(CR)の状態・遷移・重なりの判定と、対象(要件 ID・変更の種類・変更後の案)の扱い・
 影響の予測・変更の規模・選択肢とその LLM の下書き・説明書の組み立てと、任意の要約の入力・照合・
 状態・反映の指示・予測と実際の比較・検証の条件・CR で作り直した段階の承認・レビューを結ぶ条件・
-たどる記録・共有リンクの規則・コメント欄の規則(純粋関数)。
+たどる記録・共有リンクの規則・コメント欄の規則・重なる CR の競合(純粋関数)。
 
 docs/internal_design.md 3.3節「11. 合意と変更の一巡」。
 """
@@ -26,6 +26,16 @@ from app.change_requests.comparison import (
     applied_marks_from_json,
     compare,
     merge_applied_marks,
+)
+from app.change_requests.conflicts import (
+    Conflict,
+    RecordFact,
+    base_seq,
+    changed_after,
+    checks_for,
+    conflicts,
+    is_checked,
+    unchecked,
 )
 from app.change_requests.explanation import (
     ChangeRequestFacts,
@@ -272,7 +282,9 @@ __all__ = [
     "ChangeRequestFacts",
     "ChangeRequestStatus",
     "ComparedItem",
+    "Conflict",
     "Comparison",
+    "RecordFact",
     "ComparisonStatus",
     "DocumentItem",
     "DecisionFacts",
@@ -315,7 +327,13 @@ __all__ = [
     "display_name",
     "checked_documents",
     "clip_summary",
+    "base_seq",
+    "changed_after",
+    "checks_for",
     "compare",
+    "conflicts",
+    "is_checked",
+    "unchecked",
     "compare_scale",
     "count_scale",
     "document_items",

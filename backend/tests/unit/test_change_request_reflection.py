@@ -2,8 +2,9 @@
 
 SUT: DocGeneratorService.request_generation・generate の`cr_number`
      (app/services/doc_generator_service.py)、ChangeRequestService.reflectable・reflection・
-     record_document_apply(app/services/change_request_service.py)と純粋関数 merge_applied_marks
-     (app/change_requests/comparison.py)、
+     record_document_apply・comparison の`reflections`(app/services/change_request_service.py)と
+     純粋関数 merge_applied_marks(app/change_requests/comparison.py)、反映の前 → 後の記録
+     (document_changes)と応答 ChangeRequestComparisonRead.reflections、
      DesignStageService.record_document_change の`extra_sources`、marks.cr_source・record、
      リポジトリ create_version(change_request_id)・add_event(refs)とモデルの列、
      スキーマ GenerationRequest・ChangeRequestEventRead、ChangeRequestNotReflectableError、
@@ -43,6 +44,7 @@ from app.repositories.design_stage import DesignStageRepository
 from app.repositories.generated_document import GeneratedDocumentRepository
 from app.schemas.baseline import BaselineCreate
 from app.schemas.change_request import (
+    ChangeRequestComparisonRead,
     ChangeRequestCreate,
     ChangeRequestDecision,
     ChangeRequestEventRead,
@@ -332,3 +334,34 @@ async def test_route_passes_cr_number_to_the_background_task(db_session: AsyncSe
     [task] = tasks.tasks
     assert task.func is generate_documents
     assert task.kwargs["cr_number"] == 1
+
+
+async def test_apply_records_before_and_after_of_elements(db_session: AsyncSession) -> None:
+    """反映の時系列の行に、要素の前 → 後(対象の要件の文の変更)が残り、比較の応答で読める。"""
+    project = await _project_with_cr(db_session)
+
+    await _generate(db_session, project, _llm())
+
+    service = ChangeRequestService(db_session)
+    cr = (await service.get(project, 1)).change_request
+    event = next(e for e in cr.events if e.action == "apply")
+    assert event.refs is not None
+    changes = {c["key"]: c for c in event.refs["changes"]}
+    fr001 = changes["req:FR-001"]
+    assert (fr001["change"], fr001["scope"]) == ("changed", "target")
+    text = next(f for f in fr001["fields"] if f["name"] == "text")
+    assert text["after"] == _NEW_TEXT and text["before"] != _NEW_TEXT
+
+    view = await service.comparison(project, 1)
+    read = ChangeRequestComparisonRead.build(
+        view.change_request,
+        view.comparison,
+        saved=view.saved,
+        scale=view.scale,
+        reflections=view.reflections,
+    )
+    [reflection] = read.reflections
+    assert reflection.recorded
+    assert reflection.documents == ["要件定義書 v2", "外部設計書 v2"]
+    target = next(c for c in reflection.changes if c.key == "req:FR-001")
+    assert (target.change_label, target.scope_label) == ("変更", "CR の対象")

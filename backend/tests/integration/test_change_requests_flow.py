@@ -5,8 +5,9 @@ SUT: POST・GET /api/v1/projects/{id}/change-requests、GET・PATCH .../{number}
      POST .../{number}/explain・decision・withdraw・copy、GET .../{number}/impact、
      GET .../{number}/explanation・explanation/download、POST・PATCH .../explanation/summary、
      POST .../explanation/summary/confirm、CR を渡した POST /api/v1/projects/{id}/generate と
-     GET .../{number}/comparison、GET .../{number}/verification・PUT .../document-checks・
-     POST .../verify、GET .../review-candidates・POST .../reviews、束の作成の
+     GET .../{number}/comparison(反映の前 → 後の`reflections`も)、GET .../{number}/verification・
+     PUT .../document-checks・POST .../verify、GET .../review-candidates・POST .../reviews、
+     重なる CR の競合(CR の`conflicts`・POST .../{number}/conflict-checks・反映の409)、束の作成の
      change_request_numbers、GET .../{number}/trace、新しい要件の予測の起点
      (GET /api/v1/projects/{id}/baselines/{number}/origins と CR の`origins`)、選択肢
      (CR の`options`・合意の`option`、POST・GET .../{number}/options/draft・
@@ -472,9 +473,68 @@ async def test_reflection_records_versions_and_comparison(
         "unmarked_stage",
     }
     assert [r["basis"] for r in comparison["scale"]] == ["marks"] * 3 + ["document_checks"] * 2
+    # 反映ごとの要素の前 → 後
+    [reflection] = comparison["reflections"]
+    assert reflection["recorded"] is True
+    fr001 = next(c for c in reflection["changes"] if c["key"] == "req:FR-001")
+    assert (fr001["change"], fr001["scope"]) == ("changed", "target")
 
     await client.delete(f"/api/v1/projects/{project_id}", headers=headers)
     assert await _rows(project_id) == (0, 0)
+
+
+async def test_conflicting_cr_needs_check_before_apply(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CR-1 を反映した後、同じ要件を対象にする CR-2 の反映は、競合を確かめるまで409。"""
+    stub_llm_resolver(
+        monkeypatch,
+        FakeLLM(
+            content_sequence=["## 自己診断\n最重要: 特になし"] * 2,
+            structured_by_schema=upstream_outputs(
+                requirements_output(prev_id="FR-001", text="予約を登録し、確認メールを送る")
+            ),
+        ),
+    )
+    headers, user_id = await _login("cr-conflict@example.com")
+    project_id = await _project(user_id)
+    base = f"/api/v1/projects/{project_id}/change-requests"
+    generate = f"/api/v1/projects/{project_id}/generate"
+    await client.post(f"/api/v1/projects/{project_id}/baselines", json=_BASELINE, headers=headers)
+    for number in (1, 2):
+        await client.post(base, json=_CR, headers=headers)
+        await client.post(f"{base}/{number}/explain", headers=headers)
+        await client.post(
+            f"{base}/{number}/decision", json={**_DECISION, "decision": "agreed"}, headers=headers
+        )
+    applied = await client.post(
+        generate, json={"start_from": "requirements", "cr_number": 1}, headers=headers
+    )
+    assert applied.status_code == 202
+
+    detail = (await client.get(f"{base}/2", headers=headers)).json()
+    [conflict] = detail["conflicts"]
+    assert (conflict["requirement_id"], conflict["by"], conflict["checked"]) == (
+        "FR-001",
+        ["CR-1"],
+        False,
+    )
+    blocked = await client.post(
+        generate, json={"start_from": "requirements", "cr_number": 2}, headers=headers
+    )
+    assert (blocked.status_code, blocked.json()["code"]) == (409, "CR_CONFLICT_UNCHECKED")
+    none = await client.post(f"{base}/1/conflict-checks", headers=headers)
+    assert none.status_code == 409
+
+    checked = await client.post(f"{base}/2/conflict-checks", headers=headers)
+    assert checked.status_code == 200
+    assert checked.json()["conflicts"][0]["checked"] is True
+    accepted = await client.post(
+        generate, json={"start_from": "requirements", "cr_number": 2}, headers=headers
+    )
+    assert accepted.status_code == 202
+
+    await client.delete(f"/api/v1/projects/{project_id}", headers=headers)
 
 
 async def _review_run(project_id: uuid.UUID) -> uuid.UUID:

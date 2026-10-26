@@ -78,6 +78,7 @@ def _read(view: ChangeRequestView) -> ChangeRequestRead:
         derived_from_number=view.derived_from_number,
         derived_numbers=view.derived_numbers,
         allowed_actions=view.allowed_actions,
+        conflicts=view.conflicts,
     )
 
 
@@ -132,11 +133,15 @@ async def get_change_request_impact(
 async def get_change_request_comparison(
     number: ChangeRequestNumber, session: SessionDep, current_project: CurrentProjectDep
 ) -> ChangeRequestComparisonRead:
-    """反映した CR の、影響の予測と反映で付いた印の比較(一致 / 予測だけ / 実際だけ)。無ければ
-    404、まだ反映していなければ409。"""
+    """反映した CR の、影響の予測と反映で付いた印の比較(一致 / 予測だけ / 実際だけ)と、文書への
+    反映ごとの要素の前 → 後。無ければ404、まだ反映していなければ409。"""
     view = await ChangeRequestService(session).comparison(current_project, number)
     return ChangeRequestComparisonRead.build(
-        view.change_request, view.comparison, saved=view.saved, scale=view.scale
+        view.change_request,
+        view.comparison,
+        saved=view.saved,
+        scale=view.scale,
+        reflections=view.reflections,
     )
 
 
@@ -388,6 +393,21 @@ async def link_change_request_review(
     """CR に設計レビューの回を結ぶ(時系列に1行)。回が無ければ404、結べなければ409。"""
     view = await ChangeRequestService(session).link_review(
         current_project, number, payload.review_run_id, actor_id=current_user.id
+    )
+    return _read(view)
+
+
+@router.post("/{number}/conflict-checks", response_model=ChangeRequestRead)
+async def check_change_request_conflicts(
+    number: ChangeRequestNumber,
+    session: SessionDep,
+    current_project: CurrentProjectDep,
+    current_user: CurrentUserDep,
+) -> ChangeRequestRead:
+    """重なる CR の競合(基準の束の後にほかの CR の反映で変わった対象の要件)を、今の文と見比べて
+    確かめた、にする(時系列に1行)。競合が無ければ409。"""
+    view = await ChangeRequestService(session).check_conflicts(
+        current_project, number, actor_id=current_user.id
     )
     return _read(view)
 

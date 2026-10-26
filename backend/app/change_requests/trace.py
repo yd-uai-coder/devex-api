@@ -34,6 +34,7 @@ ACTION_LABEL: dict[str, str] = {
     "extend_share": "共有リンクの期限を延ばした",
     "comment": "コメントを受けた",
     "reply_comment": "コメントに返信した",
+    "check_conflict": "競合を確かめた",
 }
 
 

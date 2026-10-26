@@ -7,6 +7,7 @@ docs/internal_design.md 3.3節「12. 合意の精度」。
 - protection: 再生成の後に、合意済みの要素を合意の形へ戻す
 - history: 要素1つの合意の履歴(合意の記録・戻した版・関わる CR)
 - status: 表示中の版の要素ごとの合意の状態(合意済み・合意と違う・未合意・今の版に無い)
+- reflection_diff: CR の反映で要素がどう変わったか(前 → 後)
 """
 
 from app.agreements.history import (
@@ -53,6 +54,21 @@ from app.agreements.protection import (
     protect_requirements,
     requirement_key,
 )
+from app.agreements.reflection_diff import (
+    REFLECTION_CHANGE_KINDS,
+    REFLECTION_CHANGE_LABEL,
+    REFLECTION_SCOPE_LABEL,
+    REFLECTION_SCOPES,
+    AppliedReflection,
+    FieldChange,
+    ReflectionChange,
+    ReflectionChangeKind,
+    ReflectionScope,
+    applied_reflections,
+    changes_from_json,
+    changes_to_json,
+    reflection_changes,
+)
 from app.agreements.status import (
     ELEMENT_STATE_LABEL,
     ELEMENT_STATES,
@@ -73,12 +89,17 @@ __all__ = [
     "ELEMENT_STATE_LABEL",
     "HISTORY_EVENTS",
     "HISTORY_EVENT_LABEL",
+    "REFLECTION_CHANGE_KINDS",
+    "REFLECTION_CHANGE_LABEL",
+    "REFLECTION_SCOPES",
+    "REFLECTION_SCOPE_LABEL",
     "RESTORE_REASONS",
     "RESTORE_REASON_LABEL",
     "USERS_KEY",
     "USERS_LABEL",
     "AgreedItem",
     "AgreedKind",
+    "AppliedReflection",
     "AgreementOrigin",
     "ChangeRequestRef",
     "CurrentAgreement",
@@ -86,9 +107,13 @@ __all__ = [
     "ElementState",
     "ElementStatus",
     "ElementHistory",
+    "FieldChange",
     "HistoryEntry",
     "HistoryEvent",
     "RecordFacts",
+    "ReflectionChange",
+    "ReflectionChangeKind",
+    "ReflectionScope",
     "RelatedChangeRequest",
     "VersionFacts",
     "RestoreReason",
@@ -97,9 +122,12 @@ __all__ = [
     "RestoredElement",
     "agreed_external_ids",
     "agreed_requirement_ids",
+    "applied_reflections",
     "agreement_items",
     "body_of",
     "change_request_items",
+    "changes_from_json",
+    "changes_to_json",
     "element_history",
     "element_states",
     "integration_key",
@@ -107,6 +135,7 @@ __all__ = [
     "origin_label",
     "protect_external_design",
     "protect_requirements",
+    "reflection_changes",
     "removed_keys",
     "requirement_key",
     "restored_elements",

@@ -319,6 +319,7 @@ class DocGeneratorService:
         )
         if cr_number is not None:
             await ChangeRequestService(self._session).reflectable(project, cr_number)
+            await ChangeRequestService(self._session).require_conflicts_checked(project, cr_number)
             if not any(t in DOC_TYPES_BY_MODE[project.mode] for t in targets):
                 raise ChangeRequestNotReflectableError(
                     "テスト仕様書だけの生成には、変更要求を渡せません。"
@@ -471,6 +472,8 @@ class DocGeneratorService:
                 )
                 previous_models[doc_type] = current.model if current is not None else None
             new_models: dict[str, dict | None] = {}
+            # 作った版で合意の形へ戻した要素(反映の前 → 後に「戻した」として残す)
+            protections: list[dict] = []
             for doc_type in doc_types:
                 if doc_type not in targets:
                     # 起点より上流は作り直さず、表示中の版を下流の入力にする
@@ -540,6 +543,7 @@ class DocGeneratorService:
                     protection=protection,
                 )
                 versions.append((doc_type, document.version))
+                protections += protection or []
                 generated[doc_type] = content
                 new_models[doc_type] = model
                 progress.done.append(doc_type)
@@ -579,6 +583,9 @@ class DocGeneratorService:
                     model=resolved.model,
                     marks=marks,
                     actor_id=user_id,
+                    before_models=previous_models,
+                    after_models=new_models,
+                    protection=protections,
                 )
                 await AgreementService(self._session).record_change_request(
                     project, reflection.change_request, new_models, recorded_by=user_id

@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Sequence
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
@@ -12,6 +13,13 @@ from pydantic import (
     model_validator,
 )
 
+from app.agreements import (
+    REFLECTION_CHANGE_LABEL,
+    REFLECTION_SCOPE_LABEL,
+    AppliedReflection,
+    ReflectionChangeKind,
+    ReflectionScope,
+)
 from app.change_requests import (
     BACKGROUND_SOURCE_LABEL,
     COMPARISON_STATUS_LABEL,
@@ -34,6 +42,7 @@ from app.change_requests import (
     ChangeRequestStatus,
     Comparison,
     ComparisonStatus,
+    Conflict,
     Explanation,
     MarkConfirmation,
     OptionDraftCheck,
@@ -63,6 +72,7 @@ from app.change_requests import (
     options_from_rows,
     targets_from_json,
 )
+from app.change_requests.explanation import DOCUMENT_LABEL
 from app.schemas.agreement import MEMO_MAX, REASON_MAX, AgreementNotes
 
 if TYPE_CHECKING:
@@ -378,6 +388,19 @@ class ChangeRequestOverlapRead(BaseModel):
     requirement_ids: list[str]
 
 
+class ChangeRequestConflictRead(BaseModel):
+    """対象の要件1つの競合(基準の束の後に、ほかの CR の反映で変わった)。`by`は変えた CR の名前
+    (CR-n。変えた順)、`base_text`は基準の束の文、`current_text`は今の合意の文(消えていれば null)、
+    `checked`は今の文と見比べて確かめたか(確かめた後にさらに変わったら false に戻る)。"""
+
+    requirement_id: str
+    by_numbers: list[int]
+    by: list[str]
+    base_text: str
+    current_text: str | None
+    checked: bool
+
+
 class ChangeRequestSummaryRead(BaseModel):
     """CR 1つ(一覧用)。`label`は画面に出す名前(CR-1…)、`baseline_label`は基準の束(B-1…)。
     合意の記録と入れた束(検証済みの後)も持つ(束の作成で、入れる CR を選び、合意の記録の初期値に
@@ -420,6 +443,7 @@ class ChangeRequestRead(ChangeRequestSummaryRead):
     derived_from_number: int | None
     derived_numbers: list[int]
     allowed_actions: list[ChangeRequestAction]
+    conflicts: list[ChangeRequestConflictRead] = []
 
     @classmethod
     def build(
@@ -430,6 +454,7 @@ class ChangeRequestRead(ChangeRequestSummaryRead):
         derived_from_number: int | None,
         derived_numbers: list[int],
         allowed_actions: list[ChangeRequestAction],
+        conflicts: Sequence[tuple[Conflict, bool]] = (),
     ) -> "ChangeRequestRead":
         return cls.model_validate(
             {
@@ -453,6 +478,17 @@ class ChangeRequestRead(ChangeRequestSummaryRead):
                 "derived_from_number": derived_from_number,
                 "derived_numbers": derived_numbers,
                 "allowed_actions": allowed_actions,
+                "conflicts": [
+                    ChangeRequestConflictRead(
+                        requirement_id=c.requirement_id,
+                        by_numbers=list(c.by_numbers),
+                        by=[change_request_label(n) for n in c.by_numbers],
+                        base_text=c.base_text,
+                        current_text=c.current_text,
+                        checked=checked,
+                    )
+                    for c, checked in conflicts
+                ],
             }
         )
 
@@ -518,6 +554,65 @@ class ScaleComparisonRead(BaseModel):
         )
 
 
+class FieldChangeRead(BaseModel):
+    """欄1つの前 → 後(表示の文。無い側は空)。"""
+
+    name: str
+    label: str
+    before: str
+    after: str
+
+
+class ReflectionChangeRead(BaseModel):
+    """反映で変わった要素1つ。`change`は変更 / 追加 / 削除 / 合意の形に戻した、`scope`は CR の
+    対象 / 予測した要素 / 範囲の外。"""
+
+    key: str
+    kind: str
+    label: str
+    change: ReflectionChangeKind
+    change_label: str
+    scope: ReflectionScope
+    scope_label: str
+    fields: list[FieldChangeRead]
+    restore_reason: str | None
+
+
+class AppliedReflectionRead(BaseModel):
+    """文書への反映1回。`documents`は作った版の表示名(例「要件定義書 v3」)、`recorded`は前 → 後を
+    残した反映か(残す前の反映は false で、`changes`は空)。"""
+
+    occurred_at: datetime
+    documents: list[str]
+    recorded: bool
+    changes: list[ReflectionChangeRead]
+
+    @classmethod
+    def build(cls, reflection: AppliedReflection) -> "AppliedReflectionRead":
+        return cls(
+            occurred_at=reflection.occurred_at,
+            documents=[f"{DOCUMENT_LABEL.get(t, t)} v{v}" for t, v in reflection.documents],
+            recorded=reflection.changes is not None,
+            changes=[
+                ReflectionChangeRead(
+                    key=c.key,
+                    kind=c.kind,
+                    label=c.label,
+                    change=c.change,
+                    change_label=REFLECTION_CHANGE_LABEL[c.change],
+                    scope=c.scope,
+                    scope_label=REFLECTION_SCOPE_LABEL[c.scope],
+                    fields=[
+                        FieldChangeRead(name=f.name, label=f.label, before=f.before, after=f.after)
+                        for f in c.fields
+                    ],
+                    restore_reason=c.restore_reason,
+                )
+                for c in reflection.changes or ()
+            ],
+        )
+
+
 class ChangeRequestComparisonRead(BaseModel):
     """反映した CR の、影響の予測と反映で付いた印の比較。`counts`は分類ごとの件数、`saved`は予測が
     判断の時点で保存したものか、`scale`は規模の種類ごとの予測の数と実際の数。"""
@@ -529,6 +624,7 @@ class ChangeRequestComparisonRead(BaseModel):
     counts: dict[ComparisonStatus, int]
     items: list[ComparedItemRead]
     scale: list[ScaleComparisonRead] = []
+    reflections: list[AppliedReflectionRead] = []
 
     @classmethod
     def build(
@@ -538,9 +634,11 @@ class ChangeRequestComparisonRead(BaseModel):
         *,
         saved: bool,
         scale: tuple[ScaleComparisonRow, ...] = (),
+        reflections: tuple[AppliedReflection, ...] = (),
     ) -> "ChangeRequestComparisonRead":
         return cls(
             number=change_request.number,
+            reflections=[AppliedReflectionRead.build(r) for r in reflections],
             label=change_request_label(change_request.number),
             status=change_request.status,  # type: ignore[arg-type]
             saved=saved,

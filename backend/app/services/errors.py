@@ -593,6 +593,13 @@ class ChangeRequestNotReflectableError(ConflictError):
     code: ClassVar[str | None] = "CR_NOT_REFLECTABLE"
 
 
+class ChangeRequestConflictUncheckedError(ConflictError):
+    """対象の要件が基準の束の後にほかの CR の反映で変わっていて、今の文と見比べた確かめの印が無い
+    CR を反映しようとした場合に送出する(先の CR の変更を上書きしないため)。"""
+
+    code: ClassVar[str | None] = "CR_CONFLICT_UNCHECKED"
+
+
 class ChangeRequestNotAppliedError(ConflictError):
     """まだ反映していない CR(反映済み・検証済みでない)で、予測と実際の印の比較を求めた場合に
     送出する(比べる実際の印が無いため)。"""
