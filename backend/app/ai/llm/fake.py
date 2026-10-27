@@ -89,6 +89,7 @@ from app.documents.requirements.drafting import (
 from app.documents.revision import NONE_TEXT
 from app.documents.test_spec.drafting import GeneratedCase, TestSpecGenerationOutput
 from app.hearing import POINT_DEFS, is_point_key
+from app.materials.differences import DifferenceItemOut, DifferenceListOut
 from app.review.fix_check import FixCheckOut
 from app.review.schemas import ReviewFindingOut, ReviewOutput
 from app.schemas.hearing import (
@@ -692,6 +693,34 @@ def _option_draft(messages: list[Any]) -> OptionDraftOut:
     )
 
 
+# 資料の違いの印(`[違い:<種類>:<キー>]`。キーは変更・削除・確かめる点の対象、追加の起点。`-`は無し)
+_DIFFERENCE_MARK = re.compile(r"\[違い:(add|change|delete|question):([^\]]*)\]")
+
+
+def _differences(messages: list[Any]) -> DifferenceListOut:
+    """違いの取り出しの偽物。資料の本文の印のある行ごとに、印の種類・キーで違いを1件返す(引用は印と
+    行頭の md の記号を除いた行の文。E2E が決まった違いを作るため)。"""
+    text = "\n".join(str(m.content) for m in messages if isinstance(m, HumanMessage))
+    items = []
+    for line in text.splitlines():
+        match = _DIFFERENCE_MARK.search(line)
+        if match is None:
+            continue
+        kind, key = match.group(1), match.group(2).strip()
+        key = "" if key == "-" else key
+        quote = _DIFFERENCE_MARK.sub("", line).strip().lstrip("-*> ").strip()
+        items.append(
+            DifferenceItemOut(
+                kind=kind,  # type: ignore[arg-type]
+                target_key="" if kind == "add" else key,
+                origin_key=key if kind == "add" else "",
+                content=f"[E2E Fake] {quote}",
+                quote=quote,
+            )
+        )
+    return DifferenceListOut(differences=items)
+
+
 class _FakeChunk:
     """`astream()`が返すストリーミングチャンクを模した最小オブジェクト(`.content`のみ持つ)。"""
 
@@ -928,6 +957,8 @@ class _FakeStructuredE2e:
             return _FIX_CHECK_OUTPUT
         if self._schema is OptionDraftOut:
             return _option_draft(messages)
+        if self._schema is DifferenceListOut:
+            return _differences(messages)
         # ヒアリング・UML生成スキーマ以外のスキーマが追加された場合は
         # 「対応漏れ」に気づけるよう黙って汎用値を返さず例外にする。
         raise NotImplementedError(f"E2eFakeLLMが未対応のスキーマ: {self._schema}")

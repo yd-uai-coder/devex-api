@@ -719,3 +719,23 @@ class MaterialUnreadableError(UnprocessableEntityError):
     送出する。"""
 
     code: ClassVar[str | None] = "MATERIAL_UNREADABLE"
+
+
+class MaterialBaselineMissingError(ConflictError):
+    """合意済みの版(束)が1つも無いプロジェクトで、資料から違いを取り出そうとした場合に送出する
+    (比べる相手が無い)。"""
+
+    code: ClassVar[str | None] = "MATERIAL_BASELINE_MISSING"
+
+
+class MaterialDifferenceNotFoundError(NotFoundError):
+    """指定した違いが、その資料に無い場合に送出する。"""
+
+    code: ClassVar[str | None] = "RESOURCE_NOT_FOUND"
+
+
+class MaterialDifferenceStateError(ConflictError):
+    """違いの今の状態では、その操作ができない場合に送出する(捨てられるのは未確認だけ、戻せるのは
+    捨てたものだけ)。"""
+
+    code: ClassVar[str | None] = "MATERIAL_DIFFERENCE_STATE"

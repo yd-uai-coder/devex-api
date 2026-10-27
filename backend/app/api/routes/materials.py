@@ -13,6 +13,13 @@ from app.schemas.material import (
     MaterialSummaryRead,
     MaterialTitle,
 )
+from app.schemas.material_difference import (
+    MaterialDifferenceRead,
+    MaterialDifferencesRead,
+    MaterialDifferenceUpdate,
+    MaterialExtractionRead,
+)
+from app.services.material_difference_service import DifferencesView, MaterialDifferenceService
 from app.services.material_service import MaterialService, MaterialView
 
 # 束・CR と同じく、プロジェクト配下の独立したサブツリーとしてprefixにproject_idを含める
@@ -26,6 +33,18 @@ def _summary(view: MaterialView) -> MaterialSummaryRead:
 def _read(view: MaterialView) -> MaterialRead:
     return MaterialRead.model_validate(
         {**_columns(view), "length": view.length, "body": view.material.body}
+    )
+
+
+def _differences(view: DifferencesView) -> MaterialDifferencesRead:
+    extraction = view.extraction
+    return MaterialDifferencesRead(
+        material_id=view.material.id,
+        extraction=(
+            None if extraction is None else MaterialExtractionRead.model_validate(extraction)
+        ),
+        latest_baseline_number=view.latest_baseline_number,
+        differences=[MaterialDifferenceRead.model_validate(d) for d in view.differences],
     )
 
 
@@ -103,3 +122,53 @@ async def delete_material(
 ) -> None:
     """資料を消す(資料から作った CR は残る)。無ければ404。"""
     await MaterialService(session).delete(current_project, material_id)
+
+
+@router.post("/{material_id}/differences", response_model=MaterialDifferencesRead)
+async def extract_material_differences(
+    material_id: uuid.UUID,
+    session: SessionDep,
+    current_project: CurrentProjectDep,
+    current_user: CurrentUserDep,
+) -> MaterialDifferencesRead:
+    """資料と最新の束の違いを LLM で取り出す(やり直すと、未確認と弾いたを置き換える)。束が古くても
+    止めず、比べた束の鮮度を返す。束が無ければ409、資料が無ければ404。"""
+    view = await MaterialDifferenceService(session).extract(
+        current_project, material_id, user_id=current_user.id
+    )
+    return _differences(view)
+
+
+@router.get("/{material_id}/differences", response_model=MaterialDifferencesRead)
+async def list_material_differences(
+    material_id: uuid.UUID, session: SessionDep, current_project: CurrentProjectDep
+) -> MaterialDifferencesRead:
+    """資料の違いの一覧(取り出しの回の記録と、今の最新の束の番号つき)。資料が無ければ404。"""
+    view = await MaterialDifferenceService(session).list_for(current_project, material_id)
+    return _differences(view)
+
+
+@router.patch("/{material_id}/differences/{difference_id}", response_model=MaterialDifferenceRead)
+async def update_material_difference(
+    material_id: uuid.UUID,
+    difference_id: uuid.UUID,
+    payload: MaterialDifferenceUpdate,
+    session: SessionDep,
+    current_project: CurrentProjectDep,
+    current_user: CurrentUserDep,
+) -> MaterialDifferenceRead:
+    """違いを捨てる(理由つき)・捨てたものを未確認に戻す。今の状態でできなければ409、無ければ
+    404。"""
+    service = MaterialDifferenceService(session)
+    if payload.action == "dismiss":
+        assert payload.reason is not None  # スキーマで確かめた
+        difference = await service.dismiss(
+            current_project,
+            material_id,
+            difference_id,
+            reason=payload.reason,
+            actor_id=current_user.id,
+        )
+    else:
+        difference = await service.restore(current_project, material_id, difference_id)
+    return MaterialDifferenceRead.model_validate(difference)

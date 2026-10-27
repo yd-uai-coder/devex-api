@@ -10,6 +10,7 @@ from app.core.database import Base
 # 型チェック時の解決用。
 # 通常の実行時には False -> importされない（循環import回避のため）
 if TYPE_CHECKING:
+    from app.models.material_difference import MaterialDifference, MaterialExtraction
     from app.models.project import Project
 
 
@@ -47,3 +48,11 @@ class Material(Base):
     )
 
     project: Mapped["Project"] = relationship(back_populates="materials")
+    extraction: Mapped["MaterialExtraction | None"] = relationship(
+        back_populates="material", cascade="all, delete-orphan", uselist=False
+    )
+    differences: Mapped[list["MaterialDifference"]] = relationship(
+        back_populates="material",
+        cascade="all, delete-orphan",
+        order_by="MaterialDifference.position",
+    )
