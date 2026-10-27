@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from app.models.generated_document import GeneratedDocument
     from app.models.hearing_point import HearingPoint
     from app.models.intake_file import IntakeFile
+    from app.models.material import Material
     from app.models.review import ReviewRun
     from app.models.uml_diagram import UmlDiagram
     from app.models.uml_generation_run import UmlGenerationRun
@@ -112,5 +113,8 @@ class Project(Base):
         back_populates="project", cascade="all, delete-orphan", order_by="AgreementRecord.seq"
     )
     confirmation_items: Mapped[list["ConfirmationItemRecord"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    materials: Mapped[list["Material"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )

@@ -7,10 +7,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.change_requests import (
     INCLUDABLE_STATUSES,
+    Freshness,
     PredictedOrigin,
+    freshness,
     origin_candidates_from_snapshots,
 )
 from app.change_requests.explanation import REQUIREMENTS_KEY
+from app.change_requests.prediction import STAGE_PREFIX
 from app.detailed_design import StageView, stage_key
 from app.models.baseline import Baseline
 from app.models.change_request import ChangeRequest
@@ -167,10 +170,44 @@ class BaselineService:
         baseline = await self.get(project, number)
         return origin_candidates_from_snapshots(baseline_snapshots(baseline))
 
+    async def freshness(self, project: Project, number: int) -> Freshness:
+        """番号の束の鮮度(後の束・束の後に反映した CR・古かった段階)。無ければ
+        BaselineNotFoundError。"""
+        baseline = await self.get(project, number)
+        return (await self.freshness_of(project, [baseline]))[baseline.id]
+
+    async def freshness_of(
+        self, project: Project, baselines: list[Baseline]
+    ) -> dict[uuid.UUID, Freshness]:
+        """束の id → 鮮度(束の一覧・中身の応答に出す。合意の記録と束の番号は1回だけ読む)。"""
+        if not baselines:
+            return {}
+        records = await AgreementService(self._session).record_facts(project.id)
+        numbers = await self._baselines.numbers(project.id)
+        return {
+            b.id: freshness(
+                records,
+                baseline_id=b.id,
+                baseline_number=b.number,
+                baseline_numbers=numbers,
+                stage_states=baseline_stage_states(b),
+            )
+            for b in baselines
+        }
+
 
 def baseline_snapshots(baseline: Baseline) -> dict[str, Any]:
     """束の写しのうち入っているもの(key → model)。予測と起点の候補の入力。"""
     return {item.key: item.model for item in baseline.items if item.included}
+
+
+def baseline_stage_states(baseline: Baseline) -> dict[int, str]:
+    """束に入っている段階の、束を作った時点の状態(段階の番号 → 状態)。規模の集計と鮮度の入力。"""
+    return {
+        int(item.key.removeprefix(STAGE_PREFIX)): item.state
+        for item in baseline.items
+        if item.included and item.key.startswith(STAGE_PREFIX)
+    }
 
 
 def baseline_requirement_rows(baseline: Baseline) -> list[dict[str, Any]]:

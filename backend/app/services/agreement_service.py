@@ -23,6 +23,7 @@ from app.agreements import (
     restored_elements,
 )
 from app.change_requests import (
+    RecordFact,
     predicted_document_keys,
     rewritable_keys,
     targets_from_json,
@@ -58,6 +59,10 @@ class AgreementService:
         order = {kind: i for i, kind in enumerate(AGREED_KINDS)}
         records = await self._records.current(project.id)
         return sorted(records, key=lambda r: (order.get(r.kind, len(order)), r.seq))
+
+    async def record_facts(self, project_id: uuid.UUID) -> list[RecordFact]:
+        """プロジェクトの合意の記録を、競合と束の鮮度の判定の材料にして返す(記録の順)。"""
+        return [_record_fact(r) for r in await self._records.list_for_project(project_id)]
 
     async def history(self, project: Project, key: str) -> ElementHistory:
         """要素1つの履歴(合意の記録・合意の形へ戻した版〈巡回で消えた版の写しを含む〉・関わる
@@ -231,6 +236,20 @@ class AgreementService:
             change_request_id=change_request.id,
             recorded_by=recorded_by,
         )
+
+
+def _record_fact(record: AgreementRecord) -> RecordFact:
+    """記録の行から、競合と束の鮮度の判定の材料を作る(出どころの CR は読み込み済みであること)。"""
+    return RecordFact(
+        seq=record.seq,
+        key=record.key,
+        origin=record.origin,
+        baseline_id=record.baseline_id,
+        change_request_number=(
+            record.change_request.number if record.change_request is not None else None
+        ),
+        content=record.content,
+    )
 
 
 def _record_facts(record: AgreementRecord) -> RecordFacts:

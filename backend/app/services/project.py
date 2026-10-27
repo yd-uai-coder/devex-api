@@ -31,7 +31,7 @@ from app.services.errors import (
     UnsupportedFileTypeError,
 )
 from app.services.generation_progress import GenerationProgressStore
-from app.services.intake_file_processor import ALLOWED_FILE_TYPES, extract_text
+from app.services.intake_file_processor import ALLOWED_FILE_TYPES, extract_text, file_type_of
 from app.services.llm_resolver import LlmResolver
 
 logger = structlog.get_logger(__name__)
@@ -163,7 +163,7 @@ class ProjectService:
 
     def _validate_file(self, file: UploadedFileInput) -> None:
         """対応形式・サイズ上限を満たさないファイルがあれば、記録前にまとめて弾く。"""
-        file_type = _resolve_file_type(file.filename)
+        file_type = file_type_of(file.filename)
         if file_type not in ALLOWED_FILE_TYPES:
             raise UnsupportedFileTypeError(f"対応していないファイル形式です: {file.filename}")
         if len(file.data) > MAX_FILE_SIZE_BYTES:
@@ -177,7 +177,7 @@ class ProjectService:
         双方のLLMコンテキストとしては引き続き使う。ファイル名自体は_format_intake_summaryが
         intake要約側に表示する)。テキスト化に失敗しても例外は送出しない(ヒアリング自体を
         ブロックしないため)。PDFは持ち主の Gemini(自分のキー、無ければ既定)で読む。"""
-        file_type = _resolve_file_type(file.filename)
+        file_type = file_type_of(file.filename)
         llm = None
         if file_type == "pdf":
             with contextlib.suppress(LlmUnavailableError):
@@ -201,11 +201,6 @@ class ProjectService:
                 sender="attachment",
                 message=f"[添付ファイル: {file.filename}]\n{extracted_text}",
             )
-
-
-def _resolve_file_type(filename: str) -> str:
-    """ファイル名の拡張子から file_type("txt"/"md"/"pdf" 等)を求める。"""
-    return filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
 
 
 def _format_intake_summary(intake: dict, filenames: list[str]) -> str:

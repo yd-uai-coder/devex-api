@@ -4,6 +4,7 @@ from typing import Any, Self
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, computed_field, field_validator
 
+from app.change_requests import Freshness
 from app.schemas.agreement import AgreementNotes
 
 
@@ -64,6 +65,9 @@ class _BaselineRecordRead(BaseModel):
     created_at: datetime
     # 束に入れた CR(番号の順)。ORM の行には無いので、ルートが`with_included`で足す
     included_change_requests: list[BaselineChangeRequestRead] = Field(default_factory=list)
+    # 新しいか(最新の束で、束の後に反映した CR も古かった段階も無い)。ルートが`with_fresh`で足す
+    # (足していなければ None)
+    fresh: bool | None = None
 
     def with_included(self, included: list[tuple[int, str]]) -> Self:
         """束に入れた CR(`(番号, 題)`の一覧)を足した写し。"""
@@ -74,6 +78,10 @@ class _BaselineRecordRead(BaseModel):
                 ]
             }
         )
+
+    def with_fresh(self, fresh: bool) -> Self:
+        """新しいかを足した写し。"""
+        return self.model_copy(update={"fresh": fresh})
 
     @computed_field
     @property
@@ -110,3 +118,45 @@ class BaselineRequirementRead(BaseModel):
     priority: str | None = None
     category: str = ""
     text: str
+
+
+class BaselineAppliedAfterRead(BaseModel):
+    """束の後に反映した CR 1つと、それが書き換えた要素のキー(`req:FR-001`など)。"""
+
+    number: int
+    keys: list[str]
+
+
+class BaselineFreshnessRead(BaseModel):
+    """合意済みの版1つの鮮度。`fresh`は最新の束で、束の後に反映した CR も古かった段階も無いこと。
+    `newer_numbers`はこの束より後の束、`applied_after`は束の後に反映した CR(反映の順)、
+    `outdated_stages`は束を作った時点で承認のままでなかった段階、`tracked`は束の後の CR を判定
+    できたか(合意の記録を始める前の束は False)。"""
+
+    baseline_number: int
+    fresh: bool
+    is_latest: bool
+    tracked: bool
+    newer_numbers: list[int]
+    applied_after: list[BaselineAppliedAfterRead]
+    outdated_stages: list[int]
+
+    @classmethod
+    def of(cls, freshness: Freshness) -> Self:
+        return cls(
+            baseline_number=freshness.baseline_number,
+            fresh=freshness.fresh,
+            is_latest=freshness.is_latest,
+            tracked=freshness.tracked,
+            newer_numbers=list(freshness.newer_numbers),
+            applied_after=[
+                BaselineAppliedAfterRead(number=a.number, keys=list(a.keys))
+                for a in freshness.applied_after
+            ],
+            outdated_stages=list(freshness.outdated_stages),
+        )
+
+    @computed_field
+    @property
+    def label(self) -> str:
+        return f"B-{self.baseline_number}"

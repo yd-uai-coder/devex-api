@@ -28,8 +28,17 @@ class _StructuredContentLLM(Protocol):
     async def ainvoke(self, messages: list, /) -> AIMessage: ...
 
 
+def file_type_of(filename: str) -> str:
+    """ファイル名の拡張子から file_type("txt"/"md"/"pdf" 等)を求める。"""
+    return filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+
 async def extract_text(
-    *, file_type: str, data: bytes, llm: _StructuredContentLLM | None = None
+    *,
+    file_type: str,
+    data: bytes,
+    llm: _StructuredContentLLM | None = None,
+    max_chars: int | None = MAX_EXTRACTED_TEXT_CHARS,
 ) -> tuple[str | None, str | None]:
     """添付ファイルのバイト列からテキストを抽出する。
 
@@ -41,6 +50,7 @@ async def extract_text(
     txt/mdはUTF-8テキストとしてそのまま読み込む(LLM呼び出し不要)。pdfはGeminiのネイティブな
     ファイル理解でテキスト化する(図・レイアウトの解釈を含む)。PDFを読む`llm`は呼び出し側が
     ユーザーごとに解決して渡す(app/services/llm_resolver.py の resolve_pdf_reader)。
+    `max_chars`で切り詰める(None なら切り詰めない。資料は長さで断るため、呼び出し側で確かめる)。
     """
     if file_type in ("txt", "md"):
         try:
@@ -57,7 +67,7 @@ async def extract_text(
     else:
         return None, f"unsupported file_type: {file_type}"
 
-    return text[:MAX_EXTRACTED_TEXT_CHARS], None
+    return (text if max_chars is None else text[:max_chars]), None
 
 
 async def _extract_pdf_text(data: bytes, *, llm: _StructuredContentLLM) -> str:

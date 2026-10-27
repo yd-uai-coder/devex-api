@@ -95,6 +95,15 @@ class BaselineRepository(CRUDRepository[Baseline]):
         )
         return list((await self._session.execute(stmt)).scalars().all())
 
+    async def numbers(self, project_id: uuid.UUID) -> list[int]:
+        """プロジェクトの束の番号(古い順)。"""
+        stmt = (
+            select(Baseline.number)
+            .where(Baseline.project_id == project_id)
+            .order_by(Baseline.number)
+        )
+        return list((await self._session.execute(stmt)).scalars().all())
+
     async def latest(self, project_id: uuid.UUID) -> Baseline | None:
         """プロジェクトの最新の束(写し付き。中身も読む)。無ければ None。"""
         stmt = (

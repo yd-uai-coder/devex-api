@@ -66,7 +66,8 @@ class UnsupportedFileTypeError(BadRequestError):
     code: ClassVar[str | None] = "UNSUPPORTED_FILE_TYPE"
 
 class FileTooLargeError(BadRequestError):
-    """添付ファイルが1ファイルあたりの上限(5MB)を超えている場合に送出する。"""
+    """添付ファイルが1ファイルあたりの上限(作成時の添付資料は5MB、資料は2MB)を超えている場合に
+    送出する。"""
 
     code: ClassVar[str | None] = "FILE_TOO_LARGE"
 
@@ -692,3 +693,29 @@ class ShareDecisionReasonRequiredError(UnprocessableEntityError):
     """共有リンクから理由を書かずに却下しようとした場合に送出する(却下の理由は出し直しの材料)。"""
 
     code: ClassVar[str | None] = "SHARE_DECISION_REASON_REQUIRED"
+
+
+class MaterialNotFoundError(NotFoundError):
+    """指定した資料が、そのプロジェクトに無い場合に送出する。"""
+
+    code: ClassVar[str | None] = "RESOURCE_NOT_FOUND"
+
+
+class TooManyMaterialsError(ConflictError):
+    """プロジェクトの資料が上限(50件)に達しているのに足そうとした場合に送出する。"""
+
+    code: ClassVar[str | None] = "TOO_MANY_MATERIALS"
+
+
+class MaterialTooLongError(UnprocessableEntityError):
+    """資料の本文(貼り付け、またはファイルから取り出した本文)が上限の文字数を超えている場合に送出
+    する(違いの根拠の引用を本文で確かめるため、切り詰めずに断る)。"""
+
+    code: ClassVar[str | None] = "MATERIAL_TOO_LONG"
+
+
+class MaterialUnreadableError(UnprocessableEntityError):
+    """資料のファイルから本文を取り出せなかった場合(UTF-8 でない・PDF を読めない・本文が空)に
+    送出する。"""
+
+    code: ClassVar[str | None] = "MATERIAL_UNREADABLE"

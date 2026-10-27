@@ -12,6 +12,7 @@ from app.models.design_stage import DesignStage
 from app.models.generated_document import GeneratedDocument
 from app.models.hearing_point import HearingPoint
 from app.models.intake_file import IntakeFile
+from app.models.material import Material
 from app.models.project import Project
 from app.models.prompt_template import PromptTemplate
 from app.models.pruned_protection import PrunedProtection
@@ -41,6 +42,7 @@ __all__ = [
     "GeneratedDocument",
     "HearingPoint",
     "IntakeFile",
+    "Material",
     "Project",
     "PromptTemplate",
     "PrunedProtection",

@@ -46,6 +46,7 @@ from app.change_requests.explanation import (
     explanation_filename,
     with_summary,
 )
+from app.change_requests.freshness import AppliedAfter, Freshness, freshness
 from app.change_requests.instruction import build_cr_instruction, join_instructions
 from app.change_requests.option_drafting import (
     OPTION_DRAFT_STATUS_LABEL,
@@ -111,6 +112,7 @@ from app.change_requests.scale import (
     compare_scale,
     count_scale,
     display_name,
+    outdated_stages,
     predicted_scale,
     sources_from_snapshots,
     unlinked_requirements,
@@ -285,6 +287,8 @@ __all__ = [
     "Conflict",
     "Comparison",
     "RecordFact",
+    "AppliedAfter",
+    "Freshness",
     "ComparisonStatus",
     "DocumentItem",
     "DecisionFacts",
@@ -339,6 +343,7 @@ __all__ = [
     "document_items",
     "explanation_filename",
     "first_applied_at",
+    "freshness",
     "join_instructions",
     "mark_states",
     "merge_applied_marks",
@@ -358,6 +363,7 @@ __all__ = [
     "rewritable_keys",
     "review_link_problem",
     "sources_from_snapshots",
+    "outdated_stages",
     "stage_apply_versions",
     "summary_state",
     "target_ids",

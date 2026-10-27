@@ -42,7 +42,6 @@ from app.change_requests import (
     OptionDraftOut,
     Overlap,
     Prediction,
-    RecordFact,
     ReviewFacts,
     Scale,
     ScaleComparisonRow,
@@ -98,7 +97,6 @@ from app.change_requests import (
     with_summary,
 )
 from app.change_requests.explanation import DOCUMENT_LABEL
-from app.change_requests.prediction import STAGE_PREFIX
 from app.detailed_design.impact import Mark, StageImpact
 from app.detailed_design.impact.elements import parse_model
 from app.detailed_design.plan import PlanModel
@@ -111,7 +109,6 @@ from app.models.change_request_option_draft import ChangeRequestOptionDraft
 from app.models.change_request_summary import ChangeRequestSummary
 from app.models.project import Project
 from app.models.review import ReviewRun
-from app.repositories.agreement import AgreementRepository
 from app.repositories.baseline import BaselineRepository
 from app.repositories.change_request import ChangeRequestRepository
 from app.repositories.change_request_option_draft import ChangeRequestOptionDraftRepository
@@ -129,10 +126,12 @@ from app.schemas.change_request import (
     DocumentChecksUpdate,
     change_request_label,
 )
+from app.services.agreement_service import AgreementService
 from app.services.baseline_service import (
     BaselineService,
     baseline_requirement_rows,
     baseline_snapshots,
+    baseline_stage_states,
 )
 from app.services.detailed_mode import require_detailed
 from app.services.errors import (
@@ -1099,11 +1098,7 @@ class ChangeRequestService:
                 for item in baseline.items
                 if not item.included
             ],
-            stage_states={
-                int(item.key.removeprefix(STAGE_PREFIX)): item.state
-                for item in baseline.items
-                if item.included and item.key.startswith(STAGE_PREFIX)
-            },
+            stage_states=baseline_stage_states(baseline),
         )
 
     async def _base_baseline(self, project: Project, number: int | None) -> Baseline:
@@ -1173,24 +1168,9 @@ class ChangeRequestService:
         反映しないので空)。"""
         if change_request.status not in ACTIVE_STATUSES:
             return []
-        records = await AgreementRepository(self._session).list_for_project(
-            change_request.project_id
-        )
         return conflicts(
             target_ids(targets_from_json(change_request.targets)),
-            [
-                RecordFact(
-                    seq=r.seq,
-                    key=r.key,
-                    origin=r.origin,
-                    baseline_id=r.baseline_id,
-                    change_request_number=(
-                        r.change_request.number if r.change_request is not None else None
-                    ),
-                    content=r.content,
-                )
-                for r in records
-            ],
+            await AgreementService(self._session).record_facts(change_request.project_id),
             change_request.baseline_id,
             change_request.number,
         )

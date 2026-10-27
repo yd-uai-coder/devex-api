@@ -3,8 +3,11 @@ from typing import Annotated
 from fastapi import APIRouter, Path, status
 
 from app.api.deps import CurrentProjectDep, CurrentUserDep, SessionDep
+from app.models.baseline import Baseline
+from app.models.project import Project
 from app.schemas.baseline import (
     BaselineCreate,
+    BaselineFreshnessRead,
     BaselineOriginRead,
     BaselineRead,
     BaselineRequirementRead,
@@ -16,6 +19,16 @@ from app.services.baseline_service import BaselineService
 router = APIRouter(prefix="/projects/{project_id}/baselines", tags=["baselines"])
 
 BaselineNumber = Annotated[int, Path(ge=1, description="合意済みの版の番号(B-1 なら 1)")]
+
+
+async def _read(service: BaselineService, project: Project, baseline: Baseline) -> BaselineRead:
+    included = await service.included_change_requests([baseline])
+    freshness = await service.freshness_of(project, [baseline])
+    return (
+        BaselineRead.model_validate(baseline)
+        .with_included(included.get(baseline.id, []))
+        .with_fresh(freshness[baseline.id].fresh)
+    )
 
 
 @router.post("", response_model=BaselineRead, status_code=status.HTTP_201_CREATED)
@@ -30,20 +43,23 @@ async def create_baseline(
     検証済みでないかもう束に入っている CR は409、無い CR は404。"""
     service = BaselineService(session)
     baseline = await service.create(current_project, payload, recorded_by=current_user.id)
-    included = await service.included_change_requests([baseline])
-    return BaselineRead.model_validate(baseline).with_included(included.get(baseline.id, []))
+    return await _read(service, current_project, baseline)
 
 
 @router.get("", response_model=list[BaselineSummaryRead])
 async def list_baselines(
     session: SessionDep, current_project: CurrentProjectDep
 ) -> list[BaselineSummaryRead]:
-    """プロジェクトの合意済みの版を新しい順に返す(写しは要約だけ。入れた CR を添える)。"""
+    """プロジェクトの合意済みの版を新しい順に返す(写しは要約だけ。入れた CR と、新しいかを
+    添える)。"""
     service = BaselineService(session)
     baselines = await service.list_for_project(current_project)
     included = await service.included_change_requests(baselines)
+    freshness = await service.freshness_of(current_project, baselines)
     return [
-        BaselineSummaryRead.model_validate(b).with_included(included.get(b.id, []))
+        BaselineSummaryRead.model_validate(b)
+        .with_included(included.get(b.id, []))
+        .with_fresh(freshness[b.id].fresh)
         for b in baselines
     ]
 
@@ -52,11 +68,20 @@ async def list_baselines(
 async def get_baseline(
     number: BaselineNumber, session: SessionDep, current_project: CurrentProjectDep
 ) -> BaselineRead:
-    """合意済みの版1つ(写しの中身付き。入れた CR を添える)。無ければ404。"""
+    """合意済みの版1つ(写しの中身付き。入れた CR と、新しいかを添える)。無ければ404。"""
     service = BaselineService(session)
-    baseline = await service.get(current_project, number)
-    included = await service.included_change_requests([baseline])
-    return BaselineRead.model_validate(baseline).with_included(included.get(baseline.id, []))
+    return await _read(service, current_project, await service.get(current_project, number))
+
+
+@router.get("/{number}/freshness", response_model=BaselineFreshnessRead)
+async def get_baseline_freshness(
+    number: BaselineNumber, session: SessionDep, current_project: CurrentProjectDep
+) -> BaselineFreshnessRead:
+    """合意済みの版1つの鮮度(後の束・束の後に反映した CR・束を作った時点で古かった段階)。
+    無ければ404。"""
+    return BaselineFreshnessRead.of(
+        await BaselineService(session).freshness(current_project, number)
+    )
 
 
 @router.get("/{number}/requirements", response_model=list[BaselineRequirementRead])

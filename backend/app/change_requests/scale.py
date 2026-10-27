@@ -184,10 +184,13 @@ def sources_from_snapshots(
         test_spec=snapshots.get("test_spec"),
         has_external_design=bool(snapshots.get("external_design")),
         missing_stages=frozenset(s for s in _UNIT_STAGES if s not in present),
-        outdated_stages=frozenset(
-            s for s, state in stage_states.items() if s in present and state != APPROVED_STATE
-        ),
+        outdated_stages=frozenset(s for s in outdated_stages(stage_states) if s in present),
     )
+
+
+def outdated_stages(stage_states: Mapping[int, str]) -> frozenset[int]:
+    """承認のままでない段階(段階の番号 → 束を作った時点の状態から)。束の鮮度と共通の規則。"""
+    return frozenset(s for s, state in stage_states.items() if state != APPROVED_STATE)
 
 
 def unlinked_requirements(targets: Sequence[Target], prediction: Prediction) -> tuple[str, ...]:
