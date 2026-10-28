@@ -28,6 +28,7 @@ from app.change_requests import (
     DOCUMENT_REFLECTABLE_STATUSES,
     INITIAL_STATUS,
     STAGE_REFLECTABLE_STATUSES,
+    UNDECIDED_STATUSES,
     ChangeOptions,
     ChangeRequestAction,
     ChangeRequestFacts,
@@ -38,6 +39,7 @@ from app.change_requests import (
     DecisionSource,
     EventFacts,
     Explanation,
+    Freshness,
     OptionDraftCheck,
     OptionDraftOut,
     Overlap,
@@ -169,6 +171,8 @@ class ChangeRequestView:
     allowed_actions: list[ChangeRequestAction]
     # 基準の束の後に、ほかの CR の反映で変わった対象の要件(確かめの印つき)
     conflicts: list[tuple[Conflict, bool]] = dataclass_field(default_factory=list)
+    # 基準の束の鮮度(CR 自身の反映は除く。古ければ知らせる。止めはしない)
+    baseline_freshness: Freshness | None = None
 
 
 @dataclass(frozen=True)
@@ -255,6 +259,8 @@ class ExplanationView:
     change_request: ChangeRequest
     explanation: Explanation
     summary: ChangeRequestSummary | None
+    # 規模を数えた基準の束の鮮度(CR 自身の反映は除く)
+    baseline_freshness: Freshness | None = None
 
     @property
     def summary_state(self) -> SummaryState | None:
@@ -307,6 +313,18 @@ class ChangeRequestService:
     ) -> ChangeRequestView:
         """CR を下書きで作る。基準の束は番号の束(省けば最新の束)。束が1つも無ければ
         ChangeRequestBaselineMissingError、番号の束が無ければ BaselineNotFoundError。"""
+        change_request = await self.add_draft(project, payload, created_by=created_by)
+        await self._session.commit()
+        logger.info(
+            "change_request_created", project_id=str(project.id), number=change_request.number
+        )
+        return await self._view(change_request)
+
+    async def add_draft(
+        self, project: Project, payload: ChangeRequestCreate, *, created_by: uuid.UUID | None
+    ) -> ChangeRequest:
+        """CR を下書きで足す(確かめは create と同じ)。commit はしない(資料の違いから作るとき、
+        違いを CR に結ぶのと同じトランザクションにするため)。"""
         require_detailed(project, "Change requests")
         baseline = await self._base_baseline(project, payload.baseline_number)
         targets = checked_targets(
@@ -337,11 +355,7 @@ class ChangeRequestService:
             action="create",
             created_by=created_by,
         )
-        await self._session.commit()
-        logger.info(
-            "change_request_created", project_id=str(project.id), number=change_request.number
-        )
-        return await self._view(change_request)
+        return change_request
 
     async def list_for_project(self, project: Project) -> list[ChangeRequest]:
         """プロジェクトの CR を新しい順に返す(詳細設計モードだけ)。"""
@@ -1031,10 +1045,14 @@ class ChangeRequestService:
         return view, verification, marked
 
     async def _explanation_view(self, change_request: ChangeRequest) -> ExplanationView:
+        freshness = await self._baseline_freshness(
+            change_request, await self._baseline_with_items(change_request)
+        )
         return ExplanationView(
             change_request=change_request,
-            explanation=await self._explanation(change_request),
+            explanation=await self._explanation(change_request, freshness),
             summary=await self._summaries.get_for(change_request.id),
+            baseline_freshness=freshness,
         )
 
     async def _require_summary(self, change_request: ChangeRequest) -> ChangeRequestSummary:
@@ -1069,15 +1087,34 @@ class ChangeRequestService:
             return injected_llm(self._llm, Purpose.GENERATION)
         return await LlmResolver(self._session).resolve(user_id, Purpose.GENERATION)
 
-    async def _explanation(self, change_request: ChangeRequest) -> Explanation:
+    async def _explanation(
+        self, change_request: ChangeRequest, freshness: Freshness | None = None
+    ) -> Explanation:
+        """説明書。合意の前は、基準の束の後に反映したほかの CR を規模の注記に出す(`freshness`を
+        省けば求める)。判断の後は判断の時点の予測から組むので、注記を足さない。"""
         baseline, view = await self._impact_with_baseline(change_request)
+        changed_after: list[int] = []
+        if change_request.status in UNDECIDED_STATUSES:
+            if freshness is None:
+                freshness = await self._baseline_freshness(change_request, baseline)
+            changed_after = [a.number for a in freshness.applied_after]
         return build_explanation(
             facts_of(change_request, baseline.number),
             view.prediction,
             {item.key: item.model for item in baseline.items if item.included},
             [(e.key, e.state) for e in view.excluded],
             view.stage_states,
+            changed_after,
         )
+
+    async def _baseline_freshness(
+        self, change_request: ChangeRequest, baseline: Baseline
+    ) -> Freshness:
+        """CR の基準の束の鮮度(束の後に反映した CR から、この CR 自身を除く)。"""
+        found = await BaselineService(self._session).freshness_in(
+            change_request.project_id, [baseline]
+        )
+        return found[baseline.id].excluding(change_request.number)
 
     async def _impact_with_baseline(
         self, change_request: ChangeRequest
@@ -1161,6 +1198,9 @@ class ChangeRequestService:
             derived_numbers=[c.number for c in derived],
             allowed_actions=allowed_actions(status),
             conflicts=[(c, is_checked(c, checks)) for c in await self._conflicts(change_request)],
+            baseline_freshness=await self._baseline_freshness(
+                change_request, await self._baseline_with_items(change_request)
+            ),
         )
 
     async def _conflicts(self, change_request: ChangeRequest) -> list[Conflict]:

@@ -736,6 +736,20 @@ class MaterialDifferenceNotFoundError(NotFoundError):
 
 class MaterialDifferenceStateError(ConflictError):
     """違いの今の状態では、その操作ができない場合に送出する(捨てられるのは未確認だけ、戻せるのは
-    捨てたものだけ)。"""
+    捨てたものだけ。CR にできるのは未確認の追加・変更・削除だけ)。"""
 
     code: ClassVar[str | None] = "MATERIAL_DIFFERENCE_STATE"
+
+
+class MaterialDifferenceOutdatedError(ConflictError):
+    """違いを取り出した後に束を作り直していて(違いの束が最新の束でない)、違いから CR を作れない
+    場合に送出する(対象のキーが今の束にあるとは限らないため、取り出し直してもらう)。"""
+
+    code: ClassVar[str | None] = "MATERIAL_DIFFERENCE_OUTDATED"
+
+
+class MaterialDraftInvalidError(UnprocessableEntityError):
+    """選んだ違いと要件から CR の下書きを組み立てられない場合に送出する(選んだ要件が違いの対象に
+    つながらない・同じ要件が内容の変更と削除の両方になる)。"""
+
+    code: ClassVar[str | None] = "MATERIAL_DRAFT_INVALID"

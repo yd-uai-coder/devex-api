@@ -44,6 +44,7 @@ from app.change_requests import (
     ComparisonStatus,
     Conflict,
     Explanation,
+    Freshness,
     MarkConfirmation,
     OptionDraftCheck,
     OptionDraftStatus,
@@ -56,6 +57,7 @@ from app.change_requests import (
     ScaleCount,
     ScaleKind,
     ScaleRemark,
+    ScaleState,
     SummaryState,
     Target,
     TargetKind,
@@ -74,12 +76,14 @@ from app.change_requests import (
 )
 from app.change_requests.explanation import DOCUMENT_LABEL
 from app.schemas.agreement import MEMO_MAX, REASON_MAX, AgreementNotes
+from app.schemas.baseline import BaselineFreshnessRead
 
 if TYPE_CHECKING:
     from app.models.change_request import ChangeRequest, ChangeRequestReview
     from app.models.change_request_option_draft import ChangeRequestOptionDraft
     from app.models.change_request_summary import ChangeRequestSummary
     from app.models.review import ReviewRun
+    from app.services.change_request_service import ChangeRequestView
 
 # CR の文の上限(タイトルは一覧の1行、内容は変更の申し出の本文)
 TITLE_MAX = 200
@@ -432,7 +436,8 @@ class ChangeRequestSummaryRead(BaseModel):
 
 class ChangeRequestRead(ChangeRequestSummaryRead):
     """CR 1つ(詳細)。中身・選択肢(案が無ければ null)・合意の記録・時系列・結んだレビュー・
-    入れた束(検証済みの後)・重なり・写しの元と先・今できる操作。"""
+    入れた束(検証済みの後)・重なり・写しの元と先・今できる操作。`baseline_freshness`は基準の束の
+    鮮度(束の後に反映したほかの CR・古かった段階。古ければ知らせる。CR 自身の反映は除く)。"""
 
     content: str
     background_memo: str
@@ -444,6 +449,7 @@ class ChangeRequestRead(ChangeRequestSummaryRead):
     derived_numbers: list[int]
     allowed_actions: list[ChangeRequestAction]
     conflicts: list[ChangeRequestConflictRead] = []
+    baseline_freshness: BaselineFreshnessRead | None = None
 
     @classmethod
     def build(
@@ -491,6 +497,21 @@ class ChangeRequestRead(ChangeRequestSummaryRead):
                 ],
             }
         )
+
+    @classmethod
+    def from_view(cls, view: "ChangeRequestView") -> "ChangeRequestRead":
+        """サービスの CR の見せ方(重なり・写し・今できる操作・競合・基準の束の鮮度つき)から作る。"""
+        read = cls.build(
+            view.change_request,
+            overlapping=view.overlapping,
+            derived_from_number=view.derived_from_number,
+            derived_numbers=view.derived_numbers,
+            allowed_actions=view.allowed_actions,
+            conflicts=view.conflicts,
+        )
+        if view.baseline_freshness is not None:
+            read.baseline_freshness = BaselineFreshnessRead.of(view.baseline_freshness)
+        return read
 
 
 class PredictedTargetRead(ChangeRequestTargetRead):
@@ -995,11 +1016,13 @@ class ScaleRemarkRead(BaseModel):
 
 class ScaleCountRead(BaseModel):
     """規模の種類1つ。`count`は数(数えられなければ null で、`uncountable`に理由)、`names`は
-    数えたもの(表示名)、`notes`は数えたうえでの注記。"""
+    数えたもの(表示名)、`notes`は数えたうえでの注記。`state`は counted(数えた) / stale(古い段階や
+    束の後の CR の注記つきで数えた。少ない・違うことがある) / uncountable(数えられない)。"""
 
     kind: ScaleKind
     label: str
     count: int | None
+    state: ScaleState
     names: list[str]
     uncountable: list[ScaleRemarkRead]
     notes: list[ScaleRemarkRead]
@@ -1010,6 +1033,7 @@ class ScaleCountRead(BaseModel):
             kind=count.kind,
             label=count.label,
             count=count.count,
+            state=count.state,
             names=list(count.names),
             uncountable=[ScaleRemarkRead.build(r) for r in count.uncountable],
             notes=[ScaleRemarkRead.build(r) for r in count.notes],
@@ -1046,7 +1070,8 @@ class ChangeRequestExplanationRead(BaseModel):
     理由)。`units`・`integration_tests`・`system_tests`・`has_test_spec`は規模の作業単位と
     テストの内訳(`has_test_spec`が偽なら、束にテスト仕様書が無くテストは数えていない)。
     `option_scales`は合意の前の案ごとの規模(案の無い CR・案を選んだ後は空。`scale`は案を
-    合わせた範囲)。`summary`は要約(作っていなければ null)。"""
+    合わせた範囲)。`summary`は要約(作っていなければ null)。`baseline_freshness`は規模を数えた基準の
+    束の鮮度(CR 自身の反映は除く)。"""
 
     number: int
     label: str
@@ -1061,6 +1086,7 @@ class ChangeRequestExplanationRead(BaseModel):
     system_tests: list[str]
     has_test_spec: bool
     summary: ExplanationSummaryRead | None
+    baseline_freshness: BaselineFreshnessRead | None = None
 
     @classmethod
     def build(
@@ -1071,6 +1097,7 @@ class ChangeRequestExplanationRead(BaseModel):
         output: str,
         summary: "ChangeRequestSummary | None",
         summary_state: SummaryState | None,
+        baseline_freshness: Freshness | None = None,
     ) -> "ChangeRequestExplanationRead":
         scale = explanation.scale
         return cls(
@@ -1090,6 +1117,9 @@ class ChangeRequestExplanationRead(BaseModel):
                 ExplanationSummaryRead.build(summary, summary_state, explanation)
                 if summary is not None and summary_state is not None
                 else None
+            ),
+            baseline_freshness=(
+                None if baseline_freshness is None else BaselineFreshnessRead.of(baseline_freshness)
             ),
         )
 

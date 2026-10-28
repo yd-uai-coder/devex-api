@@ -1,4 +1,5 @@
-"""資料(議事録・メール・資料)と合意済みの内容の違いの取り出し(純粋関数)。
+"""資料(議事録・メール・資料)と合意済みの内容の違いの取り出しと、違いから CR の下書きへの
+組み立て(純粋関数)。
 
 docs/internal_design.md 3.3節「14. 変更の取り込み」。
 """
@@ -25,26 +26,46 @@ from app.materials.differences import (
     quote_found,
     resolve_key,
 )
+from app.materials.drafting import (
+    BACKGROUND_SOURCE_OF_MATERIAL,
+    DRAFTABLE_KINDS,
+    ChangeRequestDraft,
+    DraftDifference,
+    DraftMaterial,
+    draft_change_request,
+    origin_keys,
+    requirement_candidates,
+    requirement_links,
+)
 
 __all__ = [
+    "BACKGROUND_SOURCE_OF_MATERIAL",
     "DIFFERENCE_KIND_LABEL",
     "DIFFERENCE_STATUS_LABEL",
     "DIFFERENCE_SYSTEM_PROMPT",
+    "DRAFTABLE_KINDS",
     "MIN_QUOTE_CHARS",
     "REPLACED_STATUSES",
     "AgreedListing",
+    "ChangeRequestDraft",
     "CheckedDifference",
     "DifferenceItemOut",
     "DifferenceKind",
     "DifferenceListOut",
     "DifferenceStatus",
+    "DraftDifference",
+    "DraftMaterial",
     "MaterialFacts",
     "agreed_listing",
     "build_difference_messages",
     "check_difference",
     "check_differences",
+    "draft_change_request",
     "fresh_differences",
     "normalize_quote",
+    "origin_keys",
     "quote_found",
+    "requirement_candidates",
+    "requirement_links",
     "resolve_key",
 ]

@@ -29,6 +29,7 @@ from app.change_requests import (
     options_from_json,
 )
 from app.schemas.agreement import COUNTERPART_MAX, REASON_MAX
+from app.schemas.baseline import BaselineFreshnessRead
 
 if TYPE_CHECKING:
     from app.models.change_request_share_link import ChangeRequestShareLink
@@ -82,11 +83,13 @@ class ShareLinkRead(BaseModel):
 
 class ShareLinkCreatedRead(ShareLinkRead):
     """作った共有リンク。`token`と`path`(クライアントの画面のパス)はこの応答でだけ返す。
-    `summary_needs_reconfirm`は、確認済みの要約がその後の説明書の変化で古くなっているか。"""
+    `summary_needs_reconfirm`は、確認済みの要約がその後の説明書の変化で古くなっているか。
+    `baseline_freshness`は説明書の規模を数えた基準の束の鮮度(古ければ知らせる)。"""
 
     token: str
     path: str
     summary_needs_reconfirm: bool
+    baseline_freshness: BaselineFreshnessRead | None = None
 
     @classmethod
     def from_created(cls, created: "CreatedShareLink") -> "ShareLinkCreatedRead":
@@ -98,6 +101,11 @@ class ShareLinkCreatedRead(ShareLinkRead):
             token=created.token,
             path=f"{SHARE_PATH_PREFIX}{created.token}",
             summary_needs_reconfirm=created.summary_needs_reconfirm,
+            baseline_freshness=(
+                None
+                if created.baseline_freshness is None
+                else BaselineFreshnessRead.of(created.baseline_freshness)
+            ),
         )
 
 

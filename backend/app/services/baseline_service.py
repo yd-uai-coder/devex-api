@@ -180,10 +180,16 @@ class BaselineService:
         self, project: Project, baselines: list[Baseline]
     ) -> dict[uuid.UUID, Freshness]:
         """束の id → 鮮度(束の一覧・中身の応答に出す。合意の記録と束の番号は1回だけ読む)。"""
+        return await self.freshness_in(project.id, baselines)
+
+    async def freshness_in(
+        self, project_id: uuid.UUID, baselines: list[Baseline]
+    ) -> dict[uuid.UUID, Freshness]:
+        """freshness_of と同じ(プロジェクトを id で渡す。CR の基準の束の鮮度に使う)。"""
         if not baselines:
             return {}
-        records = await AgreementService(self._session).record_facts(project.id)
-        numbers = await self._baselines.numbers(project.id)
+        records = await AgreementService(self._session).record_facts(project_id)
+        numbers = await self._baselines.numbers(project_id)
         return {
             b.id: freshness(
                 records,

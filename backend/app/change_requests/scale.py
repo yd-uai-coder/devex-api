@@ -12,7 +12,9 @@ docs/external_design.md 2.16節「説明とすり合わせ」。影響の予測(
 
 たどれないときは0件でなく「数えられない」とし、理由を返す(要る段階・文書が束に無い・機能要件の
 対象が処理に1つも届かない・新しい要件の起点が無い)。束の段階が承認のままでない(古いなど)だけ
-なら数え、少なく出ることがあると注記する。
+なら数え、少なく出ることがあると注記する。束の後にほかの CR を文書へ反映したとき(束の鮮度。
+freshness.py)も数え、今の設計と違うことがあると注記する(`with_baseline_changes`)。注記のうち
+この2つが付いた数は「古い」(`ScaleCount.state` = stale)で、「数えられない」と分けて返す。
 
 反映の後は、反映で付いた印の要素を、同じ関数で今の設計から数える(`compare_scale`で予測と並べる)。
 画面・API は印が付かないので、文書の側の確認の一覧で確かめた数を並べる。
@@ -20,7 +22,7 @@ docs/external_design.md 2.16節「説明とすり合わせ」。影響の予測(
 
 import re
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, get_args
 
 from app.change_requests.prediction import STAGE_PREFIX, Prediction
@@ -51,13 +53,19 @@ UNCOUNTABLE_REASON_LABEL: dict[UncountableReason, str] = {
     "new_requirement_unpredicted": "新しい要件のつながりの起点が無い",
 }
 # 数えたうえでの注記
-ScaleNoteKind = Literal["stage_outdated", "planned_modules_only"]
+ScaleNoteKind = Literal["stage_outdated", "baseline_changed", "planned_modules_only"]
 SCALE_NOTE_LABEL: dict[ScaleNoteKind, str] = {
     "stage_outdated": (
         "古いまま合意済みの版に写した段階から数えたため、実際より少なく出ることがある"
     ),
+    "baseline_changed": (
+        "合意済みの版の後に別の変更を反映したため、今の設計と違うことがある"
+    ),
     "planned_modules_only": "手順書の無い作業単位は、実装計画のモジュールから数えた",
 }
+# 数の状態(数えた / 古い版から数えた / 数えられない)。古いのは、下の注記が付いたもの
+ScaleState = Literal["counted", "stale", "uncountable"]
+STALE_NOTE_KINDS: frozenset[str] = frozenset({"stage_outdated", "baseline_changed"})
 
 # 作業単位・ファイル・テストを数えるのに要る段階(段階1 = 要件から処理へ、段階7 = 作業単位)
 _UNIT_STAGES: tuple[int, ...] = (1, 7)
@@ -108,6 +116,15 @@ class ScaleCount:
     def count(self) -> int | None:
         """数(数えられなければ None)。"""
         return None if self.uncountable else len(self.names)
+
+    @property
+    def state(self) -> ScaleState:
+        """数えられない・古い版から数えた(少ない・違うことがある)・数えた。"""
+        if self.uncountable:
+            return "uncountable"
+        if any(note.code in STALE_NOTE_KINDS for note in self.notes):
+            return "stale"
+        return "counted"
 
 
 @dataclass(frozen=True)
@@ -327,6 +344,25 @@ def compare_scale(
                 ScaleComparisonRow(kind, predicted.of(kind).count, actual.of(kind).count, "marks")
             )
     return tuple(rows)
+
+
+def with_baseline_changes(
+    scale: Scale, baseline_number: int, change_request_numbers: Sequence[int]
+) -> Scale:
+    """束の後に文書へ反映した CR(番号の順)があれば、数えた種類に「今の設計と違うことがある」の
+    注記を足す(数えられない種類には足さない)。無ければそのまま。"""
+    if not change_request_numbers:
+        return scale
+    detail = f"B-{baseline_number} の後に " + "・".join(
+        f"CR-{n}" for n in change_request_numbers
+    )
+    note = _note("baseline_changed", detail)
+    return replace(
+        scale,
+        counts=tuple(
+            c if c.uncountable else replace(c, notes=(*c.notes, note)) for c in scale.counts
+        ),
+    )
 
 
 def _plan_units(

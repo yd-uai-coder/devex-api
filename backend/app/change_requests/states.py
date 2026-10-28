@@ -82,6 +82,8 @@ COPYABLE_STATUSES: frozenset[ChangeRequestStatus] = frozenset({"rejected"})
 ACTIVE_STATUSES: frozenset[ChangeRequestStatus] = frozenset(
     {"draft", "explained", "agreed", "applied"}
 )
+# 合意の前(判断していない)。説明書の規模に、束の後に反映したほかの CR の注記を出す状態
+UNDECIDED_STATUSES: frozenset[ChangeRequestStatus] = frozenset({"draft", "explained"})
 # 再生成に渡せる状態(文書は合意・反映済み、段階は文書へ反映した後の反映済みだけ)
 DOCUMENT_REFLECTABLE_STATUSES: frozenset[ChangeRequestStatus] = frozenset({"agreed", "applied"})
 STAGE_REFLECTABLE_STATUSES: frozenset[ChangeRequestStatus] = frozenset({"applied"})

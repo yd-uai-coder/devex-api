@@ -9,6 +9,7 @@ from app.change_requests import (
     READABLE_STATES,
     CommentFacts,
     CommentThread,
+    Freshness,
     SectionChange,
     ShareState,
     aware,
@@ -75,11 +76,13 @@ class ShareLinkView:
 @dataclass(frozen=True)
 class CreatedShareLink:
     """作った共有リンクと、1度だけ返すトークン。`summary_needs_reconfirm`は、確認済みの要約が
-    その後の説明書の変化で古くなっているか(共有の前に確かめ直すよう知らせる。作成は止めない)。"""
+    その後の説明書の変化で古くなっているか(共有の前に確かめ直すよう知らせる。作成は止めない)。
+    `baseline_freshness`は説明書の規模を数えた基準の束の鮮度(古ければ知らせる。作成は止めない)。"""
 
     view: ShareLinkView
     token: str
     summary_needs_reconfirm: bool
+    baseline_freshness: Freshness | None = None
 
 
 @dataclass(frozen=True)
@@ -161,6 +164,7 @@ class ShareLinkService:
             view=self._view(link, change_request),
             token=token,
             summary_needs_reconfirm=explanation.summary_needs_reconfirm,
+            baseline_freshness=explanation.baseline_freshness,
         )
 
     async def list_for(self, project: Project, number: int) -> list[ShareLinkView]:

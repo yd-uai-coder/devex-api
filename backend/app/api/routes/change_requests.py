@@ -56,6 +56,7 @@ def _explanation(view: ExplanationView) -> ChangeRequestExplanationRead:
         output=view.output,
         summary=view.summary,
         summary_state=view.summary_state,
+        baseline_freshness=view.baseline_freshness,
     )
 
 
@@ -72,14 +73,7 @@ def _verification(view: VerificationView) -> ChangeRequestVerificationRead:
 
 
 def _read(view: ChangeRequestView) -> ChangeRequestRead:
-    return ChangeRequestRead.build(
-        view.change_request,
-        overlapping=view.overlapping,
-        derived_from_number=view.derived_from_number,
-        derived_numbers=view.derived_numbers,
-        allowed_actions=view.allowed_actions,
-        conflicts=view.conflicts,
-    )
+    return ChangeRequestRead.from_view(view)
 
 
 @router.post("", response_model=ChangeRequestRead, status_code=status.HTTP_201_CREATED)

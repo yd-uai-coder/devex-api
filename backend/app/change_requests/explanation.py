@@ -6,7 +6,8 @@ docs/external_design.md 2.14節「変更の説明書」・2.16節「説明とす
 
 1. 変更の内容と背景
 2. 対象の要件(合意済みの文と変更後の案。新しい要件を足すなら、その予測の起点)
-3. 変更の規模(作業単位・ファイル・テスト・画面・API の数。数えられないときは理由。scale.py)
+3. 変更の規模(作業単位・ファイル・テスト・画面・API の数。数えられないときは理由。scale.py。
+   どの束の設計から数えたかを書き、合意の前に束の後の CR があれば、今の設計と違うことがあると注記)
 4. 影響の一覧(置き場ごと・理由・届いた対象と新しい要件の起点)
 5. 合意の前に確かめたい点(対象の要件の根拠の観点のうち未決のもの・推測の要件を問いの形で)
 
@@ -27,7 +28,7 @@ import hashlib
 import re
 import unicodedata
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import Any
 
@@ -39,6 +40,7 @@ from app.change_requests.scale import (
     ScaleRemark,
     display_name,
     predicted_scale,
+    with_baseline_changes,
 )
 from app.change_requests.states import (
     BACKGROUND_SOURCE_LABEL,
@@ -171,13 +173,18 @@ def build_explanation(
     snapshots: Mapping[str, Mapping[str, Any] | None],
     excluded: Sequence[tuple[str, str]],
     stage_states: Mapping[int, str] | None = None,
+    changed_after: Sequence[int] = (),
 ) -> Explanation:
     """CR の値・予測・束の写し(key → model。入っているものだけ)・束に入っていない文書と段階
-    (key, 状態)・束に入っている段階の束を作った時点の状態(段階 → 状態)から、説明書の5節を
-    組み立てる。"""
+    (key, 状態)・束に入っている段階の束を作った時点の状態(段階 → 状態)・束の後に文書へ反映した
+    ほかの CR の番号(`changed_after`。規模の注記に使う)から、説明書の5節を組み立てる。"""
     requirements = snapshots.get(REQUIREMENTS_KEY) or {}
     rows = {str(row["id"]): row for row in requirements.get("rows", []) if row.get("id")}
-    scale = predicted_scale(facts.targets, prediction, snapshots, stage_states or {})
+    scale = with_baseline_changes(
+        predicted_scale(facts.targets, prediction, snapshots, stage_states or {}),
+        facts.baseline_number,
+        changed_after,
+    )
     label = f"CR-{facts.number}"
     header = "\n".join(
         [
@@ -193,19 +200,28 @@ def build_explanation(
     choosing = not options.empty and facts.decision_option is None
     scales: tuple[OptionScale, ...] = ()
     if choosing:
-        scales = option_scales(
-            options,
-            snapshots,
-            stage_states or {},
-            adds_requirement=facts.adds_requirement,
-            origins=[o.key for o in prediction.origins],
+        scales = tuple(
+            replace(
+                o, scale=with_baseline_changes(o.scale, facts.baseline_number, changed_after)
+            )
+            for o in option_scales(
+                options,
+                snapshots,
+                stage_states or {},
+                adds_requirement=facts.adds_requirement,
+                origins=[o.key for o in prediction.origins],
+            )
         )
     sections = [_section_request(facts), _section_targets(facts, rows, choosing=choosing)]
     if not options.empty:
         sections.append(_section_options(facts))
     first = len(sections) + 1
     sections += [
-        _section_option_scale(scales, first) if choosing else _section_scale(scale, first),
+        (
+            _section_option_scale(scales, first, facts.baseline_number)
+            if choosing
+            else _section_scale(scale, first, facts.baseline_number)
+        ),
         _section_impact(prediction, excluded, first + 1, all_options=choosing),
         _section_questions(
             facts.targets, rows, requirements.get("point_statuses", {}), first + 2
@@ -396,8 +412,8 @@ def _reached_by(item: PredictedItem) -> str:
     return _cell("・".join(names))
 
 
-def _section_scale(scale: Scale, number: int = 3) -> str:
-    lines = [f"## {number}. 変更の規模", "", SECTION_LEAD["scale"]]
+def _section_scale(scale: Scale, number: int, baseline_number: int) -> str:
+    lines = [f"## {number}. 変更の規模", "", SECTION_LEAD["scale"], _counted_from(baseline_number)]
     uncountable = [c.label for c in scale.counts if c.uncountable]
     if uncountable:
         lines.append(
@@ -421,9 +437,11 @@ def _section_scale(scale: Scale, number: int = 3) -> str:
     return "\n".join(lines)
 
 
-def _section_option_scale(scales: Sequence[OptionScale], number: int) -> str:
+def _section_option_scale(
+    scales: Sequence[OptionScale], number: int, baseline_number: int
+) -> str:
     """案ごとの規模の節(種類 × 案の表。数えられない理由と注記は、案ごとに種類をまとめて1行)。"""
-    lines = [f"## {number}. 変更の規模", "", SECTION_LEAD["scale"]]
+    lines = [f"## {number}. 変更の規模", "", SECTION_LEAD["scale"], _counted_from(baseline_number)]
     lines.append("案ごとに、その案で変える要件から数えました。")
     if any(s.scale.uncountable_kinds for s in scales):
         lines.append(
@@ -451,6 +469,11 @@ def _section_option_scale(scales: Sequence[OptionScale], number: int) -> str:
     if notes:
         lines += ["", *notes]
     return "\n".join(lines)
+
+
+def _counted_from(baseline_number: int) -> str:
+    """規模を数えた設計の版(基準の束)。"""
+    return f"合意済みの版 B-{baseline_number} の設計から数えました。"
 
 
 def _breakdown(count: ScaleCount, scale: Scale) -> str:

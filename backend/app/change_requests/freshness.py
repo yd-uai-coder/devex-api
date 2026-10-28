@@ -16,7 +16,7 @@ False にする(古いとは言わない)。
 """
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from app.change_requests.conflicts import RecordFact, base_seq, changed_after
@@ -51,6 +51,13 @@ class Freshness:
     def fresh(self) -> bool:
         """最新の束で、束の後に反映した CR も古かった段階も無い。"""
         return self.is_latest and not self.applied_after and not self.outdated_stages
+
+    def excluding(self, number: int) -> "Freshness":
+        """束の後に反映した CR から、番号の CR を除いた鮮度(CR 自身の反映は、その CR の基準の束を
+        古くしたとは言わないため)。"""
+        return replace(
+            self, applied_after=tuple(a for a in self.applied_after if a.number != number)
+        )
 
 
 def freshness(
