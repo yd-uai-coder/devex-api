@@ -6,8 +6,9 @@ SUT: MaterialDifferenceService.create_change_request・一覧の候補と CR の
      ChangeRequestRead.from_view、MaterialChangeRequestCreate、モデル MaterialDifference の
      change_request_id
 ドライバ: pytest のテスト関数(ルートは関数を直接呼ぶ)
-スタブ: 取り出しの LLM を、決まった構造化出力を返す FakeLLM に差し替えてサービスに注入する。束・CR は
-     偽の LLM で反映する fixture(tests/fixtures/change_requests.py)で作り、DB はテスト用の SQLite
+スタブ: 取り出しの LLM を、決まった構造化出力を返す FakeLLM に差し替えてサービスに注入する。
+     束・CR は偽の LLM で反映する fixture(tests/fixtures/change_requests.py)で作り、
+     DB はテスト用の SQLite
 """
 
 import uuid
