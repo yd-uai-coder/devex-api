@@ -1,6 +1,6 @@
 # devex-api
 
-[Devex](https://github.com/yd-uai-coder/devex-project#readme)(AIとの対話で要件を引き出し、要件定義から設計・実装手順・テストまでを、IDでつながった設計情報として組み立てるシステム)のバックエンドです。FastAPI + LangChain(Gemini / Claude)+ PostgreSQL + Redis で構築しています。フロントエンドは [devex-ui](https://github.com/yd-uai-coder/devex-ui#readme) です。
+[Devex](https://github.com/yd-uai-coder/devex-project#readme)(AIとの対話で要件を引き出し、要件定義から設計・実装手順・テストまでを、IDでつながった設計情報として組み立て、クライアントとの合意を基準に仕様の変更をたどれるようにするシステム)のバックエンドです。FastAPI + LangChain(Gemini / Claude)+ PostgreSQL + Redis で構築しています。フロントエンドは [devex-ui](https://github.com/yd-uai-coder/devex-ui#readme) です。
 
 本番: <https://devex.uandi-tech.com/>(API は ConoHa VPS 上の Docker Compose。共有の Traefik の下)
 
@@ -16,6 +16,11 @@
 | `design_stages.py` | 詳細設計モード: 機能一覧から実装手順書までの段階ごとの生成・編集・承認、陳腐化の検知、変更の影響の分析、詳細設計書・実装手順書の出力 |
 | `uml.py` | UML 設計図の意味モデルの取得・更新・検証・自動レイアウト・承認、draw.io / SVG の出力、データ辞書 |
 | `reviews.py` | 生成とは別のモデルによる設計レビュー、指摘の採否、レビュー結果からの再ヒアリング |
+| `baselines.py` | 合意済みの版(プロジェクトの束): 文書と段階の内容を写して凍結し、合意の記録(相手・日時・根拠)を残す。中身・鮮度・要件の出どころ |
+| `change_requests.py` | 変更要求(CR): 作成・6つの状態の遷移(説明・合意 / 却下・取り下げ・検証)、影響の予測、変更の説明書(md の出力・任意の LLM の要約と確認)、規模、選択肢とその下書き、予測と実際の比較、検証、たどる記録、重なる CR の競合、共有リンクの発行・失効・延長、コメント |
+| `agreements.py`・`confirmations.py` | 行ごとの合意の状態と履歴、確認事項の一覧(推測の要件・推測の利用者・根拠が未決の観点)と確かめた結果 |
+| `materials.py` | 資料(議事録・メール・資料。貼り付けか txt / md / pdf)の追加・一覧・削除、最新の束と違う点の取り出し、違いの採否 |
+| `share.py` | ログインの要らない共有リンク: クライアントが説明書を読み、コメント・案の選択・合意 / 却下を記録する |
 | `llm.py`・`prompt_templates.py` | 使えるモデルの一覧、プロンプトテンプレートの一覧 |
 
 ## アーキテクチャ
@@ -26,7 +31,7 @@ flowchart TB
     services["services<br/>app/services<br/>ユースケース・トランザクションの境界"]
     repos["repositories<br/>app/repositories<br/>永続化(flush のみ)"]
     models["models<br/>app/models<br/>SQLAlchemy ORM"]
-    domain["ドメイン(純粋関数)<br/>hearing / documents / detailed_design / uml / review"]
+    domain["ドメイン(純粋関数)<br/>hearing / documents / detailed_design / uml / review<br/>change_requests / agreements / confirmations / materials"]
     llm["app/ai/llm<br/>モデルの一覧・クライアントの組み立て"]
 
     routes --> services
@@ -42,6 +47,10 @@ flowchart TB
 | `app/detailed_design/` | 詳細設計モードの各段階(機能一覧・データフロー・データモデル・ソフトウェア構造・手順・処理ロジック・実装計画)の生成の指示・検証・組み立て、変更の影響のたどり方、実装手順書 |
 | `app/uml/` | 図の意味モデル(DFD・ER・コンポーネント)、生成、検証、自動レイアウト、draw.io / SVG の出力 |
 | `app/review/` | 設計レビューの入力・出力・採否・直ったかの判定・使えるかの方針 |
+| `app/change_requests/` | CR の状態と遷移、対象(要件 ID・変更の種類・変更後の案)、影響の予測、規模、選択肢、説明書と要約の照合、反映の指示、予測と実際の比較、検証の条件、たどる記録、共有リンクとコメントの規則、重なる CR の競合 |
+| `app/agreements/` | 合意の対象の要素、合意の出どころ、再生成の後に合意済みの要素を合意の形へ戻す保護、合意の履歴と状態、反映の前 → 後 |
+| `app/confirmations/` | 確認事項の導出と、推測の採用率 |
+| `app/materials/` | 資料と合意済みの内容の違いの取り出し(対象と引用の決定的な確かめ)と、違いから CR の下書きへの組み立て |
 | `app/ai/llm/` | provider・用途・モデルのカタログ、クライアントの組み立てとキャッシュ、キーの確かめ、E2E 用の偽の LLM |
 
 ドメインのパッケージは DB にも LLM にも触りません。サービスがここを呼び、結果を保存します。
@@ -56,7 +65,7 @@ flowchart TB
 - **LLM の解決** ── `LlmResolver` が「ユーザーと用途 → (provider, モデル, キー)」を決めます。モデルは利用者の選択(無ければ既定値)、キーは利用者のキー(無ければ環境変数の既定のキー)です。利用者のキーは Fernet で暗号化して保存し(`MultiFernet` で鍵を入れ替えられる)、登録の前に費用のかからない呼び出しで有効かを確かめます。
 - **生成とレビューを別のモデルにする** ── 生成は Gemini、レビューは Claude Sonnet、直ったかの判定は Claude Haiku が既定です。同じモデルの自己診断では見落としが残るため分けています。既定のキーで流すレビュー・判定は、利用者ごとに1日の回数の上限があります。
 - **再試行の切り分け** ── `invoke_with_retry` が、クォータ超過は即座に諦め、混雑(503・529 など)は間を伸ばして再試行し、その他の一時的な失敗は規定回数だけ再試行します。SDK の中の再試行は止め、二重に重ならないようにしています。
-- **レート制限** ── Redis のカウンタで、複数の時間の枠(1時間・1日)をまとめて数えます(`INCR` と `EXPIRE NX` を1往復のパイプラインで送り、TTL の無いキーを残しません)。チャット・ログイン(IP とメール)・登録・Google・キーの登録に掛けています。
+- **レート制限** ── Redis のカウンタで、複数の時間の枠(1時間・1日)をまとめて数えます(`INCR` と `EXPIRE NX` を1往復のパイプラインで送り、TTL の無いキーを残しません)。チャット・ログイン(IP とメール)・登録・Google・キーの登録・共有リンクに掛けています。
 - **危険な設定は起動時に落とす** ── `ENVIRONMENT=production` で、弱い `JWT_SECRET_KEY`・`DEBUG=true`・E2E 用の偽の LLM / 偽の Google のフラグがあれば、起動を拒否します。本番では Swagger UI・OpenAPI も閉じます。
 - **リクエストの保護** ── ボディの上限(413)をアプリ側にも置きます(nginx を通らない経路でも効くように)。
 
@@ -64,8 +73,8 @@ flowchart TB
 
 | 種類 | 中身 | 件数 |
 |---|---|---|
-| 単体(`tests/unit/`) | インメモリの SQLite。ドメインの純粋関数は素で、LLM・Redis はフェイクで差し替える | 167ファイル・約1,500ケース |
-| 結合(`tests/integration/`) | FastAPI → 実 PostgreSQL → 実 Redis。開発用とは別の**テスト専用の DB** に向ける | 9ファイル |
+| 単体(`tests/unit/`) | インメモリの SQLite。ドメインの純粋関数は素で、LLM・Redis はフェイクで差し替える | 224ファイル・約1,980ケース |
+| 結合(`tests/integration/`) | FastAPI → 実 PostgreSQL → 実 Redis。開発用とは別の**テスト専用の DB** に向ける | 16ファイル・48ケース |
 | E2E | devex-ui の Playwright から、`E2E_FAKE_LLM=true` の偽の LLM で起動する(`docker-compose.e2e.yml`) | devex-ui 側 |
 
 結合テストはテストのたびにテーブルを作り直すので、開発用の DB に向けると開発中のデータが消えます。必ず次のように専用の DB で流してください(理由は `CLAUDE.md`「テストの分離」)。
@@ -115,6 +124,7 @@ devex-api/
 │   │   ├── repositories/           # データアクセス(汎用 CRUD の基底クラス)
 │   │   ├── services/               # ユースケース・ドメイン例外・レート制限・LLM の解決と再試行
 │   │   ├── hearing/ documents/ detailed_design/ uml/ review/   # ドメイン(純粋関数)
+│   │   ├── change_requests/ agreements/ confirmations/ materials/   # ドメイン(合意と変更。純粋関数)
 │   │   ├── ai/llm/                 # LLM のカタログ・クライアント・偽の LLM
 │   │   └── infrastructure/         # Redis・HTTP クライアント
 │   ├── alembic/                    # DB マイグレーション
@@ -165,6 +175,7 @@ backend コンテナは `backend/` をバインドマウントし、`--reload` �
 | | `API_KEY_RATE_LIMIT_PER_HOUR` / `API_KEY_CHECK_TIMEOUT_SECONDS` | キーの登録の1時間の上限と、キーを確かめる呼び出しの待ち時間 |
 | レート制限 | `CHAT_RATE_LIMIT_PER_HOUR` / `CHAT_RATE_LIMIT_PER_DAY` | チャットの送信(既定 20回/時・100回/日) |
 | | `LOGIN_RATE_LIMIT_PER_IP_PER_HOUR` / `LOGIN_RATE_LIMIT_PER_EMAIL_PER_HOUR` / `REGISTER_RATE_LIMIT_PER_IP_PER_HOUR` / `GOOGLE_RATE_LIMIT_PER_IP_PER_HOUR` | 総当たり・大量登録の対策 |
+| | `SHARE_RATE_LIMIT_PER_IP_PER_HOUR` / `SHARE_WRITE_RATE_LIMIT_PER_IP_PER_HOUR` | ログインの要らない共有リンクの、IP ごとの読む・書く(コメント・合意)の1時間の上限(既定 60回・20回) |
 | | `MAX_REQUEST_BODY_BYTES` | ボディの上限(既定 2MB。超えたら 413) |
 | 監視 | `SENTRY_DSN` | 設定したときだけ Sentry を初期化する |
 | E2E 専用 | `E2E_FAKE_LLM` / `E2E_FAKE_GOOGLE` | 偽の LLM・偽の Google の credential。本番では起動時に拒否する |
