@@ -59,6 +59,10 @@ class ReviewRunRepository(CRUDRepository[ReviewRun]):
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def list_for_project(self, project_id: uuid.UUID) -> list[ReviewRun]:
+        """プロジェクトの回(指摘付き、新しい順)。CR に結ぶ候補を読むため。"""
+        return await self.list_all(order_by=ReviewRun.started_at.desc(), project_id=project_id)
+
     async def list_with_adopted(self, *, project_id: uuid.UUID, gate: str) -> list[ReviewRun]:
         """区切りの回のうち、採用した指摘を持つもの(指摘付き、新しい順)。"""
         adopted = select(ReviewFinding.run_id).where(ReviewFinding.decision == "adopted")

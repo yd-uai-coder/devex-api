@@ -1,11 +1,22 @@
+from app.models.agreement import AgreementRecord
+from app.models.baseline import Baseline, BaselineItem
+from app.models.change_request import ChangeRequest, ChangeRequestEvent, ChangeRequestReview
+from app.models.change_request_comment import ChangeRequestComment
+from app.models.change_request_option_draft import ChangeRequestOptionDraft
+from app.models.change_request_share_link import ChangeRequestShareLink
+from app.models.change_request_summary import ChangeRequestSummary
 from app.models.chat_history import ChatHistory
+from app.models.confirmation import ConfirmationItemRecord
 from app.models.data_item import DataItem
 from app.models.design_stage import DesignStage
 from app.models.generated_document import GeneratedDocument
 from app.models.hearing_point import HearingPoint
 from app.models.intake_file import IntakeFile
+from app.models.material import Material
+from app.models.material_difference import MaterialDifference, MaterialExtraction
 from app.models.project import Project
 from app.models.prompt_template import PromptTemplate
+from app.models.pruned_protection import PrunedProtection
 from app.models.review import ReviewFinding, ReviewFixCheck, ReviewRun
 from app.models.uml_diagram import UmlDiagram
 from app.models.uml_generation_run import UmlGenerationRun
@@ -15,14 +26,29 @@ from app.models.user_model_setting import UserModelSetting
 
 # alembicにimportさせるモデル
 __all__ = [
+    "AgreementRecord",
+    "Baseline",
+    "BaselineItem",
+    "ChangeRequest",
+    "ChangeRequestEvent",
+    "ChangeRequestReview",
+    "ChangeRequestComment",
+    "ChangeRequestOptionDraft",
+    "ChangeRequestShareLink",
+    "ChangeRequestSummary",
     "ChatHistory",
+    "ConfirmationItemRecord",
     "DataItem",
     "DesignStage",
     "GeneratedDocument",
     "HearingPoint",
     "IntakeFile",
+    "Material",
+    "MaterialDifference",
+    "MaterialExtraction",
     "Project",
     "PromptTemplate",
+    "PrunedProtection",
     "ReviewFinding",
     "ReviewFixCheck",
     "ReviewRun",

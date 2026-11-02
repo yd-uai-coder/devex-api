@@ -2,7 +2,9 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.agreements import RestoreReason
 
 DocType = Literal[
     "requirements", "external_design", "internal_design", "implementation_plan", "test_spec"
@@ -46,6 +48,13 @@ class ExternalDesignSummaryRead(DocumentSummaryRead):
     """外部設計書の行数(screens / apis / integrations)と検証の指摘。"""
 
 
+class RestoredRead(BaseModel):
+    """再生成の後に合意の形へ戻した要素1つ(app/agreements/protection.py の Restored)。"""
+
+    key: str
+    reason: RestoreReason
+
+
 class GeneratedDocumentRead(BaseModel):
     """生成された設計書1件(最新バージョン)をAPIレスポンスとして返す際のスキーマ。"""
 
@@ -57,6 +66,12 @@ class GeneratedDocumentRead(BaseModel):
     version: int
     created_at: datetime
     is_current: bool
+    # 生成したモデル名(この列を足す前の版は None)
+    generated_model: str | None = None
+    # 再生成の後に合意の形へ戻した要素(合意を守った要件定義書・外部設計書の版だけ。ほかは None)
+    protection: list[RestoredRead] | None = None
+    # 反映した変更要求の番号(CR を渡した再生成で作った版だけ。ほかは None)。ルートが入れる
+    change_request_number: int | None = None
     # 要件定義書で model を持つ版だけ(ほかは None)。ルートが requirements_summary で入れる
     requirements: RequirementsSummaryRead | None = None
     # 外部設計書で model を持つ版だけ(ほかは None)。ルートが external_design_summary で入れる
@@ -83,10 +98,12 @@ class TestSpecRead(BaseModel):
 class GenerationRequest(BaseModel):
     """設計書の(再)生成の要求。`start_from`は起点(その文書から下流を作り直す)。省略で全部。
     `test_spec`はテスト仕様書だけを作る(詳細設計モードは、これでだけ作る)。
-    `finding_ids`は再生成の指示に入れる、設計レビューの採用した指摘(設計・不整合)。"""
+    `finding_ids`は再生成の指示に入れる、設計レビューの採用した指摘(設計・不整合)。
+    `cr_number`は反映する合意した変更要求(CR)の番号(詳細設計モード。省略で渡さない)。"""
 
     start_from: DocType | None = None
     finding_ids: list[uuid.UUID] = []
+    cr_number: int | None = Field(default=None, ge=1)
 
 
 class GenerationProgressRead(BaseModel):

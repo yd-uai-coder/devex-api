@@ -2,6 +2,7 @@ import uuid
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
+from tests.fixtures.change_requests import applied_change_request_project
 
 from app.api.routes.projects import (
     adopt_requirement,
@@ -114,7 +115,9 @@ async def test_requirements_summary_and_adopt_route(db_session: AsyncSession) ->
     await repo.create_version(project_id=project.id, doc_type="external_design", content="e")
 
     listed = {d.doc_type: d for d in await list_generated_documents(db_session, project)}
-    adopted = await adopt_requirement("FR-001", db_session, project)
+    user = await db_session.get(User, project.user_id)
+    assert user is not None
+    adopted = await adopt_requirement("FR-001", db_session, project, user)
 
     summary = listed["requirements"].requirements
     assert summary is not None
@@ -126,4 +129,17 @@ async def test_requirements_summary_and_adopt_route(db_session: AsyncSession) ->
     assert adopted.requirements is not None
     assert adopted.requirements.counts == {"user": 0, "adopted": 1, "assumed": 0}
     with pytest.raises(RequirementNotFoundError):
-        await adopt_requirement("FR-002", db_session, project)
+        await adopt_requirement("FR-002", db_session, project, user)
+
+
+async def test_list_document_versions_shows_the_reflected_change_request(
+    db_session: AsyncSession,
+) -> None:
+    """CR を渡した再生成で作った版は、反映した CR の番号を出す(版の履歴の「CR-N で反映」)。"""
+    project = await applied_change_request_project(db_session)
+
+    versions = await list_document_versions("requirements", db_session, project)
+
+    assert versions[0].change_request_number == 1
+    assert versions[0].generated_model is not None
+    assert [v.change_request_number for v in versions[1:]] == [None] * (len(versions) - 1)

@@ -69,6 +69,12 @@ class DesignStage(Base):
     # 直近の生成の修正指示に入れた、設計レビューの指摘の ID(文字列の配列)。作り直した段階の
     # 画面に「この作り直しで渡した指摘」を出すため。指摘を渡さない生成では None
     generation_finding_ids: Mapped[list[str] | None] = mapped_column(PortableJSON, nullable=True)
+    # 直近の生成の修正指示に入れた変更要求(CR を渡さない生成・CR が消えたら None)
+    generation_change_request_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("change_requests.id", ondelete="SET NULL"), nullable=True
+    )
+    # 直近の下書きを生成したモデル名(この列を足す前の生成・まだ生成していなければ None)
+    generated_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     # 生成を始めた時刻。止まった生成(15分超)の回収に使う(app/services/generation_staleness.py)
     generation_started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

@@ -1,7 +1,8 @@
 """マイページで選べる LLM の表(provider → モデル)と、用途の定義。
 
-公式の一覧で確かめた(2026-10-16。docs/external_design.md 2.12節)。終了の告知・新しいモデルは
-この表を直して足す。純粋なデータと関数だけを置き、DB・設定には触れない。
+公式の一覧で確かめた(2026-10-20。docs/external_design.md 2.12節)。終了の告知・新しいモデルは
+この表を直して足す。表から外したモデルを選んでいる利用者の設定は、マイグレーションで後継へ移す
+(外すだけだと、その利用者の呼び出しが失敗するため)。純粋なデータと関数だけを置き、DB・設定には触れない。
 """
 
 from dataclasses import dataclass
@@ -64,13 +65,6 @@ CATALOG: tuple[CatalogModel, ...] = (
     ),
     CatalogModel(
         Provider.GEMINI, "gemini-3.5-flash-lite", "Gemini 3.5 Flash-Lite", "Flash-Lite の最新", 30.0
-    ),
-    CatalogModel(
-        Provider.GEMINI,
-        "gemini-3.1-flash-lite",
-        "Gemini 3.1 Flash-Lite",
-        "2027-05-07 以降に終了",
-        30.0,
     ),
     CatalogModel(
         Provider.CLAUDE, "claude-haiku-5-5", "Claude Haiku 5.5", "低費用($0.10 / $0.50)", 60.0

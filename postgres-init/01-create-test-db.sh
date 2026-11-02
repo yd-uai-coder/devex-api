@@ -9,5 +9,9 @@ set -e
 # postgresの公式イメージの仕様上、docker-entrypoint-initdb.d配下のスクリプトは
 # Postgresデータボリュームが空の状態で初回起動したときのみ実行される。
 # 既存のボリュームに対しては手動で `CREATE DATABASE` を実行すること。
-psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
-  -c "SELECT 'CREATE DATABASE \"$POSTGRES_TEST_DB\"' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$POSTGRES_TEST_DB')\gexec"
+# \gexec は psql のメタコマンドなので -c では使えない(SQLとして解釈されて構文エラーになる)。
+# 標準入力から渡す。
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<SQL
+SELECT 'CREATE DATABASE "$POSTGRES_TEST_DB"'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$POSTGRES_TEST_DB')\gexec
+SQL

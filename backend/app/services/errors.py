@@ -5,6 +5,7 @@ from app.core.errors import (
     BadRequestError,
     ConflictError,
     ForbiddenError,
+    GoneError,
     NotFoundError,
     ServiceUnavailableError,
     TooManyRequestsError,
@@ -65,7 +66,8 @@ class UnsupportedFileTypeError(BadRequestError):
     code: ClassVar[str | None] = "UNSUPPORTED_FILE_TYPE"
 
 class FileTooLargeError(BadRequestError):
-    """添付ファイルが1ファイルあたりの上限(5MB)を超えている場合に送出する。"""
+    """添付ファイルが1ファイルあたりの上限(作成時の添付資料は5MB、資料は2MB)を超えている場合に
+    送出する。"""
 
     code: ClassVar[str | None] = "FILE_TOO_LARGE"
 
@@ -328,6 +330,28 @@ class RequirementNotAssumedError(ConflictError):
     code: ClassVar[str | None] = "REQUIREMENT_NOT_ASSUMED"
 
 
+class AgreementKeyInvalidError(UnprocessableEntityError):
+    """合意の対象でない要素のキー(要件・利用者と使う場面・画面・API・外部連携のどれでもない)の
+    履歴を求めた場合に送出する。"""
+
+    code: ClassVar[str | None] = "AGREEMENT_KEY_INVALID"
+
+
+class ConfirmationItemNotFoundError(NotFoundError):
+    """確認事項の一覧に、指定したキーの項目が無い場合に送出する(今の一覧にも、利用者が欄を決めた
+    行にも無い)。"""
+
+    code: ClassVar[str | None] = "CONFIRMATION_ITEM_NOT_FOUND"
+
+
+class ConfirmationItemSettledError(ConflictError):
+    """今の一覧に無い項目(採用にして合意した推測の要件・利用者、観点の表で決まった観点など)の状態を
+    変えようとした場合に送出する。文書と合意の記録はもう変わっているので、確認事項の状態だけを戻すと
+    食い違う(合意を変えるときは変更要求を出す)。メモと決める機会は変えられる。"""
+
+    code: ClassVar[str | None] = "CONFIRMATION_ITEM_SETTLED"
+
+
 class ReviewNotAllowedError(ForbiddenError):
     """設計レビューを使えないアカウント(superuser 以外・設定がオフ)が、レビューの設定の変更や
     レビューを要求した場合に送出する。"""
@@ -500,3 +524,232 @@ class PasswordNotSetError(ConflictError):
     送出する。先にパスワードを設定させる。"""
 
     code: ClassVar[str | None] = "PASSWORD_NOT_SET"
+
+
+# 合意済みの版(ステージ11)
+class BaselineDocumentsMissingError(ConflictError):
+    """要件定義書・外部設計書の表示中の版がそろっていないプロジェクトで、合意済みの版(束)を
+    作ろうとした場合に送出する。束は少なくともこの2つの文書を合意の基準として持つ。"""
+
+    code: ClassVar[str | None] = "BASELINE_DOCUMENTS_MISSING"
+
+
+class BaselineNotFoundError(NotFoundError):
+    """指定した番号の合意済みの版が、そのプロジェクトに無い場合に送出する。"""
+
+    code: ClassVar[str | None] = "RESOURCE_NOT_FOUND"
+
+
+class ChangeRequestNotFoundError(NotFoundError):
+    """指定した番号の変更要求(CR)が、そのプロジェクトに無い場合に送出する。"""
+
+    code: ClassVar[str | None] = "RESOURCE_NOT_FOUND"
+
+
+class ChangeRequestBaselineMissingError(ConflictError):
+    """合意済みの版(束)が1つも無いプロジェクトで CR を作ろうとした場合に送出する。CR は合意済みの
+    版からの差分なので、基準の束が要る。"""
+
+    code: ClassVar[str | None] = "CR_BASELINE_MISSING"
+
+
+class ChangeRequestTargetUnknownError(UnprocessableEntityError):
+    """CR の対象の要件 ID が基準の束の要件定義書に無い場合と、対象が空で新しい要件を足す印も無い
+    場合に送出する。"""
+
+    code: ClassVar[str | None] = "CR_TARGET_UNKNOWN"
+
+
+class ChangeRequestOptionInvalidError(UnprocessableEntityError):
+    """CR の選択肢(案)が CR と合わない場合に送出する。案の対象が CR の対象に無い・対象の無い案
+    (新しい要件を足さない CR)・合意で案を選ばない(案のある CR)・案の無い CR や却下で案を選んだ・
+    番号の案が無い。"""
+
+    code: ClassVar[str | None] = "CR_OPTION_INVALID"
+
+
+class ChangeRequestInvalidTransitionError(ConflictError):
+    """CR の今の状態では許されない操作(合意の後の編集・却下の後の説明など)をしようとした場合に
+    送出する(画面が古いまま押したときに起きうる)。"""
+
+    code: ClassVar[str | None] = "CR_INVALID_TRANSITION"
+
+
+class ChangeRequestSummaryNotFoundError(NotFoundError):
+    """説明書の要約をまだ作っていない CR で、要約を直す・確かめる操作をした場合に送出する。"""
+
+    code: ClassVar[str | None] = "CR_SUMMARY_NOT_FOUND"
+
+
+class ChangeRequestOptionDraftNotFoundError(NotFoundError):
+    """選択肢の下書きをまだ作っていない CR で、下書きを読む・取り込む操作をした場合に送出する。"""
+
+    code: ClassVar[str | None] = "CR_OPTION_DRAFT_NOT_FOUND"
+
+
+class ChangeRequestNotReflectableError(ConflictError):
+    """再生成に渡せない状態の CR を渡した場合に送出する。文書は合意・反映済みの CR、段階は文書へ
+    反映した後(反映済み)の CR だけを渡せる。"""
+
+    code: ClassVar[str | None] = "CR_NOT_REFLECTABLE"
+
+
+class ChangeRequestConflictUncheckedError(ConflictError):
+    """対象の要件が基準の束の後にほかの CR の反映で変わっていて、今の文と見比べた確かめの印が無い
+    CR を反映しようとした場合に送出する(先の CR の変更を上書きしないため)。"""
+
+    code: ClassVar[str | None] = "CR_CONFLICT_UNCHECKED"
+
+
+class ChangeRequestNotAppliedError(ConflictError):
+    """まだ反映していない CR(反映済み・検証済みでない)で、予測と実際の印の比較を求めた場合に
+    送出する(比べる実際の印が無いため)。"""
+
+    code: ClassVar[str | None] = "CR_NOT_APPLIED"
+
+
+class ChangeRequestNotVerifiableError(ConflictError):
+    """反映で付いた印か文書の側の確認の項目に、未確認が残っている CR を検証済みにしようとした場合に
+    送出する。"""
+
+    code: ClassVar[str | None] = "CR_NOT_VERIFIABLE"
+
+
+class ReviewRunNotFoundError(NotFoundError):
+    """プロジェクトに無い(別のプロジェクトの・存在しない)設計レビューの回を CR に結ぼうとした場合に
+    送出する。"""
+
+    code: ClassVar[str | None] = "REVIEW_RUN_NOT_FOUND"
+
+
+class ChangeRequestReviewNotLinkableError(ConflictError):
+    """CR に結べない設計レビューの回(CR が反映済みでない・回が成功していない・反映の前に流した・
+    もう結んである)を結ぼうとした場合に送出する。"""
+
+    code: ClassVar[str | None] = "CR_REVIEW_NOT_LINKABLE"
+
+
+class ChangeRequestNotIncludableError(ConflictError):
+    """合意済みの版(束)に入れられない CR(検証済みでない・もう別の束に入っている)を、束の作成に
+    渡した場合に送出する。"""
+
+    code: ClassVar[str | None] = "CR_NOT_INCLUDABLE"
+
+
+class ShareLinkNotFoundError(NotFoundError):
+    """共有リンクが無い場合に送出する。公開の入口では、トークンに当たるリンクが無いとき(取り消し・
+    期限切れとは分ける)と、簡易ドキュメントモードのプロジェクトの CR のリンクのとき。開発者の操作
+    では、その CR に番号のリンクが無いとき。"""
+
+    code: ClassVar[str | None] = "SHARE_LINK_NOT_FOUND"
+
+
+class ShareLinkExpiredError(GoneError):
+    """共有リンクの期限が切れている場合に送出する(トークンを持つのは正当な相手なので、開発者に
+    新しいリンクか延長を頼めるよう、取り消し・存在しないと分ける)。"""
+
+    code: ClassVar[str | None] = "SHARE_LINK_EXPIRED"
+
+
+class ShareLinkRevokedError(GoneError):
+    """共有リンクを開発者が取り消した(作り直した)場合に送出する。"""
+
+    code: ClassVar[str | None] = "SHARE_LINK_REVOKED"
+
+
+class ShareLinkNotExtendableError(ConflictError):
+    """取り消した共有リンクの期限を延ばそうとした場合に送出する(作り直す)。"""
+
+    code: ClassVar[str | None] = "SHARE_LINK_NOT_EXTENDABLE"
+
+
+class ShareLinkNotWritableError(ConflictError):
+    """開いていない共有リンク(直している・判断済み・閉じた CR)から、コメント・判断を書き込もうと
+    した場合に送出する(直している間は、見た説明書と合意する中身がずれるため)。"""
+
+    code: ClassVar[str | None] = "SHARE_LINK_NOT_WRITABLE"
+
+
+class ShareExplanationChangedError(ConflictError):
+    """共有リンクのクライアントが見た説明書の版(指紋)が、今の説明書と違う場合に送出する(開いた後に
+    開発者が直して説明し直した。読み直してもらう)。"""
+
+    code: ClassVar[str | None] = "SHARE_EXPLANATION_CHANGED"
+
+
+class ChangeRequestCommentNotFoundError(NotFoundError):
+    """CR のコメント欄に、指定したコメントが無い場合に送出する。"""
+
+    code: ClassVar[str | None] = "CR_COMMENT_NOT_FOUND"
+
+
+class ChangeRequestCommentNotRepliableError(ConflictError):
+    """返信できないコメント(開発者の返信。返信は1段)に返信しようとした場合に送出する。"""
+
+    code: ClassVar[str | None] = "CR_COMMENT_NOT_REPLIABLE"
+
+
+class ShareDecisionReasonRequiredError(UnprocessableEntityError):
+    """共有リンクから理由を書かずに却下しようとした場合に送出する(却下の理由は出し直しの材料)。"""
+
+    code: ClassVar[str | None] = "SHARE_DECISION_REASON_REQUIRED"
+
+
+class MaterialNotFoundError(NotFoundError):
+    """指定した資料が、そのプロジェクトに無い場合に送出する。"""
+
+    code: ClassVar[str | None] = "RESOURCE_NOT_FOUND"
+
+
+class TooManyMaterialsError(ConflictError):
+    """プロジェクトの資料が上限(50件)に達しているのに足そうとした場合に送出する。"""
+
+    code: ClassVar[str | None] = "TOO_MANY_MATERIALS"
+
+
+class MaterialTooLongError(UnprocessableEntityError):
+    """資料の本文(貼り付け、またはファイルから取り出した本文)が上限の文字数を超えている場合に送出
+    する(違いの根拠の引用を本文で確かめるため、切り詰めずに断る)。"""
+
+    code: ClassVar[str | None] = "MATERIAL_TOO_LONG"
+
+
+class MaterialUnreadableError(UnprocessableEntityError):
+    """資料のファイルから本文を取り出せなかった場合(UTF-8 でない・PDF を読めない・本文が空)に
+    送出する。"""
+
+    code: ClassVar[str | None] = "MATERIAL_UNREADABLE"
+
+
+class MaterialBaselineMissingError(ConflictError):
+    """合意済みの版(束)が1つも無いプロジェクトで、資料から違いを取り出そうとした場合に送出する
+    (比べる相手が無い)。"""
+
+    code: ClassVar[str | None] = "MATERIAL_BASELINE_MISSING"
+
+
+class MaterialDifferenceNotFoundError(NotFoundError):
+    """指定した違いが、その資料に無い場合に送出する。"""
+
+    code: ClassVar[str | None] = "RESOURCE_NOT_FOUND"
+
+
+class MaterialDifferenceStateError(ConflictError):
+    """違いの今の状態では、その操作ができない場合に送出する(捨てられるのは未確認だけ、戻せるのは
+    捨てたものだけ。CR にできるのは未確認の追加・変更・削除だけ)。"""
+
+    code: ClassVar[str | None] = "MATERIAL_DIFFERENCE_STATE"
+
+
+class MaterialDifferenceOutdatedError(ConflictError):
+    """違いを取り出した後に束を作り直していて(違いの束が最新の束でない)、違いから CR を作れない
+    場合に送出する(対象のキーが今の束にあるとは限らないため、取り出し直してもらう)。"""
+
+    code: ClassVar[str | None] = "MATERIAL_DIFFERENCE_OUTDATED"
+
+
+class MaterialDraftInvalidError(UnprocessableEntityError):
+    """選んだ違いと要件から CR の下書きを組み立てられない場合に送出する(選んだ要件が違いの対象に
+    つながらない・同じ要件が内容の変更と削除の両方になる)。"""
+
+    code: ClassVar[str | None] = "MATERIAL_DRAFT_INVALID"

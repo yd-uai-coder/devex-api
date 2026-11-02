@@ -8,11 +8,21 @@ from pydantic import BaseModel, ValidationError
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agreements import (
+    USERS_KEY,
+    agreed_external_ids,
+    agreed_requirement_ids,
+    protect_external_design,
+    protect_requirements,
+)
 from app.ai.llm.catalog import Purpose
 from app.ai.llm.content import extract_text_content
+from app.change_requests import join_instructions, rewritable_keys, targets_from_json
+from app.confirmations import changed_requirement_keys, requirement_item, user_item
 from app.core.database import AsyncSessionLocal
 from app.core.errors import AppError
 from app.detailed_design.function_list import FunctionListModel
+from app.detailed_design.impact import Mark, cr_source
 from app.detailed_design.plan import PLAN_STAGE, PlanModel
 from app.documents.external_design import (
     ExternalDesignModel,
@@ -55,8 +65,10 @@ from app.documents.internal_design.drafting import to_draft as to_internal_desig
 from app.documents.issues import DocumentIssue
 from app.documents.requirements import (
     RequirementsModel,
+    UserScene,
     build_model,
     mark_adopted,
+    mark_user_adopted,
     render_requirements,
     source_counts,
     validate_requirements,
@@ -87,11 +99,14 @@ from app.documents.test_spec.drafting import TestSpecGenerationOutput, build_tes
 from app.documents.test_spec.drafting import to_draft as to_test_spec_draft
 from app.hearing import as_scale
 from app.infrastructure.redis import get_redis_client
+from app.models.change_request import ChangeRequest
 from app.models.chat_history import ChatHistory
 from app.models.generated_document import GeneratedDocument
 from app.models.project import Project
 from app.models.user import User
+from app.repositories.change_request import ChangeRequestRepository
 from app.repositories.chat_history import ChatHistoryRepository
+from app.repositories.confirmation import ConfirmationRepository
 from app.repositories.generated_document import (
     DOC_TYPES_BY_MODE,
     TEST_SPEC,
@@ -113,8 +128,11 @@ from app.schemas.document import (
     RequirementsSummaryRead,
     TestSpecRead,
 )
+from app.services.agreement_service import AgreementService
+from app.services.change_request_service import ChangeRequestService
 from app.services.design_stage_service import DesignStageService
 from app.services.errors import (
+    ChangeRequestNotReflectableError,
     DocGenerationInProgressError,
     DocumentNotFoundError,
     GenerationStartInvalidError,
@@ -126,7 +144,7 @@ from app.services.errors import (
 from app.services.fix_check_service import FixCheckService
 from app.services.generation_progress import GenerationProgress, GenerationProgressStore
 from app.services.generation_staleness import is_stale
-from app.services.llm_resolver import LlmResolver
+from app.services.llm_resolver import LlmResolver, injected_llm
 from app.services.llm_retry import invoke_structured, invoke_with_retry
 from app.services.project_deletion import (
     commit_if_live,
@@ -208,10 +226,11 @@ async def generate_documents(
     *,
     start_from: str | None = None,
     finding_ids: Sequence[uuid.UUID] = (),
+    cr_number: int | None = None,
     llm=None,
 ) -> None:
     """`BackgroundTasks`から呼び出すエントリポイント。`start_from`は再生成の起点(省略で全部)、
-    `finding_ids`は再生成の指示に入れる採用した指摘。
+    `finding_ids`は再生成の指示に入れる採用した指摘、`cr_number`は反映する合意した CR の番号。
 
     FastAPI 0.106以降、`yield`を使うDIのセッション(SessionDep)はbackground task実行"前"に
     クローズされるため、background task内でリクエストのセッションをそのまま使うことはできない。
@@ -235,6 +254,7 @@ async def generate_documents(
                 status_before_generation=status_before_generation,
                 start_from=start_from,
                 finding_ids=finding_ids,
+                cr_number=cr_number,
                 llm=llm,
             )
     finally:
@@ -263,6 +283,7 @@ class DocGeneratorService:
         *,
         start_from: str | None = None,
         finding_ids: Sequence[uuid.UUID] = (),
+        cr_number: int | None = None,
     ) -> str:
         """生成の要求を受け付け、`status`を`generating`にしてcommitする。戻り値は受け付ける前の状態
         (失敗したときに戻す先。バックグラウンドの`generate`へ渡す)。
@@ -272,7 +293,9 @@ class DocGeneratorService:
         `GenerationUpstreamMissingError`(409)。詳細設計モードのテスト仕様書は、段階1・段階7 が
         承認済みで古くなければ作れる(違えば`TestSpecUpstreamNotReadyError`(409))。`finding_ids`(再生成の指示に入れる指摘)に
         プロジェクトに無い指摘があれば`ReviewFindingNotFoundError`(404)、採用していない・ヒアリングが
-        原因の指摘があれば`SendbackFindingInvalidError`(409)。
+        原因の指摘があれば`SendbackFindingInvalidError`(409)。`cr_number`(反映する CR)が
+        プロジェクトに無ければ`ChangeRequestNotFoundError`(404)、合意・反映済みでないか、
+        作り直す文書が設計書を含まない(テスト仕様書だけ)なら`ChangeRequestNotReflectableError`(409)。
 
         生成中なら`DocGenerationInProgressError`(409)にする。受け付けと同じリクエストの中で
         `generating`にするのは、バックグラウンドで切り替えると、切り替わる前の二度押しを
@@ -294,6 +317,13 @@ class DocGeneratorService:
         await ReviewService(self._session).sendback_findings(
             project.id, finding_ids, strict=True
         )
+        if cr_number is not None:
+            await ChangeRequestService(self._session).reflectable(project, cr_number)
+            await ChangeRequestService(self._session).require_conflicts_checked(project, cr_number)
+            if not any(t in DOC_TYPES_BY_MODE[project.mode] for t in targets):
+                raise ChangeRequestNotReflectableError(
+                    "テスト仕様書だけの生成には、変更要求を渡せません。"
+                )
         await self.recover_if_stale(project)
         if project.status == "generating":
             raise DocGenerationInProgressError(
@@ -348,6 +378,7 @@ class DocGeneratorService:
         status_before_generation: str | None = None,
         start_from: str | None = None,
         finding_ids: Sequence[uuid.UUID] = (),
+        cr_number: int | None = None,
         llm=None,
         review_llm=None,
         judge_llm=None,
@@ -380,6 +411,13 @@ class DocGeneratorService:
         `finding_ids`(設計レビューの採用した指摘)は、作り直す文書ごとに、関連する指摘だけを
         修正指示にして生成のプロンプトに入れる(app/review/sendback.py)。
 
+        `cr_number`(合意した CR)は、作り直す設計書のどれにも同じ指示にして入れ
+        (app/change_requests/instruction.py)、作った版に CR を残す。生成が終わったら、CR を
+        反映済みにし、付いた印(出どころに`cr:<番号>`を足す)を CR の写しに重ねる(同じ
+        トランザクション)。CR で書き換えてよい要素(対象の要件と、保存した予測の画面・API)の
+        合意も、作り直した中身で更新する(app/services/agreement_service.py)。
+        受け付けの後に反映できない状態になった CR は渡さない。
+
         テスト仕様書(`TEST_SPEC`)は設計書の後に作る(簡易モードは毎回、詳細設計モードは
         `start_from="test_spec"`のときだけ。`generation_targets`)。設計書と同じトランザクションに
         入れ、自己診断・設計レビュー・変更の影響の印には渡さない。テスト仕様書だけを作ったときは、
@@ -397,12 +435,23 @@ class DocGeneratorService:
         reviewing = user is not None and await LlmResolver(self._session).review_effective(user)
 
         try:
-            llm = llm or (
-                await LlmResolver(self._session).resolve(user_id, Purpose.GENERATION)
-            ).llm
+            # 版に残すモデル名のため、解決した結果を持つ(渡された LLM は既定のモデルとみなす)
+            resolved = (
+                injected_llm(llm, Purpose.GENERATION)
+                if llm is not None
+                else await LlmResolver(self._session).resolve(user_id, Purpose.GENERATION)
+            )
+            llm = resolved.llm
             sendback = await ReviewService(self._session).sendback_findings(
                 project_id, finding_ids
             )
+            change_requests = ChangeRequestService(self._session)
+            reflection = await change_requests.reflection(project_id, cr_number)
+            cr_instruction = reflection.instruction if reflection is not None else ""
+            change_request_id = (
+                reflection.change_request.id if reflection is not None else None
+            )
+            versions: list[tuple[str, int]] = []
             history = await self._chat_histories.list_for_project(project_id)
             transcript = _render_transcript(history)
 
@@ -423,6 +472,8 @@ class DocGeneratorService:
                 )
                 previous_models[doc_type] = current.model if current is not None else None
             new_models: dict[str, dict | None] = {}
+            # 作った版で合意の形へ戻した要素(反映の前 → 後に「戻した」として残す)
+            protections: list[dict] = []
             for doc_type in doc_types:
                 if doc_type not in targets:
                     # 起点より上流は作り直さず、表示中の版を下流の入力にする
@@ -444,23 +495,31 @@ class DocGeneratorService:
                 progress.current = doc_type
                 await self._progress.write(project_id, progress)
                 model: dict | None = None
+                protection: list[dict] | None = None
                 # 再生成を前の版の差分にとどめるため、上流の文書で変わった行を渡す
                 changed = upstream_changes(
                     doc_type, previous_models, requirements, external, internal
                 )
-                instruction = build_instruction(findings_for([doc_type], sendback))
+                instruction = join_instructions(
+                    [build_instruction(findings_for([doc_type], sendback)), cr_instruction]
+                )
                 if doc_type == "requirements":
-                    content, requirements = await self._generate_requirements(
-                        project, transcript, instruction, llm=llm
+                    content, requirements, protection = await self._generate_requirements(
+                        project,
+                        transcript,
+                        instruction,
+                        reflection.change_request if reflection is not None else None,
+                        llm=llm,
                     )
                     model = requirements.model_dump(mode="json")
                 elif doc_type == "external_design":
-                    content, external = await self._generate_external_design(
+                    content, external, protection = await self._generate_external_design(
                         project,
                         generated["requirements"],
                         requirements,
                         changed,
                         instruction,
+                        reflection.change_request if reflection is not None else None,
                         llm=llm,
                     )
                     model = external.model_dump(mode="json")
@@ -474,9 +533,17 @@ class DocGeneratorService:
                         project, generated, requirements, internal, changed, instruction, llm=llm
                     )
                     model = plan.model_dump(mode="json")
-                await self._documents.create_version(
-                    project_id=project_id, doc_type=doc_type, content=content, model=model
+                document = await self._documents.create_version(
+                    project_id=project_id,
+                    doc_type=doc_type,
+                    content=content,
+                    model=model,
+                    generated_model=resolved.model,
+                    change_request_id=change_request_id,
+                    protection=protection,
                 )
+                versions.append((doc_type, document.version))
+                protections += protection or []
                 generated[doc_type] = content
                 new_models[doc_type] = model
                 progress.done.append(doc_type)
@@ -491,15 +558,45 @@ class DocGeneratorService:
                     doc_type=TEST_SPEC,
                     content=content,
                     model=test_spec.model_dump(mode="json"),
+                    generated_model=resolved.model,
                 )
                 progress.done.append(TEST_SPEC)
             progress.current = None
             await self._progress.write(project_id, progress)
             designed = [doc_type for doc_type in targets if doc_type in doc_types]
+            extra_sources = (
+                (cr_source(reflection.change_request.number),) if reflection is not None else ()
+            )
+            marks: list[Mark] = []
             for doc_type in designed:
-                await self._stages.record_document_change(
-                    project, doc_type, previous_models[doc_type], new_models[doc_type]
+                marks += await self._stages.record_document_change(
+                    project,
+                    doc_type,
+                    previous_models[doc_type],
+                    new_models[doc_type],
+                    extra_sources=extra_sources,
                 )
+            if reflection is not None and versions:
+                await change_requests.record_document_apply(
+                    reflection.change_request,
+                    documents=versions,
+                    model=resolved.model,
+                    marks=marks,
+                    actor_id=user_id,
+                    before_models=previous_models,
+                    after_models=new_models,
+                    protection=protections,
+                )
+                await AgreementService(self._session).record_change_request(
+                    project, reflection.change_request, new_models, recorded_by=user_id
+                )
+                if "requirements" in designed:
+                    await self._reopen_confirmations(
+                        project,
+                        reflection.change_request,
+                        previous_models.get("requirements"),
+                        new_models.get("requirements"),
+                    )
 
             if designed and not reviewing:
                 diagnosis = await self._self_diagnose(generated, llm=llm)
@@ -627,6 +724,13 @@ class DocGeneratorService:
         """指定doc_typeの保管済み全バージョン(最大3件)を新しい順に返す。"""
         return await self._documents.list_versions(project_id=project_id, doc_type=doc_type)
 
+    async def change_request_numbers(
+        self, documents: Sequence[GeneratedDocument]
+    ) -> dict[uuid.UUID, int]:
+        """版が反映した CR の id → 番号(版の履歴に「CR-N で反映」と出すため)。"""
+        ids = {d.change_request_id for d in documents if d.change_request_id is not None}
+        return await ChangeRequestRepository(self._session).numbers_by_id(ids)
+
     async def restore_version(
         self, project_id: uuid.UUID, doc_type: str, version: int
     ) -> GeneratedDocument:
@@ -648,21 +752,26 @@ class DocGeneratorService:
         await self._session.commit()
         return restored
 
-    async def adopt_requirement(self, project: Project, req_id: str) -> GeneratedDocument:
+    async def adopt_requirement(
+        self, project: Project, req_id: str, *, recorded_by: uuid.UUID | None = None
+    ) -> GeneratedDocument:
         """現在の版の要件定義書の推測の要件を、利用者が確かめた「採用」にする(LLMは呼ばない)。
+        中身は`apply_adopt_requirement`で、ここで commit する。"""
+        document = await self.apply_adopt_requirement(project, req_id, recorded_by=recorded_by)
+        await self._session.commit()
+        await self._session.refresh(document)
+        return document
+
+    async def apply_adopt_requirement(
+        self, project: Project, req_id: str, *, recorded_by: uuid.UUID | None = None
+    ) -> GeneratedDocument:
+        """推測の要件を「採用」にする(commit は呼ぶ側。確認事項の一覧からも使う)。
 
         同じ版の model と md を書き換え、版は増やさない(中身は変わらないので、後続の段階を
-        古くしない)。生成中は409。要件が無い・model の無い版は404、推測でない要件は409。"""
-        if project.status == "generating":
-            raise DocGenerationInProgressError(
-                "設計書を生成しています。完了してから再度お試しください。"
-            )
-        document = await self._documents.get_current(
-            project_id=project.id, doc_type="requirements"
-        )
-        if document is None:
-            raise DocumentNotFoundError("requirements not found")
-        model = parse_requirements_model(document.model)
+        古くしない)。詳細設計モードでは、採用した行を合意として記録し、確認事項の一覧の項目を
+        確認済みにする(記録した人 = `recorded_by`)。生成中は409。要件が無い・model の無い版は
+        404、推測でない要件は409。"""
+        document, model = await self._requirements_for_adopt(project)
         if model is None or all(row.id != req_id for row in model.rows):
             raise RequirementNotFoundError(f"Requirement {req_id} not found")
         adopted = mark_adopted(model, req_id)
@@ -673,25 +782,137 @@ class DocGeneratorService:
             content=render_requirements(adopted),
             model=adopted.model_dump(mode="json"),
         )
-        await self._session.commit()
-        await self._session.refresh(document)
+        row = next(row for row in adopted.rows if row.id == req_id)
+        await AgreementService(self._session).record_adopt(project, row, recorded_by=recorded_by)
+        if project.mode == "detailed":
+            await ConfirmationRepository(self._session).mark_confirmed(
+                project.id, requirement_item(row), updated_by=recorded_by
+            )
         return document
 
+    async def apply_adopt_user(
+        self, project: Project, user_id: str, *, recorded_by: uuid.UUID | None = None
+    ) -> GeneratedDocument:
+        """推測の利用者と使う場面(1.2 の行。ID で指す)を「採用」にする(commit は
+        呼ぶ側。確認事項の一覧から使う)。要件の採用と同じく版は増やさず、詳細設計モードでは
+        1.2 全体を合意として記録し、確認事項の一覧の項目を確認済みにする。生成中は409。要件定義書・
+        その行が無ければ404、推測でない行は409。"""
+        document, model = await self._requirements_for_adopt(project)
+        if model is None or all(u.id != user_id.strip() for u in model.users):
+            raise RequirementNotFoundError(f"User scene {user_id} not found")
+        adopted = mark_user_adopted(model, user_id)
+        if adopted is None:
+            raise RequirementNotAssumedError(f"User scene {user_id} is not assumed")
+        await self._documents.replace_model(
+            document,
+            content=render_requirements(adopted),
+            model=adopted.model_dump(mode="json"),
+        )
+        if project.mode == "detailed":
+            await AgreementService(self._session).record_adopt_users(
+                project, adopted.users, recorded_by=recorded_by
+            )
+            scene = next(u for u in adopted.users if u.id == user_id.strip())
+            await ConfirmationRepository(self._session).mark_confirmed(
+                project.id, user_item(scene), updated_by=recorded_by
+            )
+        return document
+
+    async def _reopen_confirmations(
+        self,
+        project: Project,
+        change_request: ChangeRequest,
+        previous: dict | None,
+        new: dict | None,
+    ) -> None:
+        """CR の反映で文が変わった対象の要件の確認事項を、確認済みから未確認に戻す(戻した CR の
+        番号を残す。共有リンクで合意した CR も同じ。再生成の文は案の文と同じとは限らないため)。
+        生成と同じトランザクションで、commit しない。"""
+        keys = changed_requirement_keys(
+            parse_requirements_model(previous),
+            parse_requirements_model(new),
+            [target.requirement_id for target in targets_from_json(change_request.targets)],
+        )
+        reopened = await ConfirmationRepository(self._session).reopen(
+            project.id, keys, change_request_number=change_request.number
+        )
+        if reopened:
+            logger.info(
+                "confirmations_reopened",
+                project_id=str(project.id),
+                change_request=change_request.number,
+                keys=reopened,
+            )
+
+    async def _requirements_for_adopt(
+        self, project: Project
+    ) -> tuple[GeneratedDocument, RequirementsModel | None]:
+        """採用の対象の、現在の版の要件定義書と model。生成中は409、要件定義書が無ければ404。"""
+        if project.status == "generating":
+            raise DocGenerationInProgressError(
+                "設計書を生成しています。完了してから再度お試しください。"
+            )
+        document = await self._documents.get_current(
+            project_id=project.id, doc_type="requirements"
+        )
+        if document is None:
+            raise DocumentNotFoundError("requirements not found")
+        return document, parse_requirements_model(document.model)
+
     async def _generate_requirements(
-        self, project: Project, transcript: str, instruction: str = "", *, llm
-    ) -> tuple[str, RequirementsModel]:
+        self,
+        project: Project,
+        transcript: str,
+        instruction: str = "",
+        change_request: ChangeRequest | None = None,
+        *,
+        llm,
+    ) -> tuple[str, RequirementsModel, list[dict] | None]:
         """要件定義書を構造化出力で下書きし、model と md を作る。入力は会話・観点の表・前の版の
-        要件(ID を引き継ぐため)。出どころは観点の状態を上限に直す(app/documents/requirements)。"""
+        要件(ID を引き継ぐため)。出どころは観点の状態を上限に直す(app/documents/requirements)。
+
+        詳細設計モードでは、合意済みの要件の行と利用者(1.2)を守る(docs/external_design.md
+        2.15節)。プロンプトで「変えない行」として渡し、組み立ての後に合意の形へ戻す
+        (app/agreements/protection.py)。反映する CR(`change_request`)の対象の要件は書き換えて
+        よい。戻した要素の一覧を3つ目に返す(簡易ドキュメントモードは None)。"""
         states = await self._hearing_points.load_states(project.id)
         scale = as_scale(project.hearing_scale)
         current = await self._documents.get_current(
             project_id=project.id, doc_type="requirements"
         )
         previous = parse_requirements_model(current.model if current else None)
-        messages = build_requirements_messages(transcript, states, scale, previous, instruction)
+        agreed = await self._agreed_elements(project)
+        exempt = _rewritable(change_request)
+        agreed_ids = agreed_requirement_ids(agreed or {}, exempt)
+        agreed_users = (
+            [UserScene.model_validate(u) for u in agreed[USERS_KEY]["users"]]
+            if agreed and USERS_KEY in agreed
+            else []
+        )
+        messages = build_requirements_messages(
+            transcript,
+            states,
+            scale,
+            previous,
+            instruction,
+            agreed_ids=agreed_ids,
+            agreed_users=agreed_users,
+        )
         output = await invoke_structured(llm, RequirementsGenerationOutput, messages)
-        model = build_model(to_draft(output), previous, states, scale)
-        return render_requirements(model), model
+        model = build_model(to_draft(output), previous, states, scale, agreed_ids=agreed_ids)
+        if agreed is None:
+            return render_requirements(model), model, None
+        model, restored = protect_requirements(model, previous, agreed, exempt=exempt)
+        protection = [{"key": r.key, "reason": r.reason} for r in restored]
+        return render_requirements(model), model, protection
+
+    async def _agreed_elements(self, project: Project) -> dict[str, dict] | None:
+        """今の合意(キー → 合意した中身)。合意は詳細設計モードの機能なので、簡易ドキュメント
+        モードは None(合意を読まず、守らない)。"""
+        if project.mode != "detailed":
+            return None
+        records = await AgreementService(self._session).current(project)
+        return {r.key: r.content for r in records if r.content is not None}
 
     async def _generate_external_design(
         self,
@@ -700,24 +921,42 @@ class DocGeneratorService:
         requirements: RequirementsModel | None,
         changed_upstream: list[str],
         instruction: str = "",
+        change_request: ChangeRequest | None = None,
         *,
         llm,
-    ) -> tuple[str, ExternalDesignModel]:
+    ) -> tuple[str, ExternalDesignModel, list[dict] | None]:
         """外部設計書を構造化出力で下書きし、model と md を作る。入力は要件定義書の md、前の版の
-        画面・API(画面ID を引き継ぎ、変えない行をそのまま使うため)と、要件定義書の変わった行。
-        要件ID の照合用に要件定義書の model を写す(app/documents/external_design)。"""
+        画面・API・外部連携(画面ID を引き継ぎ、変えない行をそのまま使うため)と、要件定義書の
+        変わった行。要件ID の照合用に要件定義書の model を写す(app/documents/external_design)。
+
+        詳細設計モードでは、合意済みの画面・API・外部連携を守る(要件定義書と同じ。
+        docs/external_design.md 2.15節)。反映する CR(`change_request`)の保存した予測の画面・API
+        は書き換えてよい。戻した要素の一覧を3つ目に返す(簡易ドキュメントモードは None)。"""
         current = await self._documents.get_current(
             project_id=project.id, doc_type="external_design"
         )
         previous = parse_external_design_model(current.model if current else None)
+        agreed = await self._agreed_elements(project)
+        exempt = _rewritable(change_request)
+        ids = agreed_external_ids(agreed or {}, exempt)
         messages = build_external_design_messages(
-            requirements_md, previous, changed_upstream, instruction
+            requirements_md,
+            previous,
+            changed_upstream,
+            instruction,
+            agreed_screen_ids=ids.screen_ids,
+            agreed_endpoints=ids.endpoints,
+            agreed_services=ids.services,
         )
         output = await invoke_structured(llm, ExternalDesignGenerationOutput, messages)
         model = build_external_design_model(
             to_external_design_draft(output), previous, requirements
         )
-        return render_external_design(model), model
+        if agreed is None:
+            return render_external_design(model), model, None
+        model, restored = protect_external_design(model, previous, agreed, exempt=exempt)
+        protection = [{"key": r.key, "reason": r.reason} for r in restored]
+        return render_external_design(model), model, protection
 
     async def _generate_internal_design(
         self,
@@ -892,6 +1131,15 @@ def _render_transcript(history: list[ChatHistory]) -> str:
     return "\n".join(lines)
 
 
+def _rewritable(change_request: ChangeRequest | None) -> frozenset[str]:
+    """反映する CR で書き換えてよい要素のキー(合意済みの要素の保護から外す)。CR が無ければ空。"""
+    if change_request is None:
+        return frozenset()
+    return rewritable_keys(
+        targets_from_json(change_request.targets), change_request.predicted_impact
+    )
+
+
 def upstream_changes(
     doc_type: str,
     previous_models: Mapping[str, dict | None],
@@ -1045,10 +1293,13 @@ def _issues_read(issues: list[DocumentIssue]) -> list[DocumentIssueRead]:
     ]
 
 
-def document_read(document: GeneratedDocument) -> GeneratedDocumentRead:
+def document_read(
+    document: GeneratedDocument, change_request_number: int | None = None
+) -> GeneratedDocumentRead:
     """文書の応答。要件定義書は出どころの件数・推測の要件・検証の指摘を、外部設計書・内部設計書・
-    実装計画書は行数と検証の指摘を付ける。"""
+    実装計画書は行数と検証の指摘を付ける。反映した CR の番号は、読んだ呼び手が渡す(版の履歴)。"""
     read = GeneratedDocumentRead.model_validate(document)
+    read.change_request_number = change_request_number
     read.requirements = requirements_summary(document)
     read.external_design = external_design_summary(document)
     read.internal_design = internal_design_summary(document)

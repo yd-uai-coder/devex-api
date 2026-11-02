@@ -8,6 +8,8 @@ docs/external_design.md 2.10節・docs/internal_design.md 3.3節「7. 変更影�
 後から差分を取り直せないため)。
 
 - 印の出どころ(`sources`)は`stage:<N>`(段階の承認)か`doc:<文書の種類>`(文書の版の切り替え)。
+  合意した変更要求(CR)を渡した再生成で付いた印は、`cr:<番号>`も持つ(反映の後の確かめで、CR の
+  印を見分けるため)。
 - 同じ要素に新しい変更が届いたら、未確認に戻す(確認したのは前の変更だけのため)。
 - 段階の承認を止めるのは、他の段階・文書から届いた未確認の印だけ。自分の承認で付いた印(同じ段階の
   中の依存)は止めず、次の承認で置き換える。
@@ -102,6 +104,10 @@ def doc_source(doc_type: str) -> str:
     return f"doc:{doc_type}"
 
 
+def cr_source(number: int) -> str:
+    return f"cr:{number}"
+
+
 def merged_elements(before: Iterable[Element], after: Iterable[Element]) -> list[Element]:
     """前と後の要素を合わせたグラフ。同じキーは後の要素に、前の辺も足す(消えた要素・改名の前の
     キーを、まだ参照している要素から見つけるため)。前にだけ在る要素も残す。"""
@@ -179,13 +185,19 @@ def record(
     source: str,
     changes: Sequence[ElementChange],
     marks: Sequence[Mark],
+    *,
+    extra_sources: Sequence[str] = (),
 ) -> StageImpact:
     """段階1つの記録に、出どころ`source`の新しい変更と印を足す。同じ要素の印は、新しい道・理由にして
-    出どころを足し、未確認に戻す。変更は、この段階に印を付けたもの(印の道の先頭)だけを残す。"""
+    出どころを足し、未確認に戻す。変更は、この段階に印を付けたもの(印の道の先頭)だけを残す。
+    `extra_sources`(CR の`cr:<番号>`など)は、印の出どころにだけ足す。"""
     by_key = {m.key: m for m in existing.marks}
+    added_sources = (source, *extra_sources)
     for mark in marks:
         previous = by_key.get(mark.key)
-        sources = (source,) if previous is None else _merge(previous.sources, (source,))
+        sources = (
+            added_sources if previous is None else _merge(previous.sources, added_sources)
+        )
         by_key[mark.key] = replace(mark, sources=sources, reviewed=False)
     heads = {m.path[0] for m in marks if m.path}
     added = [RecordedChange(source, c) for c in changes if c.key in heads]

@@ -97,6 +97,10 @@ class Settings(BaseSettings):
     REGISTER_RATE_LIMIT_PER_IP_PER_HOUR: int = 10
     # Google でのログインと連携の確かめ(新規の登録も兼ねる)
     GOOGLE_RATE_LIMIT_PER_IP_PER_HOUR: int = 30
+    # CR の共有リンクの公開の入口(ログインの要らない閲覧。トークンの総当たりの対策)
+    SHARE_RATE_LIMIT_PER_IP_PER_HOUR: int = 60
+    # 共有リンクからの書き込み(コメント・合意 / 却下。閲覧とは別に数える)
+    SHARE_WRITE_RATE_LIMIT_PER_IP_PER_HOUR: int = 20
 
     # リクエストボディの上限(バイト)。nginx の client_max_body_size と同じ値に揃える。
     MAX_REQUEST_BODY_BYTES: int = 2_000_000

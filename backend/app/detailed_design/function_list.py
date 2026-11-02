@@ -9,6 +9,10 @@ docs/internal_design.md 3.3節「4. 詳細設計モード」。
 IDを書かせず、ここで前の版の行とトリガーで突き合わせて決める:
 
 - トリガーが一致した行は、前の版のIDと、人が確定した機能グループを引き継ぐ。
+- APIでない行(名称で突き合わせる)は、名称が言い換えられて当たらなければ、同じ種別で関連画面
+  (画面の処理)かトリガーの文字列(バッチなど)が同じ前の行が1つだけのとき、その行を引き継ぐ
+  (言い換えで ID が変わり、後の段階の参照が切れるのを防ぐ。候補が2つ以上なら取り違えを避けて
+  引き継がない)。
 - 新しい行には`next_number`から番号を振る。消えた行の番号は再利用しない(消えた処理を指していた
   後の段階の参照が、別の処理を指してしまわないため)。
 
@@ -22,7 +26,7 @@ IDを書かせず、ここで前の版の行とトリガーで突き合わせて
 """
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -112,6 +116,8 @@ def merge_draft(
     """AIの下書きを、前の版(あれば)と突き合わせて機能一覧にする。
 
     - 前の版とキーが一致した行: IDと機能グループ(人の確定値)を引き継ぐ。
+    - キーが一致しないAPIでない行: 同じ種別で関連画面かトリガーが同じ前の行が1つだけなら、
+      その行を引き継ぐ(`_fallback_match`。キーの一致をすべて決めた後に当てる)。
     - 新しい行: `next_number`から番号を振り、機能グループは初期値にする。
     - `groups`: 前の版の並びのうち使われているものを先に、新しいグループを出てきた順に後ろへ。
     - 同じキーの下書きが2行あれば、2行目以降は新しい行として扱う(引き継げるIDは1つだけ)。
@@ -128,10 +134,20 @@ def merge_draft(
         + [(function_number(row.id) or 0) + 1 for row in previous.functions]
     )
 
+    # 1段目: キーの一致。当たらなかった下書きは、すべての一致を決めた後に2段目で突き合わせる
+    # (2段目が、後の下書きのキーの一致で引き継ぐはずの行を先に取らないように)
+    matches: list[FunctionRow | None] = [
+        unclaimed.pop(_match_key(draft.trigger, draft.name), None) for draft in drafts
+    ]
+    for index, draft in enumerate(drafts):
+        if matches[index] is None and trigger_key(draft.trigger) is None:
+            fallback = _fallback_match(draft, unclaimed.values())
+            if fallback is not None:
+                matches[index] = unclaimed.pop(_match_key(fallback.trigger, fallback.name))
+
     functions: list[FunctionRow] = []
-    for draft in drafts:
+    for draft, matched in zip(drafts, matches, strict=True):
         group_initial = initial_group(draft.trigger, fallback=draft.group_hint)
-        matched = unclaimed.pop(_match_key(draft.trigger, draft.name), None)
         if matched is not None:
             function_id, group = matched.id, matched.group or group_initial
         else:
@@ -155,6 +171,24 @@ def merge_draft(
     groups = [g for g in previous.groups if g in used]
     groups += [g for g in dict.fromkeys(used) if g not in groups]
     return FunctionListModel(groups=groups, functions=functions, next_number=next_number)
+
+
+def _fallback_match(draft: FunctionDraft, candidates: Iterable[FunctionRow]) -> FunctionRow | None:
+    """名称で当たらなかったAPIでない下書きの、引き継ぐ前の行。同じ種別で、関連画面の集まり(空で
+    ない)かトリガーの文字列(空でない)が同じ行が1つだけならその行、それ以外は None。"""
+    screens = frozenset(s.strip() for s in draft.screens if s.strip())
+    trigger = draft.trigger.strip()
+    found = [
+        row
+        for row in candidates
+        if row.kind == draft.kind
+        and trigger_key(row.trigger) is None
+        and (
+            (screens and frozenset(s.strip() for s in row.screens if s.strip()) == screens)
+            or (trigger and row.trigger.strip() == trigger)
+        )
+    ]
+    return found[0] if len(found) == 1 else None
 
 
 def _req_ids(draft: FunctionDraft, api_req_ids: Mapping[str, Sequence[str]]) -> list[str]:

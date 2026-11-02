@@ -1,11 +1,17 @@
 from fastapi import APIRouter
 
+from app.api.routes.agreements import router as agreements_router
 from app.api.routes.auth import router as auth_router
+from app.api.routes.baselines import router as baselines_router
+from app.api.routes.change_requests import router as change_requests_router
+from app.api.routes.confirmations import router as confirmations_router
 from app.api.routes.design_stages import router as design_stages_router
 from app.api.routes.llm import router as llm_router
+from app.api.routes.materials import router as materials_router
 from app.api.routes.projects import router as projects_router
 from app.api.routes.prompt_templates import router as prompt_templates_router
 from app.api.routes.reviews import router as reviews_router
+from app.api.routes.share import router as share_router
 from app.api.routes.uml import router as uml_router
 from app.api.routes.users import router as users_router
 
@@ -18,5 +24,11 @@ api_router.include_router(prompt_templates_router)
 api_router.include_router(uml_router)
 api_router.include_router(design_stages_router)
 api_router.include_router(reviews_router)
+api_router.include_router(baselines_router)
+api_router.include_router(change_requests_router)
+api_router.include_router(agreements_router)
+api_router.include_router(confirmations_router)
+api_router.include_router(materials_router)
 api_router.include_router(llm_router)
+api_router.include_router(share_router)
 

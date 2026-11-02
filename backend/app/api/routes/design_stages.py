@@ -125,7 +125,8 @@ async def generate_design_stage(
     段階は「生成中」になり、終わると`completed`/`failed`になる。background taskには値だけを渡す
     (doc生成・UML図の生成と同じ理由)。段階5は、本文の`function_ids`で下書きを作る処理を選べる。
     段階6は、本文の`logics`で下書きを作る関数を選べる。段階8は、本文の`unit_ids`で手順書を作る
-    作業単位を選べる。`finding_ids`(設計レビューの採用した指摘)は修正指示にして生成に渡す。"""
+    作業単位を選べる。`finding_ids`(設計レビューの採用した指摘)と`cr_number`(文書へ反映した後の
+    変更要求)は修正指示にして生成に渡す。"""
     function_ids = payload.function_ids if payload is not None else None
     unit_ids = payload.unit_ids if payload is not None else None
     logics = (
@@ -134,6 +135,7 @@ async def generate_design_stage(
         else None
     )
     finding_ids = payload.finding_ids if payload is not None else []
+    cr_number = payload.cr_number if payload is not None else None
     accepted = await DesignStageGenerationService(session).request_generation(
         current_project,
         stage=stage,
@@ -141,6 +143,7 @@ async def generate_design_stage(
         logics=logics,
         unit_ids=unit_ids,
         finding_ids=finding_ids,
+        cr_number=cr_number,
     )
     background_tasks.add_task(
         run_design_stage_generation,
@@ -151,6 +154,7 @@ async def generate_design_stage(
         logics,
         unit_ids,
         finding_ids,
+        cr_number,
     )
     return accepted
 
@@ -179,9 +183,10 @@ async def approve_design_stage(
 ) -> DesignStageRead:
     """段階を承認する(古い段階は、内容を変えずに承認し直せる)。他の段階・文書の変更から届いた
     見直しの印が未確認なら409(`DESIGN_STAGE_UNREVIEWED_IMPACT`)。設計レビューがオンなら、
-    承認の後に、採用した指摘が直ったかをバックグラウンドで判定する(シャドーモード)。"""
+    承認の後に、採用した指摘が直ったかをバックグラウンドで判定する(シャドーモード)。反映済みの CR で
+    作り直した後の最初の承認なら、付いた印を CR に結ぶ。"""
     approved = await DesignStageService(session).approve(
-        current_project, stage=stage, expected_version=payload.version
+        current_project, stage=stage, expected_version=payload.version, actor_id=current_user.id
     )
     if await LlmResolver(session).review_effective(current_user):
         background_tasks.add_task(run_fix_checks, current_project.id, current_user.id)

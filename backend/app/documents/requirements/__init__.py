@@ -1,26 +1,32 @@
 """要件定義書の意味モデル(model・組み立て・md・検証)。"""
 
 from app.documents.requirements.assemble import (
+    USER_POINTS,
     RequirementDraft,
     RequirementsDraft,
     UserSceneDraft,
     assign_ids,
+    assign_user_ids,
     build_model,
     cap_source,
+    grounding_points,
     known_points,
     mark_adopted,
+    mark_user_adopted,
 )
 from app.documents.requirements.markdown import render_requirements, source_cell
 from app.documents.requirements.model import (
     PRIORITIES,
     REQUIREMENT_KINDS,
     SOURCE_LABEL,
+    USER_PREFIX,
     Priority,
     RequirementKind,
     RequirementRow,
     RequirementsModel,
     RequirementSource,
     UserScene,
+    number_users,
     parse_requirement_id,
     requirement_id,
 )
@@ -28,8 +34,10 @@ from app.documents.requirements.validation import source_counts, validate_requir
 
 __all__ = [
     "PRIORITIES",
+    "USER_POINTS",
     "REQUIREMENT_KINDS",
     "SOURCE_LABEL",
+    "USER_PREFIX",
     "Priority",
     "RequirementDraft",
     "RequirementKind",
@@ -40,10 +48,14 @@ __all__ = [
     "UserScene",
     "UserSceneDraft",
     "assign_ids",
+    "assign_user_ids",
     "build_model",
     "cap_source",
+    "grounding_points",
     "known_points",
     "mark_adopted",
+    "mark_user_adopted",
+    "number_users",
     "parse_requirement_id",
     "render_requirements",
     "requirement_id",

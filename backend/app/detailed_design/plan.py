@@ -338,3 +338,31 @@ def normalize_plan(model: PlanModel, module_paths: Sequence[str]) -> PlanModel:
         risks=risks,
         next_unit_seq=model.next_unit_seq,
     )
+
+
+def drop_unknown_functions(model: PlanModel, function_ids: Iterable[str]) -> PlanModel:
+    """タスクの処理ID から、段階1の機能一覧に無いものを外す(再生成の結果に使う。段階2〜4の
+    下書きが機能一覧に無い処理を捨てるのと同じ扱い)。人が保存した計画には使わない(機能一覧に
+    無い処理は検証が指摘し、画面で付け替えるか消す)。"""
+    known = set(function_ids)
+    return model.model_copy(
+        update={
+            "milestones": [
+                milestone.model_copy(
+                    update={
+                        "tasks": [
+                            task.model_copy(
+                                update={
+                                    "function_ids": [
+                                        f for f in task.function_ids if f in known
+                                    ]
+                                }
+                            )
+                            for task in milestone.tasks
+                        ]
+                    }
+                )
+                for milestone in model.milestones
+            ]
+        }
+    )

@@ -6,8 +6,17 @@ import structlog
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.change_requests import (
+    APPROVE_STAGE_ACTION,
+    CHECKABLE_STATUSES,
+    StageFacts,
+    merge_applied_marks,
+    pending_stages,
+    stage_apply_versions,
+)
 from app.detailed_design import (
     DATA_MODEL_STAGE,
+    ER_SNAPSHOT_KEY,
     ER_SUBJECT,
     PLAN_STAGE,
     PROCEDURE_DOC_STAGE,
@@ -42,11 +51,13 @@ from app.detailed_design.impact import (
     REGENERATION_STAGES,
     DesignModels,
     Element,
+    Mark,
     SimpleModels,
     StageImpact,
     blocking_marks,
     build_elements,
     build_simple_elements,
+    cr_source,
     diff_elements,
     doc_source,
     group_by_stage,
@@ -74,21 +85,25 @@ from app.detailed_design.validation import (
     selected_dfd_accesses,
     validate_stage,
 )
+from app.models.change_request import ChangeRequest
 from app.models.design_stage import DesignStage
 from app.models.generated_document import GeneratedDocument
 from app.models.project import Project
 from app.models.review import ReviewFinding
 from app.models.uml_diagram import UmlDiagram
+from app.repositories.change_request import ChangeRequestRepository
 from app.repositories.design_stage import DesignStageRepository
 from app.repositories.generated_document import GeneratedDocumentRepository
 from app.repositories.review import ReviewRunRepository
 from app.repositories.uml_diagram import UmlDiagramRepository
+from app.schemas.change_request import change_request_label
 from app.schemas.design_stage import (
     DesignImpactRead,
     DesignRefRead,
     DesignStageRead,
     DfdAccessRead,
     ElementChangeRead,
+    GenerationChangeRequestRead,
     GenerationFindingRead,
     ImpactMarkRead,
     RegenerationTargetRead,
@@ -123,9 +138,6 @@ IMPACT_DOCUMENTS: dict[str, tuple[str, ...]] = {
     "detailed": ("requirements", "external_design"),
     "simple": ("requirements", "external_design", "internal_design", "implementation_plan"),
 }
-# 段階3の写しに添える ER のテーブル定義の欄(ER は段階の model の外の図にあるため、承認したときの
-# 定義を写しに残し、テーブルの内容(列の追加など)の差分を取れるようにする)
-ER_SNAPSHOT_KEY = "er_snapshot"
 
 
 class DesignStageService:
@@ -151,7 +163,11 @@ class DesignStageService:
         rows, views, documents = await self._load(project)
         sources = await self._sources(project, rows, views, documents)
         findings = await self._generation_findings(project.id, rows.values())
-        return [_to_read(views[stage], rows.get(stage), sources, findings) for stage in views]
+        change_requests = await self._generation_change_requests(project.id, rows.values())
+        return [
+            _to_read(views[stage], rows.get(stage), sources, findings, change_requests)
+            for stage in views
+        ]
 
     async def stage_view(
         self, project: Project, stage: int
@@ -182,6 +198,14 @@ class DesignStageService:
             for stage in stages
             if (version := approved.get(stage)) is not None
         }
+
+    async def stage_rows(
+        self, project: Project
+    ) -> tuple[dict[int, DesignStage], dict[int, StageView]]:
+        """モードの段階の行(未着手の段階は入らない)と、全段階の状態を返す(合意済みの版の写しが
+        使う)。"""
+        rows, views, _ = await self._load(project)
+        return rows, views
 
     async def current_fingerprint(self, project: Project, stage: int) -> Fingerprint:
         """段階が今入力にしているものの版(下書きの生成時に記録する。承認時と同じ規則)。"""
@@ -230,16 +254,17 @@ class DesignStageService:
         return await self._read_one(project, stage)
 
     async def mark_edited(self, project_id: uuid.UUID, stage: int) -> bool:
-        """段階の内容のうち、段階の外に正本を持つもの(段階2の DFD・データ辞書)が直されたとき、
-        承認済みの段階を人の編集と同じ扱いで差し戻す(`reviewing`へ戻し、versionを増やす)。
-        差し戻したらTrue。
+        """段階の内容のうち、段階の外に正本を持つもの(段階2の DFD・データ辞書など)が直されたとき、
+        承認済みの段階と生成で作り直したままの段階を、人の編集と同じ扱いにする(`reviewing`へ戻し、
+        versionを増やす)。変えたらTrue。
 
         段階の`model`の保存を経ずに内容が変わっても、承認をやり直させ、後ろの段階に「古い」を
-        伝えるため(後ろの段階は、承認した版の番号で陳腐化を判定する)。承認済みでない段階は何も
-        しない。行の無いプロジェクト(簡易ドキュメントモード)も何もしない。呼び出し元の保存と同じ
-        トランザクションで使うため、commitしない。"""
+        伝えるため(後ろの段階は、承認した版の番号で陳腐化を判定する)。生成で作り直したまま
+        (`regenerated`)の段階も、人が直したので、承認で前の段階へ印を送るようにする。それ以外の
+        段階(下書き・レビュー中)は何もしない。行の無いプロジェクト(簡易ドキュメントモード)も
+        何もしない。呼び出し元の保存と同じトランザクションで使うため、commitしない。"""
         row = await self._stages.get(project_id=project_id, stage=stage)
-        if row is None or row.status != "approved":
+        if row is None or row.status not in ("approved", "regenerated"):
             return False
         row.status = STATUS_AFTER_EDIT
         row.version += 1
@@ -247,10 +272,24 @@ class DesignStageService:
         return True
 
     async def approve(
-        self, project: Project, *, stage: int, expected_version: int
+        self,
+        project: Project,
+        *,
+        stage: int,
+        expected_version: int,
+        actor_id: uuid.UUID | None = None,
     ) -> DesignStageRead:
         """段階を承認する。承認したときの入力の版を`input_fingerprint`に記録する(後で前の段階・
         文書が変わったら「古い」と判定するため)。versionは増やさない。
+
+        生成で作り直したまま(人が保存していない`regenerated`のまま)承認したときは、前の段階へ
+        印を送らない(後の段階は前の段階から作るので、生成の結果が前の段階を直す必要を生むことは
+        まれで、毎回の見直しが手間になるため)。人が直して保存した後の承認は、前の段階にも送る
+        (段階の外の DFD・データ辞書・ER・構成図だけを直したときも`mark_edited`で同じ扱い)。
+
+        反映済みの CR を渡して作り直した後の最初の承認なら、承認で付く印の出どころに`cr:<番号>`を
+        足し、CR の印の写しに重ねて、CR の時系列に記録だけの1行を足す(app/change_requests/
+        stage_approvals.py。同じトランザクション)。
 
         条件(この順に確かめる): 行がある / versionが一致する / 段階が開いている /
         承認できる状態(下書き・レビュー中・古い) / 内容が空でない / 段階ごとの検証でエラーが無い。
@@ -283,8 +322,33 @@ class DesignStageService:
         # 届いた段階(この段階を含む)に印を記録し、写しを置き換える
         row.impact = None
         er = await self._er_tables(project.id) if project.mode == "detailed" else {}
+        change_request = await self._approving_change_request(project, row)
+        extra_sources = (cr_source(change_request.number),) if change_request else ()
+        marks: list[Mark] = []
         if row.approved_model and project.mode == "detailed":
-            _record_stage_change(rows, documents, stage, row.approved_model, er)
+            # 生成したままなら、この段階より前の段階に届く印を記録しない
+            min_target = stage if row.status == "regenerated" else None
+            marks = _record_stage_change(
+                rows,
+                documents,
+                stage,
+                row.approved_model,
+                er,
+                extra_sources=extra_sources,
+                min_target=min_target,
+            )
+        if change_request is not None:
+            change_request.applied_impact = merge_applied_marks(
+                change_request.applied_impact, marks
+            )
+            await ChangeRequestRepository(self._session).add_event(
+                change_request,
+                action=APPROVE_STAGE_ACTION,
+                to_status=change_request.status,
+                actor_id=actor_id,
+                note=f"段階{stage}の承認で印を{len(marks)}件結んだ",
+                refs={"stage": stage, "version": row.version, "mark_count": len(marks)},
+            )
         row.status = "approved"
         row.approved_version = row.version
         row.approved_model = (
@@ -301,24 +365,43 @@ class DesignStageService:
         logger.info("design_stage_approved", project_id=str(project.id), stage=stage)
         return await self._read_one(project, stage)
 
+    async def _approving_change_request(
+        self, project: Project, row: DesignStage
+    ) -> ChangeRequest | None:
+        """この承認で印を結ぶ CR。段階を作り直した CR が反映済みで、作り直した後にまだ承認して
+        いないときだけ(無ければ None)。"""
+        if row.generation_change_request_id is None:
+            return None
+        found = await ChangeRequestRepository(self._session).find_one(
+            id=row.generation_change_request_id, project_id=project.id
+        )
+        if found is None or found.status not in CHECKABLE_STATUSES:
+            return None
+        versions = stage_apply_versions((e.action, e.refs) for e in found.events)
+        facts = StageFacts(row.stage, row.generation_change_request_id, row.approved_version)
+        return found if row.stage in pending_stages(found.id, versions, [facts]) else None
+
     async def record_document_change(
         self,
         project: Project,
         doc_type: str,
         before_model: dict | None,
         after_model: dict | None,
-    ) -> None:
+        *,
+        extra_sources: tuple[str, ...] = (),
+    ) -> list[Mark]:
         """文書の表示中の版が切り替わったとき(再生成・復元)、前に表示していた版の model と比べて、
         変更の影響を段階に印として記録する。model を持つ文書だけ(簡易モードは4文書、詳細設計モードは
         要件定義書・外部設計書)。どちらかの版に model が無ければ比べない。呼び出し元の版の切り替えと
-        同じトランザクションで使うため、commitしない。"""
+        同じトランザクションで使うため、commitしない。記録した印を返す。`extra_sources`(CR を渡した
+        再生成の`cr:<番号>`)は印の出どころに足す。"""
         if doc_type not in IMPACT_DOCUMENTS.get(project.mode, ()):
-            return
+            return []
         if not before_model or not after_model:
-            return
+            return []
         rows = {row.stage: row for row in await self._stages.list_for_project(project.id)}
         if all(row.approved_version is None for row in rows.values()):
-            return
+            return []
         inputs = stage_inputs(project.mode)
         documents = await self._current_documents(project.id, inputs)
         docs = _document_models(documents)
@@ -339,7 +422,14 @@ class DesignStageService:
             after = build_elements(
                 DesignModels.from_dicts(stages, {**docs, doc_type: after_model}, er_tables)
             )
-        _record_impact(rows, doc_source(doc_type), before, after, stages=(DOCUMENT_STAGE,))
+        return _record_impact(
+            rows,
+            doc_source(doc_type),
+            before,
+            after,
+            stages=(DOCUMENT_STAGE,),
+            extra_sources=extra_sources,
+        )
 
     async def review_marks(
         self, project: Project, *, stage: int, keys: list[str], reviewed: bool
@@ -551,7 +641,21 @@ class DesignStageService:
         sources = await self._sources(project, rows, views, documents)
         row = rows.get(stage)
         findings = await self._generation_findings(project.id, [row] if row is not None else [])
-        return _to_read(views[stage], row, sources, findings)
+        change_requests = await self._generation_change_requests(
+            project.id, [row] if row is not None else []
+        )
+        return _to_read(views[stage], row, sources, findings, change_requests)
+
+    async def _generation_change_requests(
+        self, project_id: uuid.UUID, rows: Iterable[DesignStage]
+    ) -> dict[uuid.UUID, ChangeRequest]:
+        """段階の直近の生成に渡した CR を、ID で引けるようにまとめる(渡した段階が無ければ
+        読まない)。"""
+        ids = {row.generation_change_request_id for row in rows} - {None}
+        if not ids:
+            return {}
+        found = await ChangeRequestRepository(self._session).list_for_project(project_id)
+        return {cr.id: cr for cr in found if cr.id in ids}
 
     async def _generation_findings(
         self, project_id: uuid.UUID, rows: Iterable[DesignStage]
@@ -654,8 +758,13 @@ def _record_stage_change(
     stage: int,
     snapshot: dict,
     er: dict[str, dict],
-) -> None:
-    """段階の承認時の写しと今の内容の差分から、変更の影響を印として記録する。"""
+    *,
+    extra_sources: tuple[str, ...] = (),
+    min_target: int | None = None,
+) -> list[Mark]:
+    """段階の承認時の写しと今の内容の差分から、変更の影響を印として記録する。記録した印を返す。
+    `extra_sources`(CR で作り直した段階の`cr:<番号>`)は印の出どころに足す。`min_target`を
+    渡すと、それより前の段階に届く印は記録しない。"""
     stages = {s: row.model for s, row in rows.items()}
     docs = _document_models(documents)
     before = build_elements(
@@ -664,7 +773,15 @@ def _record_stage_change(
         )
     )
     after = build_elements(DesignModels.from_dicts(stages, docs, er))
-    _record_impact(rows, stage_source(stage), before, after, stages=(stage,))
+    return _record_impact(
+        rows,
+        stage_source(stage),
+        before,
+        after,
+        stages=(stage,),
+        extra_sources=extra_sources,
+        min_target=min_target,
+    )
 
 
 def _snapshot_er(stage: int, snapshot: dict, er: dict[str, dict]) -> dict[str, dict]:
@@ -705,16 +822,32 @@ def _record_impact(
     after: list[Element],
     *,
     stages: tuple[int, ...],
-) -> None:
-    """前と後の差分から印を求め、届いた段階の行に記録する(今の記録に足す)。"""
+    extra_sources: tuple[str, ...] = (),
+    min_target: int | None = None,
+) -> list[Mark]:
+    """前と後の差分から印を求め、届いた段階の行に記録する(今の記録に足す)。記録した印を返す
+    (印を記録しない段階に届いたものは入れない)。`extra_sources`は印の出どころにだけ足す。
+    `min_target`より前の段階に届いた印は記録しない。"""
+    recorded: list[Mark] = []
     for target, impact in _impact_by_stage(source, before, after, stages=stages).items():
+        if min_target is not None and target < min_target:
+            continue
         row = rows.get(target)
         if not _records_impact(row):
             continue
         assert row is not None
         changes = [c.change for c in impact.changes]
-        merged = record(StageImpact.from_dict(row.impact), source, changes, impact.marks)
+        merged = record(
+            StageImpact.from_dict(row.impact),
+            source,
+            changes,
+            impact.marks,
+            extra_sources=extra_sources,
+        )
         row.impact = merged.to_dict()
+        keys = {m.key for m in impact.marks}
+        recorded.extend(m for m in merged.marks if m.key in keys)
+    return recorded
 
 
 def _stage_impact_read(
@@ -875,6 +1008,7 @@ def _to_read(
     row: DesignStage | None,
     sources: StageSources,
     findings: Mapping[str, ReviewFinding] | None = None,
+    change_requests: Mapping[uuid.UUID, ChangeRequest] | None = None,
 ) -> DesignStageRead:
     # 段階8の作業単位(詳細設計モードは段階7、簡易モードは実装計画書の WBS)。画面の単位の一覧が使う
     basis = (
@@ -908,6 +1042,22 @@ def _to_read(
         impact_open=impact.open_count,
         impact_reviewed=impact.reviewed_count,
         generation_findings=_generation_finding_reads(row, findings or {}),
+        generation_change_request=_generation_change_request_read(row, change_requests or {}),
+        generated_model=row.generated_model if row is not None else None,
+    )
+
+
+def _generation_change_request_read(
+    row: DesignStage | None, change_requests: Mapping[uuid.UUID, ChangeRequest]
+) -> GenerationChangeRequestRead | None:
+    """直近の生成に渡した CR(渡していない・消えた CR は None)。"""
+    if row is None or row.generation_change_request_id is None:
+        return None
+    found = change_requests.get(row.generation_change_request_id)
+    if found is None:
+        return None
+    return GenerationChangeRequestRead(
+        number=found.number, label=change_request_label(found.number), title=found.title
     )
 
 
